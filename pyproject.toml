@@ -2,7 +2,7 @@
 name = "project-autonomous-agent"
 version = "0.1.0"
 description = "通用本地单用户 Project Autonomous Agent System"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.13"
 readme = "README.md"
 
 dependencies = [

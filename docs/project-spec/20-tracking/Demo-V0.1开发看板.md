@@ -2,7 +2,7 @@
 
 | ID | 模块 | 状态 | Demo 必须 | 备注 |
 |---|---|---|---|---|
-| D01 | 工程骨架 | TODO | 是 | Runtime + Desktop |
+| D01 | 工程骨架 | CONDITIONAL PASS | 是 | Runtime + Desktop（返修中：N1 Tauri/N2 前端测试/N3 Python 版本/N4 Lint/N5 目录结构） |
 | D02 | Project/Task/Artifact/Event | TODO | 是 | Microkernel 最小模型 |
 | D03 | Project State / Task FSM | TODO | 是 | EXECUTION_DONE ≠ ACCEPTED |
 | D04 | Task Graph | TODO | 是 | Dependency + Cycle Check |
