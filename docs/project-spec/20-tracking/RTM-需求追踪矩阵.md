@@ -1,0 +1,132 @@
+# RTM 需求追踪矩阵
+
+> RTM 从开发开始建立并持续更新。  
+> Coding Agent 只能更新“代码/测试/状态”等执行列，不得擅自修改需求和架构事实。
+
+## 状态枚举
+
+```text
+TODO
+DOING
+DONE
+BLOCKED
+CHANGE_REQUIRED
+```
+
+## 追踪矩阵
+
+| ID | 需求/能力 | 架构模块 | 开发 WP | API/协议 | 代码 | 测试 | 状态 |
+|---|---|---|---|---|---|---|---|
+| SYS-001 | 建立 Desktop、Project Runtime、数据库、配置、日志和基础测试骨架 | 基础工程 | WP-001 | TODO | TODO | TODO | TODO |
+| SYS-002 | 实现核心领域实体、数据库表、Repository 和迁移 | Project State | WP-002 | TODO | TODO | TODO | TODO |
+| SYS-003 | 实现 Create / Import / Resume 统一项目入口 | Project Bootstrap | WP-003 | TODO | TODO | TODO | TODO |
+| SYS-004 | 实现已有项目扫描、软件项目识别、文档/代码/Git 轻量发现 | State Discovery | WP-004 | TODO | TODO | TODO | TODO |
+| SYS-005 | 实现 Task CRUD、父子关系、Dependency 和图验证 | Task Graph | WP-005 | TODO | TODO | TODO | TODO |
+| SYS-006 | 根据 Task Graph 和状态计算当前执行边界 | Current Frontier | WP-006 | TODO | TODO | TODO | TODO |
+| SYS-007 | 实现 Planner 输入输出 Schema、LLM 调用、Plan Validator 和 Apply | Dynamic Planner | WP-007 | TODO | TODO | TODO | TODO |
+| SYS-008 | 实现调度循环、READY 判断、并行控制和 Worker Routing 入口 | Scheduler | WP-008 | TODO | TODO | TODO | TODO |
+| SYS-009 | 实现 WorkerRuntimeAdapter、ACP Adapter、goose Worker 生命周期和事件流 | Worker Adapter | WP-009 | TODO | TODO | TODO | TODO |
+| SYS-010 | 为 Task 构建最小充分 Context Package | Context Builder | WP-010 | TODO | TODO | TODO | TODO |
+| SYS-011 | 实现 EventBus、SQLite 事件持久化和 WebSocket 推送 | Event Engine | WP-011 | TODO | TODO | TODO | TODO |
+| SYS-012 | 实现 Artifact 注册、版本、Hash、存储和 Task/Worker 关联 | Artifact Manager | WP-012 | TODO | TODO | TODO | TODO |
+| SYS-013 | 自动化模式只支持 FULL_AUTO / MANUAL，并由 Automation Mode Controller 控制推进 | Automation Mode | WP-013 | TODO | TODO | TODO | TODO |
+| SYS-014 | 实现 Hard Check、Semantic Review、Acceptance Criteria 和 Task 验收状态迁移 | Gate | WP-014 | TODO | TODO | TODO | TODO |
+| SYS-015 | 根据 Blocked/Gate Fail/User Change/New Evidence 触发重规划 | Replanner | WP-015 | TODO | TODO | TODO | TODO |
+| SYS-016 | 实现交付契约、Delivery Item、缺失项检查和 Final Gate 前置能力 | Delivery Contract | WP-016 | TODO | TODO | TODO | TODO |
+| SYS-017 | 实现项目快照、恢复和自动 Checkpoint | Checkpoint | WP-017 | TODO | TODO | TODO | TODO |
+| SYS-018 | 实现 Project Overview、Task Graph、Worker、Execution、Automation、Artifact、Delivery 页面 | Desktop UI | WP-018 | TODO | TODO | TODO | TODO |
+| SYS-019 | 完成从已有软件项目导入到最终交付的端到端闭环 | E2E | WP-019 | TODO | TODO | TODO | TODO |
+
+| SYS-020 | 长期项目记忆统一管理 | Project Memory Manager | WP-020 | TODO | TODO | TODO | TODO |
+| SYS-021 | 分层摘要与上下文压缩 | Hierarchical Summary | WP-021 | TODO | TODO | TODO | TODO |
+| SYS-022 | 需求到交付全链路追踪 | Traceability Graph | WP-022 | TODO | TODO | TODO | TODO |
+| SYS-023 | 项目完成证据链 | Completion Evidence | WP-023 | TODO | TODO | TODO | TODO |
+
+| SYS-024 | 轻量项目全文/代码检索 | Retrieval Memory Foundation | WP-024 | TODO | TODO | TODO | TODO |
+| SYS-025 | Retrieval Provider 通过 Capability Extension 接入 | Retrieval Capability Extension | WP-025 | TODO | TODO | TODO | TODO |
+
+| SYS-026 | LLM 识别项目领域/类型、事实、假设和知识缺口 | Project Understanding | WP-026 | TODO | TODO | TODO | TODO |
+| SYS-027 | Skill 可为空并评估 Capability Coverage | Skill Registry & Capability Coverage | WP-027 | TODO | TODO | TODO | TODO |
+| SYS-028 | Template 可为空并支持 Dynamic Artifact Contract | Artifact Template Registry | WP-028 | TODO | TODO | TODO | TODO |
+| SYS-029 | Project Method / Domain / Technical / User Research 路由 | Research Manager | WP-029 | TODO | TODO | TODO | TODO |
+| SYS-030 | Research + Skill + Memory 生成 Project Playbook 与 Planning Context | Project Playbook | WP-030 | TODO | TODO | TODO | TODO |
+| SYS-031 | Work Package 支持无 Skill、Playbook 与 Research 引用 | Execution Binding | WP-031 | TODO | TODO | TODO | TODO |
+
+| SYS-032 | 核心不预置任何行业 Project Archetype | Generic Project Runtime | WP-026/WP-027 | TODO | TODO | TODO | TODO |
+| SYS-033 | Skill=0 时必须通过 Web Research 构建项目方法 | Zero-Skill Bootstrap | WP-027/WP-029/WP-030/WP-019 | TODO | TODO | TODO | TODO |
+
+| SYS-034 | Plugin Package 安装、启停、健康与 Manifest 校验 | Plugin Manager | WP-032 | TODO | TODO | TODO | TODO |
+| SYS-035 | Capability Extension / Provider 统一注册调用 | Capability Extension Framework | WP-033 | TODO | TODO | TODO | TODO |
+| SYS-036 | Observer/Validator/Middleware/Hook/Policy 扩展 | Runtime Extension Framework | WP-034 | TODO | TODO | TODO | TODO |
+| SYS-037 | Base Pipeline + Extension Point 编译执行 | Pipeline Engine | WP-035 | TODO | TODO | TODO | TODO |
+| SYS-038 | 插件不得直接修改 Project State / Event Bus | Stable Kernel Boundary | WP-032/WP-034/WP-035 | TODO | TODO | TODO | TODO |
+| SYS-039 | Semantic Retrieval 通过 retrieval.providers 插件化 | Retrieval Capability Extension | WP-025 | TODO | TODO | TODO | TODO |
+
+| SYS-040 | Runtime Extension 不得引入第三种自动化模式 | Automation Boundary | WP-013/WP-034/WP-035 | TODO | TODO | TODO | TODO |
+
+| SYS-041 | 自动化程度与 Worker 并行度解耦 | Resource Governance | WP-036/WP-008 | TODO | TODO | TODO | TODO |
+| SYS-042 | 8GB LOW Profile 支持核心系统和单 Worker 自动执行 | Low Resource Runtime | WP-036/WP-019 | TODO | TODO | TODO | TODO |
+| SYS-043 | Worker / Plugin 支持按需启动与资源回收 | Process Lifecycle | WP-036/WP-032/WP-009 | TODO | TODO | TODO | TODO |
+| SYS-044 | Planner 不因机器资源修改 Task Graph | Planning Boundary | WP-007/WP-036 | TODO | TODO | TODO | TODO |
+
+
+| SYS-045 | 优先识别用户 Project Method Assets，而非默认 Research-first | Method Intelligence | WP-037 | TODO | TODO | TODO | TODO |
+| SYS-046 | 用户方法资产必须经过 Procedure Normalization 后再用于规划 | Procedure Model | WP-037 | TODO | TODO | TODO | TODO |
+| SYS-047 | Method Readiness 与 Execution Capability Readiness 分离 | Readiness | WP-038/WP-027 | TODO | TODO | TODO | TODO |
+| SYS-048 | PRIVATE/EXPLICITNESS/DOMAIN/TECHNICAL/PROCESS Gap 分类与路由 | Gap Resolution | WP-038/WP-029 | TODO | TODO | TODO | TODO |
+| SYS-049 | Research 仅针对未解决 Gap，不能覆盖用户 Mandatory 流程 | Research-on-Gap | WP-029 | TODO | TODO | TODO | TODO |
+| SYS-050 | Playbook 节点必须记录 Provenance 与 Authority | Playbook | WP-030 | TODO | TODO | TODO | TODO |
+| SYS-051 | Method Intelligence 流程可演进但 Stable Kernel Contract 不变 | Architecture Evolution | WP-035/WP-037/WP-038 | TODO | TODO | TODO | TODO |
+
+## 更新规则
+
+### 开始开发
+
+```text
+状态 → DOING
+```
+
+### Gate PASS
+
+填写：
+
+```text
+API/协议
+代码位置
+测试位置
+状态 → DONE
+```
+
+### Gate FAIL
+
+保持：
+
+```text
+DOING
+```
+
+并进入返工。
+
+### BLOCKED
+
+```text
+状态 → BLOCKED
+```
+
+同步到：
+
+```text
+20-tracking/问题与阻塞项.md
+```
+
+### 上游设计问题
+
+```text
+状态 → CHANGE_REQUIRED
+```
+
+同步到：
+
+```text
+20-tracking/变更记录.md
+```

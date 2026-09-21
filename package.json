@@ -1,0 +1,13 @@
+{
+  "name": "project-autonomous-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Project Autonomous Agent System — monorepo root",
+  "scripts": {
+    "desktop:dev": "pnpm --filter desktop dev",
+    "desktop:build": "pnpm --filter desktop build",
+    "desktop:test": "pnpm --filter desktop test",
+    "runtime:dev": "uv run python -m runtime.main",
+    "runtime:test": "uv run pytest"
+  }
+}
