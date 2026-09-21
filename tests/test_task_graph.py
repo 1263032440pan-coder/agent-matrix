@@ -7,6 +7,7 @@ from project_runtime.project_state.base import Base
 from project_runtime.project_state.enums import DependencyType, TaskStatus
 from project_runtime.project_state.fsm import InvalidStateTransitionError
 from project_runtime.project_state.models import Project
+from project_runtime.task_graph.graph import topological_order
 from project_runtime.task_graph.manager import (
     CreateTaskRequest,
     TaskGraphManager,
@@ -331,3 +332,32 @@ async def test_graph_invariants_all_hard_dep_no_root(mgr, project):
     with pytest.raises(ValueError, match="Cycle"):
         await mgr.add_dependency(t1.id, t2.id)
         await mgr.add_dependency(t2.id, t1.id)
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# topological_order (D14 Scheduler 预留)
+# ════════════════════════════════════════════════════════════════════════════
+
+
+def test_topological_order_dag():
+    edges = [(2, 1), (3, 1), (3, 2)]
+    result = topological_order(edges)
+    assert len(result) == 3
+    assert result.index(1) > result.index(2)
+    assert result.index(1) > result.index(3)
+    assert result.index(2) > result.index(3)
+
+
+def test_topological_order_cycle():
+    edges = [(1, 2), (2, 1)]
+    with pytest.raises(ValueError, match="Cycle"):
+        topological_order(edges)
+
+
+def test_topological_order_empty():
+    assert topological_order([]) == []
+
+
+def test_topological_order_single_node():
+    edges: list = []
+    assert topological_order(edges) == []
