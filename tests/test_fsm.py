@@ -398,3 +398,42 @@ async def test_expected_from_guard_rejects_stale(dbsession):
     # Now expected_from is stale
     with pytest.raises(InvalidStateTransitionError):
         await fsm.transition_project(p, ProjectStatus.ACTIVE, expected_from=ProjectStatus.CREATED)
+
+
+# ── Issue 2: illegal transition MUST carry audit information ──────────
+
+
+@pytest.mark.asyncio
+async def test_illegal_transition_error_contains_audit_fields(dbsession):
+    """InvalidStateTransitionError must expose entity_type, entity_id, from/to."""
+    p = Project(name="audit")
+    dbsession.add(p)
+    await dbsession.flush()
+
+    fsm = make_fsm(dbsession)
+    with pytest.raises(InvalidStateTransitionError) as excinfo:
+        await fsm.transition_project(p, ProjectStatus.COMPLETED)
+
+    assert excinfo.value.entity_type == "Project"
+    assert excinfo.value.entity_id == p.id
+    assert excinfo.value.from_status == ProjectStatus.CREATED.value
+    assert excinfo.value.to_status == ProjectStatus.COMPLETED.value
+
+
+@pytest.mark.asyncio
+async def test_illegal_task_transition_error_contains_audit_fields(dbsession):
+    p = Project(name="audit-t")
+    dbsession.add(p)
+    await dbsession.flush()
+    t = Task(project_id=p.id, name="audit-t1", status=TaskStatus.CREATED)
+    dbsession.add(t)
+    await dbsession.flush()
+
+    fsm = make_fsm(dbsession)
+    with pytest.raises(InvalidStateTransitionError) as excinfo:
+        await fsm.transition_task(t, TaskStatus.RUNNING)
+
+    assert excinfo.value.entity_type == "Task"
+    assert excinfo.value.entity_id == t.id
+    assert excinfo.value.from_status == TaskStatus.CREATED.value
+    assert excinfo.value.to_status == TaskStatus.RUNNING.value
