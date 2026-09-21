@@ -524,3 +524,29 @@ class ProcedureNode(Base):
     )
 
     model: Mapped["ProjectProcedureModel"] = relationship("ProjectProcedureModel")
+
+
+# ---------------------------------------------------------------------------
+# 21. ProjectReadinessAssessment (added D07)
+# ---------------------------------------------------------------------------
+
+
+class ProjectReadinessAssessment(Base):
+    __tablename__ = "project_readiness_assessment"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("project.id"), nullable=False)
+    model_id: Mapped[int] = mapped_column(
+        ForeignKey("project_procedure_model.id"), nullable=False
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    method_readiness: Mapped[str] = mapped_column(Text, nullable=False)
+    execution_capability_readiness: Mapped[str | None] = mapped_column(Text, nullable=True)
+    gaps: Mapped[str | None] = mapped_column(Text, nullable=True)
+    coverage_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+
+    project: Mapped["Project"] = relationship("Project")
+    model: Mapped["ProjectProcedureModel"] = relationship("ProjectProcedureModel")
