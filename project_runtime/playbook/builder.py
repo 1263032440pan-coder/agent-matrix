@@ -11,7 +11,6 @@ import json
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from project_runtime.project_state.enums import MethodAssetAuthority
 from project_runtime.project_state.models import (
     MethodAsset,
     MethodGap,
@@ -89,7 +88,10 @@ class PlaybookBuilder:
                 gap_by_node.setdefault(node_id, []).append(g)
 
         for node in nodes:
-            asset = next((a for a in assets if str(a.id) in (node.source_ref or "")), None)
+            asset = next(
+                (a for a in assets if a.source_path and a.source_path in (node.source_ref or "")),
+                None,
+            )
             source_type = self._determine_source_type(asset)
             authority = asset.authority.value if asset and asset.authority else "PROPOSED"
 
@@ -120,16 +122,15 @@ class PlaybookBuilder:
         return workstreams
 
     def _determine_source_type(self, asset: MethodAsset | None) -> str:
+        """Determine source type based on asset origin, not authority level.
+
+        V0.1: all imported assets are USER_METHOD. Authority is tracked
+        separately in workstream.source.authority for Planner to respect.
+        """
         if asset is None:
             return "MODEL_INFERENCE"
-        authority = asset.authority
-        if authority == MethodAssetAuthority.MANDATORY:
-            return "USER_METHOD"
-        if authority == MethodAssetAuthority.RECOMMENDED:
-            return "RESEARCH"
-        if authority == MethodAssetAuthority.OPTIONAL:
-            return "SKILL"
-        return "MODEL_INFERENCE"
+        # V0.1: user-imported assets are always USER_METHOD
+        return "USER_METHOD"
 
     # ── provenance map ───────────────────────────────────────────────────
 

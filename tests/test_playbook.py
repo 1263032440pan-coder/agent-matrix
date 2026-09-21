@@ -99,6 +99,17 @@ async def test_workstream_has_source_type(dbsession, project):
 
 
 @pytest.mark.asyncio
+async def test_imported_asset_is_user_method(dbsession, project):
+    """Q3: Imported assets must be classified as USER_METHOD, not SKILL."""
+    await _full_pipeline(dbsession, project, "# 用户流程\n输入: 需求\n活动: 开发\n角色: 工程师")
+    builder = PlaybookBuilder(dbsession)
+    playbook = await builder.build(project.id)
+    workstreams = json.loads(playbook.workstreams or "[]")
+    for ws in workstreams:
+        assert ws["source"]["type"] == "USER_METHOD"
+
+
+@pytest.mark.asyncio
 async def test_provenance_map_populated(dbsession, project):
     await _full_pipeline(dbsession, project, "# 流程\n输入: A\n活动: B")
     builder = PlaybookBuilder(dbsession)
