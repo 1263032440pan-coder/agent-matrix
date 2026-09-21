@@ -2,8 +2,8 @@
 
 | ID | 模块 | 状态 | Demo 必须 | 备注 |
 |---|---|---|---|---|
-| D01 | 工程骨架 | TODO | 是 | Runtime + Desktop |
-| D02 | Project/Task/Artifact/Event | TODO | 是 | Microkernel 最小模型 |
+| D01 | 工程骨架 | PASS | 是 | Tauri 2 + FastAPI + SQLite WAL + Alembic + vitest + pytest |
+| D02 | Project/Task/Artifact/Event | PASS | 是 | 17 实体 + migration + Repository + 24 tests |
 | D03 | Project State / Task FSM | TODO | 是 | 前置：03 中 FSM 已冻结；验收：D03 状态机测试矩阵；EXECUTION_DONE ≠ ACCEPTED |
 | D04 | Task Graph | TODO | 是 | Dependency + Cycle Check |
 | D05 | Method Asset Import | TODO | 是 | md/txt/粘贴文本即可 |
