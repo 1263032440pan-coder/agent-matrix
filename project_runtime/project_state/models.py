@@ -581,3 +581,30 @@ class MethodGap(Base):
     assessment: Mapped["ProjectReadinessAssessment"] = relationship(
         "ProjectReadinessAssessment"
     )
+
+
+# ---------------------------------------------------------------------------
+# 23. ProjectPlaybook (added D09)
+# ---------------------------------------------------------------------------
+
+
+class ProjectPlaybook(Base):
+    __tablename__ = "project_playbook"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("project.id"), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    method_asset_refs: Mapped[str | None] = mapped_column(Text, nullable=True)
+    procedure_model_version: Mapped[str | None] = mapped_column(Text, nullable=True)
+    method_readiness_snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)
+    execution_readiness_snapshot: Mapped[str | None] = mapped_column(Text, nullable=True)
+    provenance_map: Mapped[str | None] = mapped_column(Text, nullable=True)
+    gap_refs: Mapped[str | None] = mapped_column(Text, nullable=True)
+    resolved_gap_refs: Mapped[str | None] = mapped_column(Text, nullable=True)
+    unresolved_gaps: Mapped[str | None] = mapped_column(Text, nullable=True)
+    workstreams: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+
+    project: Mapped["Project"] = relationship("Project")
