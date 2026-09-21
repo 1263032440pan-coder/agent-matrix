@@ -57,3 +57,14 @@ Demo V0.1 = PASS
 ```
 
 此时才进入完整 Extension Runtime / Memory / Traceability 等增强建设。
+
+
+## H. 状态机
+
+- [ ] TaskStatus 与 ProjectStatus 严格符合 `03-核心领域模型.md`。
+- [ ] `RUNNING -> ACCEPTED` 被确定性拒绝。
+- [ ] `EXECUTION_DONE -> ACCEPTED` 仅在 Gate PASS 时允许。
+- [ ] HARD Dependency 仅 `ACCEPTED` 解锁。
+- [ ] `DEFER_RESOURCE` 不改变 `READY` 状态。
+- [ ] `ACCEPTED` / `COMPLETED` / `CANCELLED` 终态不可静默回退。
+- [ ] `40-testing/D03-状态机测试矩阵.md` 全部通过。

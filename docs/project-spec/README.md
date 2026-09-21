@@ -1,4 +1,38 @@
-# 项目全流程自主执行 Multi-Agent 系统 V1.10
+# 项目全流程自主执行 Multi-Agent 系统 V1.11
+
+## V1.11 核心变化：冻结 Project / Task 状态机
+
+D03 开工前发现状态机规范缺口，V1.11 已冻结：
+
+```text
+TaskStatus
+ProjectStatus
+合法转移表
+非法转移错误
+StateTransitionService 唯一写入口
+状态/Event 同事务
+D03 状态机测试矩阵
+```
+
+唯一状态机事实源：
+
+```text
+00-global/03-核心领域模型.md
+```
+
+接口与事件契约：
+
+```text
+00-global/04-全局接口与事件规范.md
+```
+
+核心硬规则：
+
+```text
+EXECUTION_DONE != ACCEPTED
+RUNNING -> ACCEPTED = INVALID_STATE_TRANSITION
+HARD Dependency 仅 ACCEPTED 解锁
+```
 
 ## V1.10 核心变化
 

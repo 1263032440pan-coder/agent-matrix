@@ -1,4 +1,4 @@
-# V1.10 文件清单
+# V1.11 文件清单
 
 - `00-global/00-项目总览.md`
 - `00-global/01-系统架构总则.md`
@@ -96,6 +96,8 @@
 - `30-decisions/ADR-030-认知流程可演进但Stable-Kernel不变.md`
 - `30-decisions/ADR-031-Demo-First纵向切片优先于横向完整实现.md`
 - `30-decisions/ADR-032-Demo实现可简化但架构边界不可破坏.md`
+- `30-decisions/ADR-033-Project与Task采用显式有限状态机.md`
+- `40-testing/D03-状态机测试矩阵.md`
 - `40-testing/Demo-V0.1-E2E场景.md`
 - `50-optional-plugins/Budget-Guard-Runtime-Extension参考设计.md`
 - `50-optional-plugins/Security-Review-Runtime-Extension参考设计.md`
@@ -110,6 +112,7 @@
 - `70-optional-skill-examples/README.md`
 - `90-reference/README.md`
 - `90-reference/V1.1-变更说明.md`
+- `90-reference/V1.10-变更说明.md`
 - `90-reference/V1.2-变更说明.md`
 - `90-reference/V1.3-变更说明.md`
 - `90-reference/V1.4-变更说明.md`
@@ -119,6 +122,5 @@
 - `90-reference/V1.8-变更说明.md`
 - `90-reference/V1.9-变更说明.md`
 - `README.md`
-- `V1.10-变更说明.md`
-- `V1.5-变更说明.md`
-- `项目全流程自主执行Multi-Agent系统整体方案_V1.10.md`
+- `V1.11-变更说明.md`
+- `项目全流程自主执行Multi-Agent系统整体方案_V1.11.md`

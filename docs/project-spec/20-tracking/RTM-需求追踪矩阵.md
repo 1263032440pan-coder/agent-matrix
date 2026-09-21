@@ -78,6 +78,8 @@ CHANGE_REQUIRED
 | SYS-050 | Playbook 节点必须记录 Provenance 与 Authority | Playbook | WP-030 | TODO | TODO | TODO | TODO |
 | SYS-051 | Method Intelligence 流程可演进但 Stable Kernel Contract 不变 | Architecture Evolution | WP-035/WP-037/WP-038 | TODO | TODO | TODO | TODO |
 
+| SYS-052 | Project / Task 状态必须使用显式 FSM；非法转移被确定性拒绝；EXECUTION_DONE 不等于 ACCEPTED；HARD Dependency 仅 ACCEPTED 解锁 | Stable Kernel State Machine | WP-002/WP-005/WP-014 | TaskTransitionCommand / ProjectTransitionCommand / TASK_STATUS_CHANGED / PROJECT_STATUS_CHANGED | TODO | 40-testing/D03-状态机测试矩阵.md | TODO |
+
 ## 更新规则
 
 ### 开始开发

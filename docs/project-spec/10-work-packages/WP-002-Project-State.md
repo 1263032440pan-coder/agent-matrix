@@ -8,6 +8,8 @@
 
 ```text
 00-global/00-项目总览.md
+00-global/03-核心领域模型.md
+00-global/04-全局接口与事件规范.md
 00-global/05-开发约束与Agent规则.md
 20-tracking/RTM-需求追踪矩阵.md
 ```
@@ -15,7 +17,7 @@
 
 ## 1. 任务目标
 
-实现核心领域实体、数据库表、Repository 和迁移
+实现核心领域实体、数据库表、Repository、迁移，以及 Project/Task 显式有限状态机的持久化基础与统一状态转移服务。
 
 ## 2. 前置依赖
 
@@ -44,6 +46,45 @@
 
 如发现必须修改，提交 Change Request。
 
+
+## Project / Task 状态机实现约束
+
+状态枚举、状态语义与合法转移表以：
+
+```text
+00-global/03-核心领域模型.md
+```
+
+为唯一事实源。WP-002 **不得自行新增、删除、重命名状态或改变合法转移关系**。如实现发现规范不足，必须提交 Change Request。
+
+必须提供统一 Core 状态转移入口，例如：
+
+```text
+StateTransitionService
+├── transition_project(command)
+└── transition_task(command)
+```
+
+状态修改必须遵循：
+
+```text
+Command / Proposal
+→ Transition Validation
+→ State Transaction
+→ State Mutation
+→ Event Persist
+→ Commit
+```
+
+禁止业务模块直接执行等价于：
+
+```text
+task.status = ...
+project.status = ...
+repository.save(...)
+```
+
+的绕过状态机写入。
 
 ## 核心实体
 
@@ -89,6 +130,13 @@ DeliveryItem
 - [ ] Project/Task/Dependency/Artifact/Issue/Decision/Constraint 可持久化
 - [ ] Alembic migration 可重复执行
 - [ ] Repository 单测通过
+- [ ] `ProjectStatus` / `TaskStatus` 枚举与 `03-核心领域模型.md` 完全一致
+- [ ] 实现统一 `StateTransitionService`（或等价 Core FSM Service）
+- [ ] 合法转移可成功持久化
+- [ ] 非法转移返回 `INVALID_STATE_TRANSITION` 且数据库状态保持不变
+- [ ] 状态变更与对应 Event 在同一事务边界提交
+- [ ] `ACCEPTED` / `COMPLETED` / `CANCELLED` 终态不可被静默回退
+- [ ] 完成 `40-testing/D03-状态机测试矩阵.md` 中适用于 WP-002 的测试
 
 ## 8. Gate
 

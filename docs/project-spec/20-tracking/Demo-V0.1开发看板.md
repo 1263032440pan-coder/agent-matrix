@@ -2,9 +2,9 @@
 
 | ID | 模块 | 状态 | Demo 必须 | 备注 |
 |---|---|---|---|---|
-| D01 | 工程骨架 | CONDITIONAL PASS | 是 | Runtime + Desktop（返修中：N1 Tauri/N2 前端测试/N3 Python 版本/N4 Lint/N5 目录结构） |
-| D02 | Project/Task/Artifact/Event | PASS | 是 | 17 实体 + migration + Repository（复验 PASS） |
-| D03 | Project State / Task FSM | TODO | 是 | EXECUTION_DONE ≠ ACCEPTED |
+| D01 | 工程骨架 | TODO | 是 | Runtime + Desktop |
+| D02 | Project/Task/Artifact/Event | TODO | 是 | Microkernel 最小模型 |
+| D03 | Project State / Task FSM | TODO | 是 | 前置：03 中 FSM 已冻结；验收：D03 状态机测试矩阵；EXECUTION_DONE ≠ ACCEPTED |
 | D04 | Task Graph | TODO | 是 | Dependency + Cycle Check |
 | D05 | Method Asset Import | TODO | 是 | md/txt/粘贴文本即可 |
 | D06 | Procedure Normalization | TODO | 是 | LLM → Structured JSON |
@@ -31,4 +31,23 @@ Traceability
 Checkpoint Pro
 Multi Worker
 Full Resource Governor
+```
+
+
+## D03 前置 Gate
+
+D03 只有在以下规范均存在且无冲突时才允许进入 `DOING`：
+
+```text
+00-global/03-核心领域模型.md
+00-global/04-全局接口与事件规范.md
+40-testing/D03-状态机测试矩阵.md
+```
+
+Coding Agent 发现状态定义不完整时必须：
+
+```text
+创建 Change Request
+→ D03 标记 BLOCKED / CHANGE_REQUIRED
+→ 等上游规范修订后恢复
 ```

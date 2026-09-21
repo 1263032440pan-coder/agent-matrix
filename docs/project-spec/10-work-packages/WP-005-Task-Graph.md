@@ -8,6 +8,8 @@
 
 ```text
 00-global/00-项目总览.md
+00-global/03-核心领域模型.md
+00-global/04-全局接口与事件规范.md
 00-global/05-开发约束与Agent规则.md
 20-tracking/RTM-需求追踪矩阵.md
 ```
@@ -43,6 +45,36 @@
 如发现必须修改，提交 Change Request。
 
 
+## TaskStatus 约束
+
+Task 状态机唯一事实源：
+
+```text
+00-global/03-核心领域模型.md
+```
+
+Task Graph Manager 只能通过 WP-002 提供的 `StateTransitionService`（或等价 Core FSM Service）请求 Task 状态变化，不得直接写 `Task.status`。
+
+特别冻结：
+
+```text
+HARD Dependency satisfied
+=
+upstream Task.status == ACCEPTED
+```
+
+以下状态均不得解锁下游 HARD Dependency：
+
+```text
+EXECUTION_DONE
+REWORK
+BLOCKED
+FAILED
+CANCELLED
+```
+
+资源不足 `DEFER_RESOURCE` 不改变 Task Graph，也不把 `READY` 改为 `BLOCKED`。
+
 ## 必须实现的 Graph Guard
 
 ```text
@@ -73,7 +105,12 @@ Task State Validation
 - [ ] 支持创建/更新/取消 Task
 - [ ] 支持依赖关系
 - [ ] 循环依赖被拒绝
-- [ ] 非法状态变更被拒绝
+- [ ] 非法状态变更被拒绝，判定标准严格引用 `03-核心领域模型.md`
+- [ ] HARD Dependency 只有上游 `ACCEPTED` 才视为满足
+- [ ] `EXECUTION_DONE` 不得解锁下游 Task
+- [ ] Task Graph Manager 不存在绕过 `StateTransitionService` 的直接状态写入
+- [ ] `ACCEPTED` / `CANCELLED` Task 不允许通过普通 Update API 回退状态
+- [ ] 完成 `40-testing/D03-状态机测试矩阵.md` 中 Task Graph 相关测试
 
 ## 8. Gate
 
