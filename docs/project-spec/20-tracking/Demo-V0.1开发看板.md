@@ -6,7 +6,7 @@
 | D02 | Project/Task/Artifact/Event | PASS | 是 | 17 实体 + migration + Repository + 24 tests |
 | D03 | Project State / Task FSM | PASS | 是 | FSM 115 tests + Ruff 0 errors |
 | D04 | Task Graph | PASS | 是 | 32 tests — CRUD + cycle detection + HARD dep only ACCEPTED |
-| D05 | Method Asset Import | TODO | 是 | md/txt/粘贴文本即可 |
+| D05 | Method Asset Import | PASS | 是 | 18 tests — file/text import + type classify + SHA256 dedup |
 | D06 | Procedure Normalization | TODO | 是 | LLM → Structured JSON |
 | D07 | Method Readiness | TODO | 是 | READY/PARTIAL/AMBIGUOUS/MISSING |
 | D08 | Gap Classification | TODO | 是 | Private/Method/Domain/Technical/Process |
