@@ -67,7 +67,7 @@ class Task(Base):
     name: Mapped[str] = mapped_column(String(256), nullable=False)
     task_type: Mapped[str] = mapped_column(String(64), nullable=False, default="generic")
     status: Mapped[TaskStatus] = mapped_column(
-        Enum(TaskStatus), nullable=False, default=TaskStatus.PENDING
+        Enum(TaskStatus), nullable=False, default=TaskStatus.CREATED
     )
     contract: Mapped[str | None] = mapped_column(Text, nullable=True)
     playbook_ref: Mapped[str | None] = mapped_column(String(512), nullable=True)
@@ -117,7 +117,7 @@ class TaskRun(Base):
     worker_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     attempt: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     status: Mapped[TaskStatus] = mapped_column(
-        Enum(TaskStatus), nullable=False, default=TaskStatus.DISPATCHED
+        Enum(TaskStatus), nullable=False, default=TaskStatus.RUNNING
     )
     result: Mapped[str | None] = mapped_column(Text, nullable=True)
     started_at: Mapped[datetime.datetime | None] = mapped_column(DateTime, nullable=True)

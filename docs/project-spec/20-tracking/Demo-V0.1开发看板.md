@@ -4,7 +4,7 @@
 |---|---|---|---|---|
 | D01 | 工程骨架 | PASS | 是 | Tauri 2 + FastAPI + SQLite WAL + Alembic + vitest + pytest |
 | D02 | Project/Task/Artifact/Event | PASS | 是 | 17 实体 + migration + Repository + 24 tests |
-| D03 | Project State / Task FSM | TODO | 是 | 前置：03 中 FSM 已冻结；验收：D03 状态机测试矩阵；EXECUTION_DONE ≠ ACCEPTED |
+| D03 | Project State / Task FSM | PASS | 是 | FSM 115 tests + Ruff 0 errors |
 | D04 | Task Graph | TODO | 是 | Dependency + Cycle Check |
 | D05 | Method Asset Import | TODO | 是 | md/txt/粘贴文本即可 |
 | D06 | Procedure Normalization | TODO | 是 | LLM → Structured JSON |
