@@ -151,3 +151,12 @@ class ReadinessStatus(str, enum.Enum):
     AMBIGUOUS = "AMBIGUOUS"
     CONFLICTED = "CONFLICTED"
     MISSING = "MISSING"
+
+
+class GapType(str, enum.Enum):
+    PRIVATE = "PRIVATE"
+    EXPLICITNESS = "EXPLICITNESS"
+    DOMAIN = "DOMAIN"
+    TECHNICAL = "TECHNICAL"
+    PROCESS = "PROCESS"
+    CAPABILITY = "CAPABILITY"

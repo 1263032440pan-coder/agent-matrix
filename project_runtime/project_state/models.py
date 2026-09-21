@@ -18,6 +18,7 @@ from project_runtime.project_state.enums import (
     DeliveryContractStatus,
     DeliveryItemStatus,
     DependencyType,
+    GapType,
     GateStatus,
     IssueSeverity,
     IssueStatus,
@@ -550,3 +551,33 @@ class ProjectReadinessAssessment(Base):
 
     project: Mapped["Project"] = relationship("Project")
     model: Mapped["ProjectProcedureModel"] = relationship("ProjectProcedureModel")
+
+
+# ---------------------------------------------------------------------------
+# 22. MethodGap (added D08)
+# ---------------------------------------------------------------------------
+
+
+class MethodGap(Base):
+    __tablename__ = "method_gap"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    assessment_id: Mapped[int] = mapped_column(
+        ForeignKey("project_readiness_assessment.id"), nullable=False
+    )
+    gap_type: Mapped[GapType] = mapped_column(
+        Enum(GapType), nullable=False, default=GapType.EXPLICITNESS
+    )
+    scope_ref: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    severity: Mapped[str] = mapped_column(String(32), nullable=False, default="MEDIUM")
+    resolution_strategy: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="OPEN")
+    source_refs: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+
+    assessment: Mapped["ProjectReadinessAssessment"] = relationship(
+        "ProjectReadinessAssessment"
+    )
