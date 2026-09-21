@@ -167,3 +167,53 @@ def test_extractor_unknown_is_default():
     extractor = KeywordExtractor()
     nodes = extractor.extract("# 标题\n没有结构化内容", "x.md")
     assert nodes[0]["acceptance_criteria"] == "UNKNOWN"
+
+
+# ── All 4 readiness states ────────────────────────────────────────────────
+
+
+def test_readiness_missing():
+    extractor = KeywordExtractor()
+    nodes = extractor.extract("# 空流程\n", "empty.md")
+    assert nodes[0]["readiness_status"] == "MISSING"
+
+
+def test_readiness_partial():
+    extractor = KeywordExtractor()
+    nodes = extractor.extract("# 部分流程\n输入: 需求\n活动: 编码", "partial.md")
+    assert nodes[0]["readiness_status"] == "PARTIAL"
+
+
+def test_readiness_ready():
+    extractor = KeywordExtractor()
+    text = (
+        "# 完整流程\n"
+        "输入: 需求文档\n"
+        "活动: 编写代码\n"
+        "输出: 可执行程序\n"
+        "角色: 工程师\n"
+        "依赖: 接口文档\n"
+        "验收: 通过测试\n"
+        "标准: 覆盖率80%\n"
+        "证据: 测试报告\n"
+        "约束: 内存<512MB\n"
+        "返工: 修复后重测\n"
+    )
+    nodes = extractor.extract(text, "full.md")
+    assert nodes[0]["readiness_status"] == "READY"
+
+
+def test_readiness_ambiguous():
+    extractor = KeywordExtractor()
+    nodes = extractor.extract("# 未定流程\n输入: 待定\n活动: TBD\n输出: 暂不明确", "ambig.md")
+    assert nodes[0]["readiness_status"] == "AMBIGUOUS"
+
+
+# ── D06 known limitations ─────────────────────────────────────────────────
+
+
+def test_conflict_marker_enum_exists():
+    """CONFLICTED enum exists but detection is not implemented yet (D07/D08)."""
+    from project_runtime.project_state.enums import ReadinessStatus
+
+    assert hasattr(ReadinessStatus, "CONFLICTED")

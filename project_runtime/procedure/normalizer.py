@@ -40,7 +40,8 @@ class KeywordExtractor:
     _SECTION_PATTERN = re.compile(r"^(#{1,3})\s+(.+)$", re.MULTILINE)
 
     _FIELD_KEYWORDS: dict[tuple[str, ...], str] = {
-        ("输入", "input", "前置", "依赖", "prerequisite"): "inputs",
+        ("输入", "input", "前置"): "inputs",
+        ("依赖", "dependency", "prerequisite"): "dependencies",
         ("活动", "activity", "步骤", "step", "action", "操作"): "activities",
         ("输出", "output", "产出", "产物", "result", "deliverable"): "outputs",
         ("角色", "role", "负责人", "owner", "who"): "roles",
@@ -50,6 +51,8 @@ class KeywordExtractor:
         ("约束", "constraint", "限制", "limit", "restriction"): "constraints",
         ("返工", "rework", "重做", "回退"): "rework_path",
     }
+
+    _AMBIGUOUS_MARKERS = ("待定", "TBD", "未定", "暂不明确", "?")
 
     def extract(self, text: str, source_name: str) -> list[dict]:
         # Split text by markdown headings
@@ -112,8 +115,19 @@ class KeywordExtractor:
         total = len(
             [k for k in node if k not in ("name", "workstream", "readiness_status", "source_ref")]
         )
+        # AMBIGUOUS check — any field contains ambiguous markers
+        has_ambiguous = any(
+            any(m in (v if isinstance(v, str) else "") for m in self._AMBIGUOUS_MARKERS)
+            for v in node.values()
+            if isinstance(v, str)
+        )
+
         if filled == 0:
             node["readiness_status"] = ReadinessStatus.MISSING.value
+        elif has_ambiguous:
+            node["readiness_status"] = ReadinessStatus.AMBIGUOUS.value
+        elif filled == total:
+            node["readiness_status"] = ReadinessStatus.READY.value
         elif filled < total // 2:
             node["readiness_status"] = ReadinessStatus.PARTIAL.value
         else:

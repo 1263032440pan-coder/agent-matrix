@@ -7,7 +7,7 @@
 | D03 | Project State / Task FSM | PASS | 是 | FSM 115 tests + Ruff 0 errors |
 | D04 | Task Graph | PASS | 是 | 32 tests — CRUD + cycle detection + HARD dep only ACCEPTED |
 | D05 | Method Asset Import | PASS | 是 | 18 tests — file/text import + type classify + SHA256 dedup |
-| D06 | Procedure Normalization | TODO | 是 | LLM → Structured JSON |
+| D06 | Procedure Normalization | PASS | 是 | V0.1 关键词抽取（11字段+UNKNOWN+溯源），LLMExtractor接口预留 |
 | D07 | Method Readiness | TODO | 是 | READY/PARTIAL/AMBIGUOUS/MISSING |
 | D08 | Gap Classification | TODO | 是 | Private/Method/Domain/Technical/Process |
 | D09 | Project Playbook | TODO | 是 | 保留 Provenance |
