@@ -9,8 +9,8 @@
 | D05 | Method Asset Import | PASS | 是 | 18 tests — file/text import + type classify + SHA256 dedup |
 | D06 | Procedure Normalization | PASS | 是 | V0.1 关键词抽取（11字段+UNKNOWN+溯源），LLMExtractor接口预留 |
 | D07 | Method Readiness | PASS | 是 | 6-dim assess + Gap生成 + 9 tests |
-| D08 | Gap Classification | PASS | 是 | 6 GapTypes + routing strategies + 7 tests |
-| D09 | Project Playbook | BLOCKED（D08追踪欠账，补齐后解除） | 是 | 保留 Provenance |
+| D08 | Gap Classification | PASS | 是 | V0.1 维度映射产出 2/6 类（EXPLICITNESS/PROCESS）+ 6类路由框架，四类待 LLM 阶段 |
+| D09 | Project Playbook | TODO | 是 | 保留 Provenance |
 | D10 | Dynamic Planner | TODO | 是 | Playbook → Task Graph |
 | D11 | Worker Adapter + 1 Worker | TODO | 是 | 只接一个真实 Worker |
 | D12 | Artifact 回传 | TODO | 是 | 文件真实落盘 |
