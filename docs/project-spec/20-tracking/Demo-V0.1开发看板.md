@@ -11,8 +11,8 @@
 | D07 | Method Readiness | PASS | 是 | 6-dim assess + Gap生成 + 9 tests |
 | D08 | Gap Classification | PASS | 是 | V0.1 维度映射产出 2/6 类（EXPLICITNESS/PROCESS）+ 6类路由框架，四类待 LLM 阶段 |
 | D09 | Project Playbook | PASS | 是 | V0.1 用户方法为主体 + Provenance + 8 tests |
-| D10 | Dynamic Planner | TODO | 是 | Playbook → Task Graph |
-| D11 | Worker Adapter + 1 Worker | TODO | 是 | 只接一个真实 Worker |
+| D10 | Dynamic Planner | PASS | 是 | Playbook→Task Graph + Authority尊重 + 8 tests |
+| D11 | Worker Adapter + 1 Worker | BLOCKED（D10追踪欠账，补齐后解除） | 是 | 只接一个真实 Worker |
 | D12 | Artifact 回传 | TODO | 是 | 文件真实落盘 |
 | D13 | Gate | TODO | 是 | 3 个基础 Validator |
 | D14 | Scheduler | TODO | 是 | READY → Dispatch |

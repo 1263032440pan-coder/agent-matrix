@@ -12,7 +12,7 @@ import logging
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from project_runtime.project_state.enums import DependencyType
-from project_runtime.project_state.fsm import StateTransitionService
+from project_runtime.project_state.fsm import InvalidStateTransitionError
 from project_runtime.project_state.models import ProjectPlaybook, Task
 from project_runtime.task_graph.manager import CreateTaskRequest, TaskGraphManager
 
@@ -37,7 +37,6 @@ class DynamicPlanner:
     def __init__(self, session: AsyncSession):
         self._session = session
         self._mgr = TaskGraphManager(session)
-        self._fsm = StateTransitionService(session)
 
     async def plan(self, playbook: ProjectPlaybook) -> list[Task]:
         """Generate a Task Graph from a ProjectPlaybook."""
@@ -92,8 +91,8 @@ class DynamicPlanner:
         if authority == _MANDATORY:
             try:
                 await self._mgr.promote_to_ready(task.id)
-            except Exception:
-                pass  # may have deps not yet satisfied
+            except (ValueError, InvalidStateTransitionError):
+                pass  # dependencies not yet satisfied
 
         await self._session.flush()
         return task
@@ -115,6 +114,14 @@ class DynamicPlanner:
             for dep_name in dep_names:
                 upstream = task_map.get(dep_name)
                 if upstream is None:
+                    logger.warning(
+                        "Unresolved dependency: task=%s depends_on=%s not found in workstreams",
+                        task.id, dep_name,
+                    )
+                    # Mark unresolved dependency in playbook_ref
+                    ref = json.loads(task.playbook_ref or "{}")
+                    ref.setdefault("unresolved_dependencies", []).append(dep_name)
+                    task.playbook_ref = json.dumps(ref)
                     continue
                 try:
                     await self._mgr.add_dependency(

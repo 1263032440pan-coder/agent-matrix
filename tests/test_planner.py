@@ -105,6 +105,27 @@ async def test_dependencies_created(dbsession, project):
     assert downstream is not None
     assert upstream is not None
 
+    # Q1: assert actual TaskDependency record exists
+    from project_runtime.task_graph.manager import TaskGraphManager
+    mgr = TaskGraphManager(dbsession)
+    deps = await mgr.get_dependencies(downstream.id)
+    assert any(d.depends_on_id == upstream.id for d in deps)
+
+
+@pytest.mark.asyncio
+async def test_no_dependency_when_unknown(dbsession, project):
+    """Workstream with UNKNOWN dependency text should produce no TaskDependency."""
+    playbook = await _build_playbook(
+        dbsession, project, "# 独立任务\n输入: X\n活动: Y\n依赖: UNKNOWN"
+    )
+    planner = DynamicPlanner(dbsession)
+    tasks = await planner.plan(playbook)
+    assert len(tasks) == 1
+    from project_runtime.task_graph.manager import TaskGraphManager
+    mgr = TaskGraphManager(dbsession)
+    deps = await mgr.get_dependencies(tasks[0].id)
+    assert len(deps) == 0
+
 
 # ════════════════════════════════════════════════════════════════════════════
 # No skill needed
