@@ -4,7 +4,7 @@ import logging
 import sys
 from pathlib import Path
 
-from runtime.infrastructure.config import settings
+from infrastructure.config import settings
 
 
 def setup_logging() -> None:

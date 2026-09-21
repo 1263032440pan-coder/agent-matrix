@@ -8,9 +8,9 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 
 # Ensure the project root is on sys.path for imports
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from runtime.infrastructure.config import settings
+from infrastructure.config import settings
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     # Project root (for resolving relative paths)
     @property
     def project_root(self) -> Path:
-        return Path(__file__).resolve().parent.parent.parent.parent
+        return Path(__file__).resolve().parent.parent
 
     @property
     def db_url(self) -> str:

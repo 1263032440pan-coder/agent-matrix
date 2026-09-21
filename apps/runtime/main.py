@@ -4,9 +4,9 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from runtime.infrastructure.config import settings
-from runtime.infrastructure.database import check_db
-from runtime.infrastructure.logging import setup_logging
+from infrastructure.config import settings
+from infrastructure.database import check_db
+from infrastructure.logging import setup_logging
 
 
 @asynccontextmanager
@@ -32,7 +32,7 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(
-        "runtime.main:app",
+        "apps.runtime.main:app",
         host=settings.host,
         port=settings.port,
         reload=True,
