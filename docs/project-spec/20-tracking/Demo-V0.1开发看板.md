@@ -8,7 +8,7 @@
 | D04 | Task Graph | PASS | 是 | 32 tests — CRUD + cycle detection + HARD dep only ACCEPTED |
 | D05 | Method Asset Import | PASS | 是 | 18 tests — file/text import + type classify + SHA256 dedup |
 | D06 | Procedure Normalization | PASS | 是 | V0.1 关键词抽取（11字段+UNKNOWN+溯源），LLMExtractor接口预留 |
-| D07 | Method Readiness | TODO | 是 | READY/PARTIAL/AMBIGUOUS/MISSING |
+| D07 | Method Readiness | PASS | 是 | 6-dim assess + Gap生成 + 9 tests |
 | D08 | Gap Classification | TODO | 是 | Private/Method/Domain/Technical/Process |
 | D09 | Project Playbook | TODO | 是 | 保留 Provenance |
 | D10 | Dynamic Planner | TODO | 是 | Playbook → Task Graph |

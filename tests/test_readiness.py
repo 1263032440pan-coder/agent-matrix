@@ -151,3 +151,57 @@ async def test_execution_capability_is_null(dbsession, project):
     assessor = MethodReadinessAssessor(dbsession)
     assessment = await assessor.assess(project.id, model.id)
     assert assessment.execution_capability_readiness is None
+
+
+# ── Gap generation (Q1) ────────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_gaps_generated_for_incomplete_nodes(dbsession, project):
+    model = await _setup_with_text(dbsession, project, "# 不完整\n输入: 需求")
+    assessor = MethodReadinessAssessor(dbsession)
+    assessment = await assessor.assess(project.id, model.id)
+    gaps_data = json.loads(assessment.gaps or "{}")
+    method_gaps = gaps_data.get("method_gaps", [])
+    assert len(method_gaps) > 0
+    # Each gap should have required fields
+    gap = method_gaps[0]
+    for field in ("node_id", "dimension", "gap_type", "reason", "source_ref"):
+        assert field in gap
+
+
+@pytest.mark.asyncio
+async def test_gaps_empty_for_fully_covered(dbsession, project):
+    text = (
+        "# 完整\n输入: A\n活动: B\n输出: C\n角色: D\n"
+        "依赖: E\n验收: F\n标准: G\n证据: H\n约束: I\n返工: J"
+    )
+    model = await _setup_with_text(dbsession, project, text)
+    assessor = MethodReadinessAssessor(dbsession)
+    assessment = await assessor.assess(project.id, model.id)
+    gaps_data = json.loads(assessment.gaps or "{}")
+    method_gaps = gaps_data.get("method_gaps", [])
+    # All 10 fields filled → all dimensions COVERED → no gaps
+    assert len(method_gaps) == 0
+
+
+# ── AMBIGUOUS priority over PARTIAL (Q4) ───────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_ambiguous_overrides_partial(dbsession, project):
+    importer = MethodAssetImporter(dbsession)
+    await importer.import_text(
+        project.id,
+        "# READY\n输入: A\n活动: B\n输出: C\n角色: D\n依赖: E\n"
+        "验收: F\n标准: G\n证据: H\n约束: I\n返工: J"
+    )
+    await importer.import_text(project.id, "# AMBIG\n输入: 待定\n活动: TBD")
+    normalizer = ProcedureNormalizer(dbsession)
+    model = await normalizer.normalize(project.id)
+    assessor = MethodReadinessAssessor(dbsession)
+    assessment = await assessor.assess(project.id, model.id)
+    summary = json.loads(assessment.coverage_summary or "{}")
+    # READY + AMBIGUOUS → overall AMBIGUOUS
+    assert summary["ambiguous"] >= 1
+    assert summary["overall_status"] == "AMBIGUOUS"

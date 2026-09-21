@@ -72,8 +72,9 @@ class MethodReadinessAssessor:
             )
 
         # Project-level summary
+        gaps = self._build_gaps(results)
         summary = self._build_summary(results)
-        assessment = await self._create_assessment(project_id, model_id, results, summary)
+        assessment = await self._create_assessment(project_id, model_id, results, gaps, summary)
 
         # Store per-node coverage summary
         assessment.coverage_summary = json.dumps(summary)
@@ -104,8 +105,6 @@ class MethodReadinessAssessor:
             overall = "MISSING"
         elif ambiguous_count > 0:
             overall = "AMBIGUOUS"
-        elif partial_count > 0 or ready_count < total_nodes:
-            overall = "PARTIAL"
         else:
             overall = "PARTIAL"
 
@@ -119,15 +118,54 @@ class MethodReadinessAssessor:
             "avg_dimension_coverage": round(avg_coverage, 2),
         }
 
+    def _build_gaps(self, results: list[dict]) -> list[dict]:
+        """Generate structured method gaps from dimension analysis (Plan A — V0.1)."""
+        gaps: list[dict] = []
+        for node in results:
+            for dim_name, dim_data in node["dimensions"].items():
+                if dim_data["status"] in ("MISSING", "PARTIAL"):
+                    # Determine gap type via simplified dimension → type mapping
+                    gap_type = self._dimension_to_gap_type(dim_name)
+                    # Collect fields that are UNKNOWN
+                    missing_fields = [
+                        f for f, v in dim_data["fields"].items() if v == "UNKNOWN"
+                    ]
+                    gaps.append({
+                        "node_id": node["node_id"],
+                        "node_name": node["node_name"],
+                        "dimension": dim_name,
+                        "dimension_status": dim_data["status"],
+                        "gap_type": gap_type,
+                        "reason": (
+                            f"Dimension '{dim_name}' is {dim_data['status']}: "
+                            f"{', '.join(missing_fields) if missing_fields else 'field undefined'}"
+                        ),
+                        "source_ref": f"procedure_node:{node['node_id']}",
+                    })
+        return gaps
+
+    @staticmethod
+    def _dimension_to_gap_type(dim_name: str) -> str:
+        """Simplified dimension → gap type mapping for V0.1."""
+        return {
+            "scope_coverage": "EXPLICITNESS",
+            "action_explicitness": "EXPLICITNESS",
+            "artifact_definition": "EXPLICITNESS",
+            "acceptance_definition": "EXPLICITNESS",
+            "dependency_transition": "PROCESS",
+            "constraint_authority": "PROCESS",
+        }.get(dim_name, "EXPLICITNESS")
+
     async def _create_assessment(
-        self, project_id: int, model_id: int, results: list[dict], summary: dict | None = None
+        self, project_id: int, model_id: int, results: list[dict],
+        gaps: list[dict] | None = None, summary: dict | None = None,
     ) -> ProjectReadinessAssessment:
         assessment = ProjectReadinessAssessment(
             project_id=project_id,
             model_id=model_id,
             method_readiness=json.dumps(results),
             execution_capability_readiness=None,  # D08
-            gaps=json.dumps({"method_gaps": [], "execution_gaps": []}),
+            gaps=json.dumps({"method_gaps": gaps or [], "execution_gaps": []}),
             coverage_summary=json.dumps(summary) if summary else None,
         )
         self._session.add(assessment)
