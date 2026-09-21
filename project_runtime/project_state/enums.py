@@ -143,3 +143,11 @@ class MethodAssetAuthority(str, enum.Enum):
     RECOMMENDED = "RECOMMENDED"
     OPTIONAL = "OPTIONAL"
     PROPOSED = "PROPOSED"
+
+
+class ReadinessStatus(str, enum.Enum):
+    READY = "READY"
+    PARTIAL = "PARTIAL"
+    AMBIGUOUS = "AMBIGUOUS"
+    CONFLICTED = "CONFLICTED"
+    MISSING = "MISSING"

@@ -25,6 +25,7 @@ from project_runtime.project_state.enums import (
     ManualActionType,
     MethodAssetAuthority,
     ProjectStatus,
+    ReadinessStatus,
     TaskStatus,
     WorkerHealth,
     WorkerInstanceStatus,
@@ -468,3 +469,58 @@ class MethodAsset(Base):
     )
 
     project: Mapped["Project"] = relationship("Project")
+
+
+# ---------------------------------------------------------------------------
+# 19. ProjectProcedureModel (added D06)
+# ---------------------------------------------------------------------------
+
+
+class ProjectProcedureModel(Base):
+    __tablename__ = "project_procedure_model"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("project.id"), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    source_map: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+
+    project: Mapped["Project"] = relationship("Project")
+
+
+# ---------------------------------------------------------------------------
+# 20. ProcedureNode (added D06)
+# ---------------------------------------------------------------------------
+
+
+class ProcedureNode(Base):
+    __tablename__ = "procedure_node"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    model_id: Mapped[int] = mapped_column(
+        ForeignKey("project_procedure_model.id"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(512), nullable=False)
+    workstream: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    inputs: Mapped[str | None] = mapped_column(Text, nullable=True)
+    activities: Mapped[str | None] = mapped_column(Text, nullable=True)
+    outputs: Mapped[str | None] = mapped_column(Text, nullable=True)
+    roles: Mapped[str | None] = mapped_column(Text, nullable=True)
+    dependencies: Mapped[str | None] = mapped_column(Text, nullable=True)
+    gate: Mapped[str | None] = mapped_column(Text, nullable=True)
+    acceptance_criteria: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evidence_requirements: Mapped[str | None] = mapped_column(Text, nullable=True)
+    constraints: Mapped[str | None] = mapped_column(Text, nullable=True)
+    rework_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    readiness_status: Mapped[ReadinessStatus] = mapped_column(
+        Enum(ReadinessStatus), nullable=False, default=ReadinessStatus.MISSING
+    )
+    source_ref: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    provenance: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+
+    model: Mapped["ProjectProcedureModel"] = relationship("ProjectProcedureModel")
