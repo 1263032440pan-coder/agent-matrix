@@ -47,8 +47,10 @@ async def create_project(
         status=ProjectStatus.CREATED,
     )
     session.add(project)
+    await session.flush()
+    pid, pname = project.id, project.name
     await session.commit()
-    return {"id": project.id, "name": project.name}
+    return {"id": pid, "name": pname}
 
 
 @router.post("/{project_id}/method-assets/upload", status_code=201)
@@ -73,8 +75,10 @@ async def upload_method_asset(
     try:
         importer = MethodAssetImporter(session)
         asset = await importer.import_file(project_id, tmp_path)
+        asset_id = asset.id
+        asset_hash = asset.content_hash
         await session.commit()
-        return {"id": asset.id, "content_hash": asset.content_hash}
+        return {"id": asset_id, "content_hash": asset_hash}
     finally:
         Path(tmp_path).unlink(missing_ok=True)
 
