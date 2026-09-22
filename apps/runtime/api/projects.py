@@ -119,16 +119,18 @@ async def execute_project(project_id: int, session: AsyncSession = Depends(get_s
             except Exception:
                 pass
 
-    try:
-        decisions = await scheduler.dispatch_once(project_id)
-        await session.commit()
-    except Exception:
-        await session.rollback()
-        # Single retry after rollback (SQLite lock contention with polling)
-        decisions = await scheduler.dispatch_once(project_id)
-        await session.commit()
+    decisions = await scheduler.dispatch_once(project_id)
+    await session.commit()
+
+    manual_pending = sum(1 for d in decisions if d.action == "MANUAL_PENDING")
     return {
         "dispatched": sum(1 for d in decisions if d.action == "DISPATCHED"),
+        "manual_pending": manual_pending,
+        "hint": (
+            "MANUAL 模式：已创建 ManualAction 等待确认；切换到 FULL_AUTO 或确认后执行"
+            if manual_pending
+            else ""
+        ),
         "decisions": [
             {"task_id": d.task_id, "action": d.action, "detail": d.detail}
             for d in decisions
@@ -149,9 +151,10 @@ async def run_planning(project_id: int, session: AsyncSession = Depends(get_sess
     from project_runtime.procedure.normalizer import ProcedureNormalizer
     from project_runtime.readiness.assessor import MethodReadinessAssessor
 
-    model = await ProcedureNormalizer(session).normalize(project_id)
+    # Batch 3: LLM-first extraction + semantic gap classification when configured
+    model = await ProcedureNormalizer.with_llm(session).normalize(project_id)
     assessment = await MethodReadinessAssessor(session).assess(project_id, model.id)
-    gaps = await GapClassifier(session).classify(assessment.id)
+    gaps = await GapClassifier.with_llm(session).classify(assessment.id)
     playbook = await PlaybookBuilder(session).build(project_id)
     tasks = await DynamicPlanner(session).plan(playbook)
     result = {

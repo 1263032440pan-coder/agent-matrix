@@ -87,7 +87,12 @@ export async function runPlanning(
 
 export async function executeProject(
   projectId: number
-): Promise<{ dispatched: number; decisions: Array<{ task_id: number; action: string }> }> {
+): Promise<{
+  dispatched: number;
+  manual_pending: number;
+  hint: string;
+  decisions: Array<{ task_id: number; action: string }>;
+}> {
   const resp = await fetch(`${API_BASE}/api/projects/${projectId}/execute`, {
     method: 'POST',
   });

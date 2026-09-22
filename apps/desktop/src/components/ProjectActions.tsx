@@ -63,7 +63,11 @@ export function ProjectActions({
     setMessage('执行中（LLM 调用可能需要几十秒）…');
     try {
       const r = await executeProject(projectId);
-      setMessage(`执行完成：${r.dispatched} 个任务已调度`);
+      setMessage(
+        r.dispatched > 0
+          ? `执行完成：${r.dispatched} 个任务已调度`
+          : r.hint || '没有可调度的任务'
+      );
       onImported();
     } catch (e) {
       setMessage(String(e));
