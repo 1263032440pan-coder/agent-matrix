@@ -15,9 +15,9 @@
 | D11 | Worker Adapter + 1 Worker | PASS | 是 | MockWorker V0.1 + 红线保护 + 5 tests |
 | D12 | Artifact 回传 | PASS | 是 | 落盘 + SHA256 + 版本 + 管线接线 TaskRun/Artifact |
 | D13 | Gate | PASS | 是 | GateCore + File 真实校验(SHA256)/Build/Test V0.1占位 + 4结果(FAIL/BLOCKED/NEED_APPROVAL均落REWORK) + actor防护(FSM强制) + 7 tests |
-| D14 | Scheduler | PASS | 是 | READY→Dispatch + 并发上限 + FULL_AUTO/MANUAL + ManualAction + 7 tests（Resource Governor V0.1 内联恒ALLOW，D15 真实化） |
-| D15 | Resource Governor Lite | TODO | 是 | max_workers=1 |
-| D16 | Minimal Extension Registry | PASS | 是 | DeliveryContract 版本 + required items + Artifact 映射 + missing items + 6 tests（Completion 公式 D18 E2E 组合） |
+| D14 | Scheduler | PASS | 是 | READY→Dispatch + ResourceGovernor 集成 + FULL_AUTO/MANUAL + 7 tests |
+| D15 | Resource Governor Lite | PASS | 是 | ResourceGovernor 组件 + ALLOW/DEFER_RESOURCE + 绝不FAIL + 4 tests（Profiles Demo后，WP-036 PARTIAL） |
+| D16 | Minimal Extension Registry | TODO | 是 | in-process 即可（未做；WP-016 DeliveryContract 提前交付，见变更记录） |
 | D17 | Desktop UI | TODO | 是 | 单 Project Dashboard |
 | D18 | E2E Demo | TODO | 是 | 全链路真实跑通 |
 

@@ -14,7 +14,7 @@ import json
 import logging
 from dataclasses import dataclass
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from project_runtime.project_state.enums import (
@@ -24,6 +24,10 @@ from project_runtime.project_state.enums import (
     TaskStatus,
 )
 from project_runtime.project_state.models import ManualAction, Project, Task
+from project_runtime.resource_governor.governor import (
+    ResourceDecision,
+    ResourceGovernor,
+)
 from project_runtime.worker.adapter import WorkerAdapter, WorkPackage
 
 logger = logging.getLogger(__name__)
@@ -47,7 +51,7 @@ class Scheduler:
     ):
         self._session = session
         self._worker = worker
-        self._max_workers = max_workers
+        self._governor = ResourceGovernor(session, max_workers=max_workers)
 
     async def dispatch_once(self, project_id: int) -> list[DispatchDecision]:
         """One scheduling pass over a project's READY tasks."""
@@ -56,10 +60,6 @@ class Scheduler:
             raise ValueError(f"Project not found: {project_id}")
 
         decisions: list[DispatchDecision] = []
-
-        # Current running count (concurrency control)
-        running_count = await self._running_count(project_id)
-        capacity = max(0, self._max_workers - running_count)
 
         # Ready candidates
         stmt = (
@@ -70,9 +70,13 @@ class Scheduler:
         ready_tasks = list((await self._session.execute(stmt)).scalars().all())
 
         for task in ready_tasks:
-            if capacity <= 0:
+            # D15: dispatch gated by ResourceGovernor decision
+            decision = await self._governor.evaluate(project_id)
+            if decision == ResourceDecision.DEFER_RESOURCE:
                 decisions.append(
-                    DispatchDecision(task.id, "SKIP_NO_CAPACITY", "max_workers reached")
+                    DispatchDecision(
+                        task.id, "SKIP_NO_CAPACITY", "DEFER_RESOURCE: max_workers reached"
+                    )
                 )
                 continue
 
@@ -103,7 +107,6 @@ class Scheduler:
             await self._worker.assign(
                 WorkPackage(task_id=task.id, task_name=task.name)
             )
-            capacity -= 1
             decisions.append(DispatchDecision(task.id, "DISPATCHED"))
 
         await self._session.flush()
@@ -126,9 +129,3 @@ class Scheduler:
         )
         await self._session.flush()
         return DispatchDecision(task.id, "DISPATCHED", f"manual action {action_id}")
-
-    async def _running_count(self, project_id: int) -> int:
-        stmt = select(func.count(Task.id)).where(
-            Task.project_id == project_id, Task.status == TaskStatus.RUNNING
-        )
-        return (await self._session.execute(stmt)).scalar_one()
