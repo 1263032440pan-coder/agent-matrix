@@ -9,6 +9,13 @@ from project_runtime.skills.enums import (
 )
 from project_runtime.skills.models import SkillBinding, SkillDefinition
 from project_runtime.skills.registry import SkillRegistry, SkillRegistryError
+from project_runtime.skills.resolver import (
+    ResolutionReason,
+    ResolutionStatus,
+    SkillRequirement,
+    SkillResolutionResult,
+    SkillResolver,
+)
 
 __all__ = [
     "SkillRegistry",
@@ -21,4 +28,9 @@ __all__ = [
     "SkillSource",
     "SkillStatus",
     "SkillScopeType",
+    "SkillResolver",
+    "SkillRequirement",
+    "SkillResolutionResult",
+    "ResolutionStatus",
+    "ResolutionReason",
 ]
