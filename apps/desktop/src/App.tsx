@@ -9,6 +9,7 @@ function App() {
   const [projectId, setProjectId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [busy, setBusy] = useState(false);
 
   const reload = useCallback(() => {
     listProjects()
@@ -36,10 +37,13 @@ function App() {
           setRefreshKey((k) => k + 1);
         }}
         onImported={() => setRefreshKey((k) => k + 1)}
+        onBusyChange={setBusy}
       />
       {error && <div role="alert">{error}</div>}
       {projectId === null && !error && <div>暂无项目 — 请先创建</div>}
-      {projectId !== null && <Dashboard key={refreshKey} projectId={projectId} />}
+      {projectId !== null && (
+        <Dashboard key={refreshKey} projectId={projectId} paused={busy} />
+      )}
     </div>
   );
 }

@@ -5,10 +5,12 @@ export function ProjectActions({
   projectId,
   onCreated,
   onImported,
+  onBusyChange,
 }: {
   projectId: number | null;
   onCreated: (id: number) => void;
   onImported: () => void;
+  onBusyChange?: (busy: boolean) => void;
 }) {
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
@@ -46,6 +48,7 @@ export function ProjectActions({
   const doPlan = async () => {
     if (projectId === null) return;
     setBusy(true);
+    onBusyChange?.(true);
     try {
       const r = await runPlanning(projectId);
       setMessage(`规划完成：${r.tasks} 个任务 / ${r.gaps} 个 Gap`);
@@ -54,12 +57,14 @@ export function ProjectActions({
       setMessage(String(e));
     } finally {
       setBusy(false);
+      onBusyChange?.(false);
     }
   };
 
   const doExecute = async () => {
     if (projectId === null) return;
     setBusy(true);
+    onBusyChange?.(true);
     setMessage('执行中（LLM 调用可能需要几十秒）…');
     try {
       const r = await executeProject(projectId);
@@ -73,6 +78,7 @@ export function ProjectActions({
       setMessage(String(e));
     } finally {
       setBusy(false);
+      onBusyChange?.(false);
     }
   };
 

@@ -152,20 +152,30 @@ async def run_planning(project_id: int, session: AsyncSession = Depends(get_sess
     from project_runtime.readiness.assessor import MethodReadinessAssessor
 
     # Batch 3: LLM-first extraction + semantic gap classification when configured
-    model = await ProcedureNormalizer.with_llm(session).normalize(project_id)
-    assessment = await MethodReadinessAssessor(session).assess(project_id, model.id)
-    gaps = await GapClassifier.with_llm(session).classify(assessment.id)
-    playbook = await PlaybookBuilder(session).build(project_id)
-    tasks = await DynamicPlanner(session).plan(playbook)
-    result = {
-        "model_id": model.id,
-        "assessment_id": assessment.id,
-        "gaps": len(gaps),
-        "playbook_id": playbook.id,
-        "tasks": len(tasks),
-    }
-    await session.commit()
-    return result
+    async def _run():
+        model = await ProcedureNormalizer.with_llm(session).normalize(project_id)
+        assessment = await MethodReadinessAssessor(session).assess(project_id, model.id)
+        gaps = await GapClassifier.with_llm(session).classify(assessment.id)
+        playbook = await PlaybookBuilder(session).build(project_id)
+        tasks = await DynamicPlanner(session).plan(playbook)
+        return {
+            "model_id": model.id,
+            "assessment_id": assessment.id,
+            "gaps": len(gaps),
+            "playbook_id": playbook.id,
+            "tasks": len(tasks),
+        }
+
+    # SQLite lock contention with dashboard polling: retry once on lock error
+    for attempt in range(2):
+        try:
+            result = await _run()
+            await session.commit()
+            return result
+        except Exception:
+            await session.rollback()
+            if attempt == 1:
+                raise
 
 
 @router.get("")

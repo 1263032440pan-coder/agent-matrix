@@ -149,12 +149,13 @@ export function TaskGraphView({
   );
 }
 
-export function Dashboard({ projectId }: { projectId: number }) {
+export function Dashboard({ projectId, paused }: { projectId: number; paused?: boolean }) {
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selectedTask, setSelectedTask] = useState<number | null>(null);
 
   useEffect(() => {
+    if (paused) return; // plan/execute in flight — don't contend for SQLite lock
     let cancelled = false;
     const load = () =>
       fetchDashboard(projectId)
@@ -164,7 +165,7 @@ export function Dashboard({ projectId }: { projectId: number }) {
           if (!cancelled && !data) setError(String(e));
         });
     load();
-    const timer = setInterval(load, 3000); // V0.1 polling (no event engine)
+    const timer = setInterval(load, 10000); // 10s polling (SQLite lock contention)
     return () => {
       cancelled = true;
       clearInterval(timer);
