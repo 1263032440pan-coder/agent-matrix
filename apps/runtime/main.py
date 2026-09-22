@@ -4,6 +4,7 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from apps.runtime.api import projects_router
 from infrastructure.config import settings
@@ -55,6 +56,13 @@ app = FastAPI(
     title="Project Autonomous Agent",
     version="0.1.0",
     lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173", "tauri://localhost"],
+    allow_methods=["GET"],
+    allow_headers=["*"],
 )
 
 app.include_router(projects_router)
