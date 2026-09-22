@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import './App.css';
 import { listProjects } from './api';
 import { Dashboard } from './components/Dashboard';
+import { LLMSettingsCard } from './components/LLMSettingsCard';
 import { ProjectActions } from './components/ProjectActions';
 
 function App() {
@@ -27,6 +28,7 @@ function App() {
 
   return (
     <div style={{ maxWidth: 1200, margin: '0 auto' }}>
+      <LLMSettingsCard />
       <ProjectActions
         projectId={projectId}
         onCreated={(id) => {

@@ -74,3 +74,44 @@ export async function uploadMethodAsset(
   if (!resp.ok) throw new Error(`Upload failed: ${resp.status}`);
   return resp.json();
 }
+
+export interface LLMConfig {
+  base_url: string;
+  model: string;
+  api_key_set?: boolean;
+  api_key_preview?: string;
+}
+
+export async function getLLMSettings(): Promise<LLMConfig> {
+  const resp = await fetch(`${API_BASE}/api/settings/llm`);
+  if (!resp.ok) throw new Error(`LLM settings fetch failed: ${resp.status}`);
+  return resp.json();
+}
+
+export async function saveLLMSettings(cfg: {
+  base_url: string;
+  model: string;
+  api_key?: string;
+}): Promise<LLMConfig> {
+  const resp = await fetch(`${API_BASE}/api/settings/llm`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ api_key: '', ...cfg }),
+  });
+  if (!resp.ok) throw new Error(`LLM settings save failed: ${resp.status}`);
+  return resp.json();
+}
+
+export async function testLLMConnection(cfg: {
+  base_url: string;
+  model: string;
+  api_key?: string;
+}): Promise<{ ok: boolean; sample?: string; error?: string }> {
+  const resp = await fetch(`${API_BASE}/api/settings/llm/test`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ api_key: '', ...cfg }),
+  });
+  if (!resp.ok) throw new Error(`LLM test failed: ${resp.status}`);
+  return resp.json();
+}
