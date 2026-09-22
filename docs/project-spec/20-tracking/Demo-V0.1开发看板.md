@@ -18,7 +18,7 @@
 | D14 | Scheduler | PASS | 是 | READY→Dispatch + ResourceGovernor 集成 + FULL_AUTO/MANUAL + 7 tests |
 | D15 | Resource Governor Lite | PASS | 是 | ResourceGovernor 组件 + ALLOW/DEFER_RESOURCE + 绝不FAIL + 4 tests（Profiles Demo后，WP-036 PARTIAL） |
 | D16 | Minimal Extension Registry | PASS | 是 | in-process Registry + 7 CapabilityType + 4 Permission(禁DIRECT_STATE_MUTATE) + 优先级/enable + 统一异常 + 9 tests |
-| D17 | Desktop UI | TODO | 是 | 单 Project Dashboard |
+| D17 | Desktop UI | PASS | 是 | Dashboard API（只读聚合）+ React Dashboard（轮询3s）+ vitest 2 + pytest 3（事件推送 WP-011 Demo 后，创建/导入 UI D18 E2E） |
 | D18 | E2E Demo | TODO | 是 | 全链路真实跑通 |
 
 ## Demo 后再做

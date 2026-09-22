@@ -4,6 +4,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from apps.runtime.api import projects_router
 from infrastructure.config import settings
 from infrastructure.database import check_db
 from infrastructure.logging import setup_logging
@@ -21,6 +22,8 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+app.include_router(projects_router)
 
 
 @app.get("/health")
