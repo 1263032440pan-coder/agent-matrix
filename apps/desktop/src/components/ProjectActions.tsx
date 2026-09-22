@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { createProject, runPlanning, uploadMethodAsset } from '../api';
+import { createProject, executeProject, runPlanning, uploadMethodAsset } from '../api';
 
 export function ProjectActions({
   projectId,
@@ -57,6 +57,21 @@ export function ProjectActions({
     }
   };
 
+  const doExecute = async () => {
+    if (projectId === null) return;
+    setBusy(true);
+    setMessage('执行中（LLM 调用可能需要几十秒）…');
+    try {
+      const r = await executeProject(projectId);
+      setMessage(`执行完成：${r.dispatched} 个任务已调度`);
+      onImported();
+    } catch (e) {
+      setMessage(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div
       data-testid="project-actions"
@@ -101,6 +116,13 @@ export function ProjectActions({
         style={{ padding: '6px 14px' }}
       >
         生成计划
+      </button>
+      <button
+        onClick={doExecute}
+        disabled={busy || projectId === null}
+        style={{ padding: '6px 14px' }}
+      >
+        执行项目
       </button>
       {message && <span style={{ color: '#555', fontSize: 13 }}>{message}</span>}
     </div>

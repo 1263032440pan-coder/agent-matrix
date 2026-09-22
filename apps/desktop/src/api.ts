@@ -85,6 +85,16 @@ export async function runPlanning(
   return resp.json();
 }
 
+export async function executeProject(
+  projectId: number
+): Promise<{ dispatched: number; decisions: Array<{ task_id: number; action: string }> }> {
+  const resp = await fetch(`${API_BASE}/api/projects/${projectId}/execute`, {
+    method: 'POST',
+  });
+  if (!resp.ok) throw new Error(`Execute failed: ${resp.status}`);
+  return resp.json();
+}
+
 export interface LLMConfig {
   base_url: string;
   model: string;

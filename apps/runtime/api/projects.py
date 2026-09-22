@@ -83,6 +83,50 @@ async def upload_method_asset(
         Path(tmp_path).unlink(missing_ok=True)
 
 
+@router.post("/{project_id}/execute", status_code=200)
+async def execute_project(project_id: int, session: AsyncSession = Depends(get_session)):
+    """Dispatch READY tasks via Scheduler + LLMWorker (real LLM execution)."""
+    project = await session.get(Project, project_id)
+    if project is None:
+        raise HTTPException(404, "Project not found")
+
+    from project_runtime.artifact.manager import ArtifactManager
+    from project_runtime.scheduler.scheduler import Scheduler
+    from project_runtime.worker.llm_worker import LLMWorkerAdapter
+
+    artifact_mgr = ArtifactManager(session, workspace_root=f"data/tasks/{project_id}")
+    worker = LLMWorkerAdapter(session, artifact_mgr=artifact_mgr)
+    scheduler = Scheduler(session, worker=worker, max_workers=1)
+
+    # Promote eligible tasks to READY first
+    from project_runtime.project_state.enums import TaskStatus
+
+    tasks = (
+        (await session.execute(select(Task).where(Task.project_id == project_id)))
+        .scalars()
+        .all()
+    )
+    from project_runtime.task_graph.manager import TaskGraphManager
+
+    mgr = TaskGraphManager(session)
+    for t in tasks:
+        if t.status == TaskStatus.CREATED:
+            try:
+                await mgr.promote_to_ready(t.id)
+            except Exception:
+                pass
+
+    decisions = await scheduler.dispatch_once(project_id)
+    await session.commit()
+    return {
+        "dispatched": sum(1 for d in decisions if d.action == "DISPATCHED"),
+        "decisions": [
+            {"task_id": d.task_id, "action": d.action, "detail": d.detail}
+            for d in decisions
+        ],
+    }
+
+
 @router.post("/{project_id}/plan", status_code=200)
 async def run_planning(project_id: int, session: AsyncSession = Depends(get_session)):
     """Run D06→D10 chain: normalize → assess → classify → build → plan."""

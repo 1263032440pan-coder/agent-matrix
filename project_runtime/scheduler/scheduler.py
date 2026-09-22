@@ -48,9 +48,17 @@ class Scheduler:
         session: AsyncSession,
         worker: WorkerAdapter | None = None,
         max_workers: int = 1,
+        use_llm_worker: bool = False,
     ):
         self._session = session
-        self._worker = worker
+        if worker is not None:
+            self._worker = worker
+        elif use_llm_worker:
+            from project_runtime.worker.llm_worker import LLMWorkerAdapter
+
+            self._worker = LLMWorkerAdapter(session)
+        else:
+            self._worker = None
         self._governor = ResourceGovernor(session, max_workers=max_workers)
 
     async def dispatch_once(self, project_id: int) -> list[DispatchDecision]:
