@@ -24,7 +24,7 @@
 | D17A | Skill Registry | PASS | 是 | Registry + Binding + Version Pin |
 | D17B | Skill Package Import + Validation | PASS | 是 | 目录/ZIP 导入 + Traversal/Symlink/可执行/超限拒绝 + frontmatter schema + hash 稳定 + 失败零注册 + 17 tests |
 | D17C | Skill Resolver + Project Binding | PASS | 是 | Rule-first 4级 + 硬过滤(status/deps/caps) + Pin生效 + 等价→AMBIGUOUS(V0.1无LLM) + 10 tests |
-| D17D | Skill Loader + Worker Execution Integration | TODO | 是 | 不内置具体 Skill |
+| D17D | Skill Loader + Worker Execution Integration | PASS | 是 | Loader按需加载+hash校验+不全量注入 + Worker审计(id/version/hash) + Skill不越Gate + 7 tests |
 | D18 | E2E Demo | TODO | 是 | D17.5 PASS 后进入 |
 
 ## Current Frontier

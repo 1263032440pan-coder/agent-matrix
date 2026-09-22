@@ -7,6 +7,11 @@ from project_runtime.skills.enums import (
     SkillStatus,
     SkillType,
 )
+from project_runtime.skills.loader import (
+    SkillExecutionContext,
+    SkillLoader,
+    SkillLoadError,
+)
 from project_runtime.skills.models import SkillBinding, SkillDefinition
 from project_runtime.skills.registry import SkillRegistry, SkillRegistryError
 from project_runtime.skills.resolver import (
@@ -33,4 +38,7 @@ __all__ = [
     "SkillResolutionResult",
     "ResolutionStatus",
     "ResolutionReason",
+    "SkillLoader",
+    "SkillExecutionContext",
+    "SkillLoadError",
 ]

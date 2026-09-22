@@ -24,6 +24,7 @@ from project_runtime.task_graph.manager import TaskGraphManager
 
 if TYPE_CHECKING:
     from project_runtime.artifact.manager import ArtifactManager
+    from project_runtime.skills.loader import SkillExecutionContext
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,8 @@ class WorkPackage:
     task_name: str
     playbook_ref: str | None = None
     contract: str | None = None
+    # D17D: optional skill context (resolved by SkillResolver, loaded by SkillLoader)
+    skill_context: "SkillExecutionContext | None" = None
 
 
 @dataclass
@@ -45,6 +48,10 @@ class ExecutionResult:
     success: bool
     output: str = ""
     artifacts: list[str] = field(default_factory=list)
+    # D17D audit: actual skill used
+    actual_skill_id: str | None = None
+    actual_skill_version: str | None = None
+    actual_skill_content_hash: str | None = None
 
 
 # ── abstract interface ──────────────────────────────────────────────────────
@@ -109,9 +116,12 @@ class MockWorkerAdapter(WorkerAdapter):
         await self._fsm.transition_task(task, TaskStatus.RUNNING)
         await self._session.flush()
 
-        # Simulate work
+        # Simulate work (skill context, when provided, is consumed read-only)
         await asyncio.sleep(self._simulate_delay)
         result_output = f"Mock execution completed for task {wp.task_name}"
+        if wp.skill_context is not None:
+            sc = wp.skill_context
+            result_output += f" [skill={sc.skill_id}@{sc.skill_version}]"
 
         # RUNNING → EXECUTION_DONE (NEVER ACCEPTED — red line 1+2)
         await self._fsm.transition_task(task, TaskStatus.EXECUTION_DONE)
@@ -121,12 +131,19 @@ class MockWorkerAdapter(WorkerAdapter):
         from project_runtime.project_state.models import TaskRun
 
         now = datetime.datetime.now(datetime.timezone.utc)
+        run_payload: dict = {"output": result_output}
+        if wp.skill_context is not None:
+            run_payload["skill"] = {
+                "skill_id": wp.skill_context.skill_id,
+                "skill_version": wp.skill_context.skill_version,
+                "content_hash": wp.skill_context.skill_content_hash,
+            }
         run = TaskRun(
             task_id=task.id,
             attempt=1,
             started_at=now - datetime.timedelta(seconds=self._simulate_delay),
             finished_at=now,
-            result=json.dumps({"output": result_output}),
+            result=json.dumps(run_payload),
         )
         self._session.add(run)
 
@@ -149,6 +166,15 @@ class MockWorkerAdapter(WorkerAdapter):
             success=True,
             output=result_output,
             artifacts=[artifact_id] if artifact_id is not None else [],
+            actual_skill_id=(
+                wp.skill_context.skill_id if wp.skill_context else None
+            ),
+            actual_skill_version=(
+                wp.skill_context.skill_version if wp.skill_context else None
+            ),
+            actual_skill_content_hash=(
+                wp.skill_context.skill_content_hash if wp.skill_context else None
+            ),
         )
 
     async def cancel(self, task_id: int) -> None:
