@@ -86,7 +86,7 @@ class SkillBinding(Base):
     scope_key: Mapped[str] = mapped_column(String(256), nullable=False)
     skill_id: Mapped[str] = mapped_column(String(256), nullable=False)
     skill_version: Mapped[str] = mapped_column(String(64), nullable=False)
-    pinned: Mapped[bool] = mapped_column(Integer, nullable=False, default=1)
+    pinned: Mapped[bool] = mapped_column(nullable=False, default=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )
