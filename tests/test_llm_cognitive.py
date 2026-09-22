@@ -143,7 +143,6 @@ async def test_gap_llm_classify_returns_none_without_config(dbsession):
 
 def test_gap_llm_answer_parsing():
     """LLM answer parsing maps keywords to GapType."""
-    from project_runtime.gap.classifier import GapClassifier
     from project_runtime.project_state.enums import GapType
 
     # Unit-test the parse loop logic (same loop as in _classify_gap_type_llm)
