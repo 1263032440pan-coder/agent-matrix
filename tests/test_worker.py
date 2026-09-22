@@ -57,6 +57,42 @@ async def test_mock_worker_executes_task(dbsession, project):
 
 
 @pytest.mark.asyncio
+async def test_mock_worker_pipeline_integration(dbsession, project):
+    """D12 rework: assign() → TaskRun + Artifact + artifact_id in result."""
+    import os
+
+    from sqlalchemy import select
+
+    from project_runtime.artifact.manager import ArtifactManager
+    from project_runtime.project_state.models import Artifact, TaskRun
+
+    task = await _create_ready_task(dbsession, project)
+    artifact_mgr = ArtifactManager(dbsession, workspace_root="data/test_pipeline")
+    worker = MockWorkerAdapter(dbsession, artifact_mgr=artifact_mgr)
+
+    result = await worker.assign(WorkPackage(task_id=task.id, task_name=task.name))
+
+    # (a) TaskRun exists with expected fields
+    stmt = select(TaskRun).where(TaskRun.task_id == task.id)
+    run = (await dbsession.execute(stmt)).scalar_one_or_none()
+    assert run is not None
+    assert run.attempt == 1
+    assert run.started_at is not None
+    assert run.finished_at is not None
+    assert "Mock execution completed" in (run.result or "")
+
+    # (b) ExecutionResult.artifacts non-empty
+    assert len(result.artifacts) == 1
+
+    # (c) Artifact record exists, file on disk
+    artifact = await dbsession.get(Artifact, result.artifacts[0])
+    assert artifact is not None
+    assert artifact.task_id == task.id
+    assert artifact.project_id == project.id
+    assert os.path.exists(artifact.path)
+
+
+@pytest.mark.asyncio
 async def test_mock_worker_cancel(dbsession, project):
     """cancel() transitions RUNNING → CANCELLED via FSM."""
     task = await _create_ready_task(dbsession, project)

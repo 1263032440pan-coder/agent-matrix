@@ -13,8 +13,8 @@
 | D09 | Project Playbook | PASS | 是 | V0.1 用户方法为主体 + Provenance + 8 tests |
 | D10 | Dynamic Planner | PASS | 是 | Playbook→Task Graph + Authority尊重 + 8 tests |
 | D11 | Worker Adapter + 1 Worker | PASS | 是 | MockWorker V0.1 + 红线保护 + 5 tests |
-| D12 | Artifact 回传 | TODO | 是 | 文件真实落盘 |
-| D13 | Gate | TODO | 是 | 3 个基础 Validator |
+| D12 | Artifact 回传 | PASS | 是 | 落盘 + SHA256 + 版本 + 管线接线 TaskRun/Artifact |
+| D13 | Gate | BLOCKED（D12 追踪欠账，补齐后解除） | 是 | 3 个基础 Validator |
 | D14 | Scheduler | TODO | 是 | READY → Dispatch |
 | D15 | Resource Governor Lite | TODO | 是 | max_workers=1 |
 | D16 | Minimal Extension Registry | TODO | 是 | in-process 即可 |

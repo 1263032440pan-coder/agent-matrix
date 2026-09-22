@@ -112,6 +112,30 @@ async def test_version_increments_on_same_logical_id(dbsession, project):
     assert os.path.exists(a2.path)
 
 
+@pytest.mark.asyncio
+async def test_same_name_no_overwrite(dbsession, project):
+    """D12 rework: same task + same name twice → two distinct files, versions 1/2."""
+    mgr = ArtifactManager(dbsession, workspace_root="data/test_tasks")
+
+    a1 = await mgr.create_artifact(
+        project_id=project.id, task_id=1, logical_id="doc", name="result.txt", content="v1"
+    )
+    a2 = await mgr.create_artifact(
+        project_id=project.id, task_id=1, logical_id="doc", name="result.txt", content="v2"
+    )
+
+    assert a1.version == 1
+    assert a2.version == 2
+    assert a1.path != a2.path
+    assert os.path.exists(a1.path)
+    assert os.path.exists(a2.path)
+    # Content integrity per version
+    from pathlib import Path
+
+    assert Path(a1.path).read_bytes() == b"v1"
+    assert Path(a2.path).read_bytes() == b"v2"
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # List by task / project
 # ════════════════════════════════════════════════════════════════════════════
