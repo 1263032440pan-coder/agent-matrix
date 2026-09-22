@@ -45,9 +45,18 @@ async def test_llm_connection(cfg: LLMSettings) -> dict:
 
     if not cfg.base_url or not cfg.api_key or not cfg.model:
         return {"ok": False, "error": "base_url / api_key / model 均需填写"}
+
+    # OpenAI-compatible gateways (e.g. custom relays like MoMA) need an
+    # explicit provider prefix — LiteLLM cannot infer it from the model name.
+    model = cfg.model
+    if cfg.base_url and "/" in model and not model.startswith("openai/"):
+        known_prefixes = ("openai/", "azure/", "anthropic/", "huggingface/",
+                          "ollama/", "gemini/", "deepseek/", "mistral/")
+        if not model.startswith(known_prefixes):
+            model = f"openai/{model}"
     try:
         resp = await litellm.acompletion(
-            model=cfg.model,
+            model=model,
             api_base=cfg.base_url,
             api_key=cfg.api_key,
             messages=[{"role": "user", "content": "ping"}],
