@@ -159,14 +159,17 @@ export function Dashboard({ projectId }: { projectId: number }) {
     const load = () =>
       fetchDashboard(projectId)
         .then((d) => !cancelled && setData(d))
-        .catch((e) => !cancelled && setError(String(e)));
+        .catch((e) => {
+          // SQLite lock contention during execute: keep last data, retry next tick
+          if (!cancelled && !data) setError(String(e));
+        });
     load();
     const timer = setInterval(load, 3000); // V0.1 polling (no event engine)
     return () => {
       cancelled = true;
       clearInterval(timer);
     };
-  }, [projectId]);
+  }, [projectId, data]);
 
   if (error) return <div role="alert">Error: {error}</div>;
   if (!data) return <div>Loading dashboard…</div>;

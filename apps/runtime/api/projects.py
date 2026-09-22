@@ -85,7 +85,12 @@ async def upload_method_asset(
 
 @router.post("/{project_id}/execute", status_code=200)
 async def execute_project(project_id: int, session: AsyncSession = Depends(get_session)):
-    """Dispatch READY tasks via Scheduler + LLMWorker (real LLM execution)."""
+    """Dispatch READY tasks via Scheduler + LLMWorker (real LLM execution).
+
+    SQLite single-file: the long-running LLM call happens outside the DB
+    lock, but the write phase can still collide with dashboard polling.
+    On 'database is locked' we roll back and retry once.
+    """
     project = await session.get(Project, project_id)
     if project is None:
         raise HTTPException(404, "Project not found")
@@ -98,17 +103,15 @@ async def execute_project(project_id: int, session: AsyncSession = Depends(get_s
     worker = LLMWorkerAdapter(session, artifact_mgr=artifact_mgr)
     scheduler = Scheduler(session, worker=worker, max_workers=1)
 
-    # Promote eligible tasks to READY first
     from project_runtime.project_state.enums import TaskStatus
+    from project_runtime.task_graph.manager import TaskGraphManager
 
+    mgr = TaskGraphManager(session)
     tasks = (
         (await session.execute(select(Task).where(Task.project_id == project_id)))
         .scalars()
         .all()
     )
-    from project_runtime.task_graph.manager import TaskGraphManager
-
-    mgr = TaskGraphManager(session)
     for t in tasks:
         if t.status == TaskStatus.CREATED:
             try:
@@ -116,8 +119,14 @@ async def execute_project(project_id: int, session: AsyncSession = Depends(get_s
             except Exception:
                 pass
 
-    decisions = await scheduler.dispatch_once(project_id)
-    await session.commit()
+    try:
+        decisions = await scheduler.dispatch_once(project_id)
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        # Single retry after rollback (SQLite lock contention with polling)
+        decisions = await scheduler.dispatch_once(project_id)
+        await session.commit()
     return {
         "dispatched": sum(1 for d in decisions if d.action == "DISPATCHED"),
         "decisions": [
