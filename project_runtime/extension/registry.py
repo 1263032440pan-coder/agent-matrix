@@ -77,16 +77,23 @@ class ExtensionRegistry:
 
     def register(self, provider: Provider) -> ProviderInfo:
         # Permission guard: DIRECT_STATE_MUTATE does not exist in the enum,
-        # but defend against raw-string providers too.
+        # but defend against raw-string providers too. Any invalid permission
+        # (unknown string, or the forbidden one) is rejected with ExtensionError.
         perm = provider.permission
         if isinstance(perm, str) and perm == "DIRECT_STATE_MUTATE":
             raise ExtensionError(
                 f"Provider {provider.name}: DIRECT_STATE_MUTATE is forbidden (WP-034)"
             )
+        try:
+            permission = Permission(perm)
+        except ValueError as exc:
+            raise ExtensionError(
+                f"Provider {provider.name}: invalid permission {perm!r}"
+            ) from exc
         info = ProviderInfo(
             name=provider.name,
             capability=provider.capability,
-            permission=Permission(perm),
+            permission=permission,
             priority=provider.priority,
             enabled=provider.enabled,
             provider=provider,
@@ -119,7 +126,10 @@ class ExtensionRegistry:
         for info in self.list_providers(capability):
             if not info.enabled:
                 continue
-            assert info.provider is not None
+            if info.provider is None:
+                raise ExtensionError(
+                    f"Provider {info.name} has no backing implementation"
+                )
             return await info.provider.invoke(payload)
         raise ExtensionUnavailableError(f"No enabled provider for {capability.value}")
 

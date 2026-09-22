@@ -126,6 +126,28 @@ def test_direct_state_mutate_rejected():
         reg.register(BadProvider())
 
 
+def test_invalid_permission_string_rejected_with_extension_error():
+    class WeirdProvider(FakeProvider):
+        def __init__(self):
+            super().__init__("weird", CapabilityType.TOOL)
+            self.permission = "SUPER_USER"  # unknown raw string
+
+    reg = ExtensionRegistry()
+    with pytest.raises(ExtensionError, match="invalid permission"):
+        reg.register(WeirdProvider())
+
+
+@pytest.mark.asyncio
+async def test_invoke_provider_without_implementation_raises_extension_error():
+    reg = ExtensionRegistry()
+    p = FakeProvider("ghost", CapabilityType.TOOL)
+    reg.register(p)
+    # Simulate a registered-but-hollow provider
+    reg._providers["ghost"].provider = None
+    with pytest.raises(ExtensionError, match="no backing implementation"):
+        await reg.invoke(CapabilityType.TOOL, {})
+
+
 def test_four_permissions_registerable():
     reg = ExtensionRegistry()
     for i, perm in enumerate(
