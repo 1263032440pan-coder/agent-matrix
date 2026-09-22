@@ -137,9 +137,9 @@ class GateCore:
         # BLOCKED / NEED_APPROVAL both land on REWORK (GateResult.status
         # preserves the distinction for downstream ManualAction).
         if final == GateStatus.PASS:
-            await self._fsm.transition_task(task, TaskStatus.ACCEPTED)
+            await self._fsm.transition_task(task, TaskStatus.ACCEPTED, actor=self.ACTOR)
         else:
-            await self._fsm.transition_task(task, TaskStatus.REWORK)
+            await self._fsm.transition_task(task, TaskStatus.REWORK, actor=self.ACTOR)
 
         await self._session.flush()
         logger.info("Gate %s → %s for task %d", "gate_core", final.value, task_id)

@@ -214,8 +214,8 @@ async def test_hard_dep_only_accepted_satisfies(mgr, project):
     await mgr.transition_task(upstream.id, TaskStatus.EXECUTION_DONE)
     assert not await mgr.can_set_ready(downstream.id)
 
-    # Only ACCEPTED
-    await mgr.transition_task(upstream.id, TaskStatus.ACCEPTED)
+    # Only ACCEPTED (actor guard: EXECUTION_DONE→ACCEPTED needs GATE actor)
+    await mgr.transition_task(upstream.id, TaskStatus.ACCEPTED, actor="GATE")
     assert await mgr.can_set_ready(downstream.id)
 
 

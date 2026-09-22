@@ -94,9 +94,11 @@ class TaskGraphManager:
 
     # ── State transitions (delegated to FSM) ─────────────────────────────
 
-    async def transition_task(self, task_id: int, to_status: TaskStatus) -> Task:
+    async def transition_task(
+        self, task_id: int, to_status: TaskStatus, *, actor: str = "SYSTEM"
+    ) -> Task:
         task = await self._get_or_raise(task_id)
-        await self._fsm.transition_task(task, to_status)
+        await self._fsm.transition_task(task, to_status, actor=actor)
         await self._session.flush()
         return task
 

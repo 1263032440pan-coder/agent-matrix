@@ -119,16 +119,34 @@ class StateTransitionService:
         *,
         command_id: str = "",
         expected_from: TaskStatus | None = None,
+        actor: str = "SYSTEM",
     ) -> None:
         """Atomically transition a Task to a new status.
 
         Raises InvalidStateTransitionError on illegal transitions.
         Performs status mutation + optional event persist in a single
         logical unit (caller wraps in transaction).
+
+        Actor guard (D11-TD01): EXECUTION_DONE → ACCEPTED is restricted
+        to actor == "GATE" (GateCore). All other callers are rejected.
         """
         from_status = task.status
         if isinstance(from_status, str):
             from_status = TaskStatus(from_status)
+
+        # Actor guard: only GATE may accept a task
+        if (
+            from_status == TaskStatus.EXECUTION_DONE
+            and to_status == TaskStatus.ACCEPTED
+            and actor != "GATE"
+        ):
+            logger.warning(
+                "ACTOR_GUARD_REJECT task#%s %s -> %s actor=%s",
+                task.id, from_status.value, to_status.value, actor,
+            )
+            raise InvalidStateTransitionError(
+                "Task", task.id, from_status.value, to_status.value
+            )
 
         # Optimistic concurrency guard
         if expected_from is not None and from_status != expected_from:

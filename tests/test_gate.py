@@ -176,10 +176,15 @@ async def test_validators_return_only_pass_or_fail(dbsession, project):
 
 @pytest.mark.asyncio
 async def test_execution_done_to_accepted_only_via_gate(dbsession, project):
-    """Direct FSM call EXECUTION_DONE→ACCEPTED is technically allowed by FSM;
-    the Gate is the intended sole caller (D11-TD01 actor guard documented).
-    This test documents that GateCore.evaluate is the supported path."""
+    """Actor guard (D11-TD01): EXECUTION_DONE→ACCEPTED only allowed for actor='GATE'."""
     task = await _executed_task(dbsession, project, with_artifact=True)
+
+    # Non-GATE actor is rejected by FSM actor guard
+    fsm = StateTransitionService(dbsession)
+    with pytest.raises(Exception, match=""):
+        await fsm.transition_task(task, TaskStatus.ACCEPTED, actor="WORKER")
+    await dbsession.refresh(task)
+    assert task.status == TaskStatus.EXECUTION_DONE  # unchanged
 
     # Gate is the supported path and works
     gate = GateCore(dbsession)
@@ -188,6 +193,5 @@ async def test_execution_done_to_accepted_only_via_gate(dbsession, project):
     assert task.status == TaskStatus.ACCEPTED
 
     # ACCEPTED is terminal — no further transitions
-    fsm = StateTransitionService(dbsession)
     with pytest.raises(Exception):
-        await fsm.transition_task(task, TaskStatus.RUNNING)
+        await fsm.transition_task(task, TaskStatus.RUNNING, actor="GATE")

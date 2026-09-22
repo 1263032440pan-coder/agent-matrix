@@ -76,7 +76,11 @@ async def test_task_legal_transitions_persist(case_id, from_s, to_s, dbsession):
     await dbsession.flush()
 
     fsm = make_fsm(dbsession)
-    await fsm.transition_task(t, to_s)
+    # EXECUTION_DONE → ACCEPTED is actor-guarded (D11-TD01): must pass GATE
+    if from_s == TaskStatus.EXECUTION_DONE and to_s == TaskStatus.ACCEPTED:
+        await fsm.transition_task(t, to_s, actor="GATE")
+    else:
+        await fsm.transition_task(t, to_s)
     await dbsession.flush()
 
     assert t.status == to_s
@@ -199,7 +203,7 @@ async def test_gate_pass_allows_accept(dbsession):
     await dbsession.flush()
 
     fsm = make_fsm(dbsession)
-    await fsm.transition_task(t, TaskStatus.ACCEPTED)
+    await fsm.transition_task(t, TaskStatus.ACCEPTED, actor="GATE")
     assert t.status == TaskStatus.ACCEPTED
 
 
