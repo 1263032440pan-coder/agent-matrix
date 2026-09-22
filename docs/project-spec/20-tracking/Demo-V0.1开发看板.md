@@ -22,7 +22,7 @@
 | D16 | Minimal Extension Registry | PASS | 是 | FROZEN |
 | D17 | Desktop UI | PASS | 是 | FROZEN |
 | D17A | Skill Registry | PASS | 是 | Registry + Binding + Version Pin |
-| D17B | Skill Package Import + Validation | TODO | 是 | 用户外部 Skill 目录/ZIP |
+| D17B | Skill Package Import + Validation | PASS | 是 | 目录/ZIP 导入 + Traversal/Symlink/可执行/超限拒绝 + frontmatter schema + hash 稳定 + 失败零注册 + 17 tests |
 | D17C | Skill Resolver + Project Binding | TODO | 是 | Rule-first |
 | D17D | Skill Loader + Worker Execution Integration | TODO | 是 | 不内置具体 Skill |
 | D18 | E2E Demo | TODO | 是 | D17.5 PASS 后进入 |
