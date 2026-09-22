@@ -135,3 +135,27 @@ FAIL
 不得直接设置 Task Status。
 
 Gate Core 负责合并 Validator Result 并执行最终状态转换。
+
+## V1.12 Skill Result 边界
+
+如果 Worker 使用外部 Skill，SkillExecutionResult 只作为：
+
+```text
+Artifact / Evidence / Execution Metadata
+```
+
+参与 Gate。
+
+硬规则：
+
+```text
+SkillExecutionResult.status = COMPLETED
+!=
+Gate PASS
+!=
+Task ACCEPTED
+```
+
+任何 Skill 都不能通过输出某个自定义字段绕过 Gate Core。
+
+Gate 仍然按 Task Acceptance Criteria、Artifact、Validator 和 Evidence 做最终判断。

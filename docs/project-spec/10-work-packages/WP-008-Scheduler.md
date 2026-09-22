@@ -159,3 +159,25 @@ REDUCE_PARALLELISM
 ```
 
 `DEFER_RESOURCE` 不改变 Task 的业务完成状态。
+
+## V1.12 Skill Resolution 前置
+
+Dispatch 前增加：
+
+```text
+READY Task
+→ Skill Resolution（若 Task 有 SkillRequirement / Binding）
+→ Execution Capability Check
+→ Worker Routing
+→ Resource Governor
+→ Dispatch
+```
+
+规则：
+
+1. `NO_SKILL_REQUIRED`：继续执行。
+2. `RESOLVED`：把 `resolved_skill_ref` 传给 Execution Binding。
+3. Required Skill `SKILL_NOT_FOUND`：不 Dispatch，形成 Execution Capability Gap。
+4. `CAPABILITY_MISSING / SKILL_DEPENDENCY_MISSING`：不直接把 Task 标记 FAILED。
+5. Scheduler 不自行读取 Skill 正文。
+6. Scheduler 不允许 Worker 在 Dispatch 后绕过 Binding 从全 Registry 自由选 Skill。

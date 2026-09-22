@@ -45,3 +45,45 @@ Planner 必须尊重 MANDATORY。
 - [ ] 外部 Research 内容可识别为 RECOMMENDED / OPTIONAL。
 - [ ] Model Inference 可识别为 PROPOSED。
 - [ ] 任一关键 Workstream 可回答“为什么要做、来源是什么”。
+
+## V1.12 External Project Method Skill
+
+Project Playbook 可引用已安装的 `PROJECT_METHOD` Skill，但它们属于外部可选输入。
+
+Authority：
+
+```text
+用户明确要求
+>
+用户 Method Asset / Procedure
+>
+当前项目已确认 Artifact / Decision
+>
+Installed Project Method Skill
+>
+Research
+>
+Model Inference
+```
+
+Playbook 可新增：
+
+```text
+project_method_skill_refs[]
+task_skill_preferences[]
+```
+
+Skill Reference 必须带：
+
+```text
+skill_id
+version
+content_hash
+source
+```
+
+Gate 增补：
+
+- [ ] `Installed Project Method Skills = []` 时仍可生成 Playbook。
+- [ ] Skill 不静默覆盖用户 MANDATORY 方法。
+- [ ] Playbook 仅记录偏好/绑定，不直接加载 TASK_EXECUTION Skill。

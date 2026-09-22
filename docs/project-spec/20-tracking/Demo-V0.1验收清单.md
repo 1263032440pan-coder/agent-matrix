@@ -68,3 +68,17 @@ Demo V0.1 = PASS
 - [ ] `DEFER_RESOURCE` 不改变 `READY` 状态。
 - [ ] `ACCEPTED` / `COMPLETED` / `CANCELLED` 终态不可静默回退。
 - [ ] `40-testing/D03-状态机测试矩阵.md` 全部通过。
+
+## V1.12 D17.5 Skill Runtime 验收
+
+- [ ] `Skill Registry = EMPTY` 时 Runtime 正常工作。
+- [ ] 用户可导入合法声明式 Skill Package。
+- [ ] 非法 ZIP 路径 / Schema / 可执行文件被拒绝。
+- [ ] Skill 可按 ID + Version 注册并 Enable/Disable。
+- [ ] Project Binding 固定明确版本。
+- [ ] Resolver Rule-first；LLM 只处理完全等价候选。
+- [ ] Optional Skill 缺失不阻塞；Required Skill 缺失形成 Capability Gap。
+- [ ] Loader 只加载当前需要的 Skill 内容。
+- [ ] Worker Result 可追踪实际 Skill ID / Version / Hash。
+- [ ] Skill 不直接修改 Project State / Task State / Task Graph。
+- [ ] D17.5 不依赖任何写死领域 Skill ID。

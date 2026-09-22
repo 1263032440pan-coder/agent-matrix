@@ -68,3 +68,41 @@ RECOMMENDED → 根据项目状态决定是否纳入
 OPTIONAL → 可按价值/成本选择
 PROPOSED → 未确认时不得伪装成用户硬要求
 ```
+
+## V1.12 SkillRequirement
+
+Planner 可为 Task 声明：
+
+```text
+skill_requirement
+```
+
+例如：
+
+```json
+{
+  "skill_type": "TASK_EXECUTION",
+  "required": false,
+  "preferred_skill_id": null,
+  "domain": "software-development",
+  "task_type": "implementation",
+  "required_capabilities": ["file_write", "test_execution"]
+}
+```
+
+Planner 负责描述需求，不负责：
+
+```text
+扫描 Registry
+安装 Skill
+决定最终 Skill Version
+读取 SKILL.md
+```
+
+最终由 Skill Resolver / Loader 处理。
+
+### Gate 增补
+
+- [ ] 无 Skill Requirement 的 Task 仍可规划。
+- [ ] `required=false` 可生成无 Skill Task。
+- [ ] Planner 不依赖任何固定 Skill ID。

@@ -69,3 +69,36 @@ skill_refs
 confidence
 version
 ```
+
+## V1.12 Installed Skill 边界
+
+本文件中的：
+
+```text
+Installed Skills
+```
+
+专指用户/组织/Plugin 已导入 Skill Registry 的外部 Skill，不代表 Project Runtime 内置固定 Skill 集。
+
+Research 前检查顺序保持：
+
+```text
+User Method Assets
+Project Procedure Model
+Project Memory
+Installed Skills（如果存在）
+Existing Research
+```
+
+如果 `Installed Skills = []`，直接继续下一项，不得阻塞 Research / Playbook。
+
+Playbook 中的 `skill_refs` 必须保存：
+
+```text
+skill_id
+version
+content_hash
+source
+```
+
+以保证可追溯和可复现。

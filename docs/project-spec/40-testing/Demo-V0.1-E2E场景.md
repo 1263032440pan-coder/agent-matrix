@@ -97,3 +97,28 @@ FULL_AUTO 下自动寻找下一个 READY Task。
 ## 通过标准
 
 全链路没有使用假状态或手工修改数据库，即判定 E2E PASS。
+
+## V1.12 External Skill Runtime E2E
+
+测试使用专门构造的 Mock Skill Fixture，不能把真实领域 Skill 作为 Runtime 内置依赖。
+
+```text
+External Mock Skill ZIP
+→ Importer
+→ Validator
+→ Registry
+→ Project Binding
+→ Resolver
+→ Loader
+→ Worker Work Package
+→ Worker Result
+→ Gate
+```
+
+验证：
+
+- Registry 为空时原 Demo 链路仍能跑。
+- 导入一个合法 Mock Skill 后可被解析和加载。
+- 导入非法路径 / 可执行文件 / 错误 Schema 时拒绝。
+- 安装 Mock Skill 新版本后旧 Project 仍保持 pinned version。
+- SkillExecutionResult 完成不直接等于 ACCEPTED。

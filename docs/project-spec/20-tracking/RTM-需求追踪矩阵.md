@@ -132,3 +132,20 @@ DOING
 ```text
 20-tracking/变更记录.md
 ```
+
+## V1.12 Skill Runtime Infrastructure 追踪项
+
+| ID | 需求/能力 | 架构模块 | 开发 WP | 协议 | 测试 | 状态 |
+|---|---|---|---|---|---|---|
+| SYS-053 | Skill 内容作为外部资产，Runtime 不预装固定领域 Skill | Skill Boundary | WP-027/WP-039 | ADR-037 | D17.5 | TODO |
+| SYS-054 | Skill 分 PROJECT_METHOD / TASK_EXECUTION / CAPABILITY | Skill Model | WP-027/WP-039 | ADR-034 | D17.5 | TODO |
+| SYS-055 | 支持外部 Skill 目录/ZIP 安全导入和校验 | Importer/Validator | WP-039 | 19-Skill包导入与执行契约 | D17.5 | TODO |
+| SYS-056 | Registry 支持 ID/Version/Status/Hash | Skill Registry | WP-027/WP-039 | SkillDefinition | D17.5 | TODO |
+| SYS-057 | Project Skill Binding 可固定版本 | Skill Binding | WP-027/WP-039 | SkillBinding | D17.5 | TODO |
+| SYS-058 | Resolver Rule-first，LLM 仅等价候选 tie-break | Skill Resolver | WP-039 | ADR-035 | D17.5 | TODO |
+| SYS-059 | Planner 只声明 SkillRequirement，不直接加载 Skill | Planner Boundary | WP-007 | SkillRequirement | D17.5 | TODO |
+| SYS-060 | Scheduler 在 Dispatch 前完成 Skill/Capability Check | Scheduler | WP-008/WP-039 | SkillResolutionResult | D17.5 | TODO |
+| SYS-061 | Loader 生成最小 SkillExecutionContext | Skill Loader | WP-031/WP-039 | SkillLoader Contract | D17.5 | TODO |
+| SYS-062 | Worker 可追踪实际 Skill ID/Version/Hash | Worker Binding | WP-009/WP-031 | SkillExecutionResult | D17.5 | TODO |
+| SYS-063 | Skill 不拥有 Project/Task State | Kernel Boundary | WP-039 | ADR-036 | D17.5 | TODO |
+| SYS-064 | Skill Result 不能绕过 Gate 直接 ACCEPTED | Gate Boundary | WP-014/WP-039 | SkillExecutionResult | D17.5 | TODO |

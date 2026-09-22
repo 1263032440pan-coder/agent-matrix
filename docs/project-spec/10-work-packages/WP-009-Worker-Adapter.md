@@ -130,3 +130,46 @@ resource_profile() -> WorkerResourceProfile
 ```
 
 至少包含内存估计、CPU 权重、浏览器要求、最大实例数和生命周期建议。
+
+## V1.12 SkillExecutionContext
+
+Worker Work Package 可选增加：
+
+```text
+resolved_skill_ref
+skill_execution_context_ref
+```
+
+调用关系：
+
+```text
+Skill Resolver
+→ Skill Loader
+→ SkillExecutionContext
+→ WorkerRuntimeAdapter.assignWorkPackage(...)
+```
+
+Worker Runtime 与 Skill 解耦：
+
+```text
+同一 Worker Runtime
++ 不同外部 TASK_EXECUTION Skill
+→ 可承担不同类型任务
+```
+
+Adapter 不负责：
+
+```text
+Skill Import
+Registry
+Validation
+Resolution
+```
+
+Worker Result 在使用 Skill 时记录：
+
+```text
+actual_skill_id
+actual_skill_version
+actual_skill_content_hash
+```
