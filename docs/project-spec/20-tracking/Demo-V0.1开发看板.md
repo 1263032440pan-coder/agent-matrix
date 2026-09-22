@@ -17,7 +17,7 @@
 | D13 | Gate | PASS | 是 | GateCore + File 真实校验(SHA256)/Build/Test V0.1占位 + 4结果(FAIL/BLOCKED/NEED_APPROVAL均落REWORK) + actor防护(FSM强制) + 7 tests |
 | D14 | Scheduler | PASS | 是 | READY→Dispatch + 并发上限 + FULL_AUTO/MANUAL + ManualAction + 7 tests（Resource Governor V0.1 内联恒ALLOW，D15 真实化） |
 | D15 | Resource Governor Lite | TODO | 是 | max_workers=1 |
-| D16 | Minimal Extension Registry | TODO | 是 | in-process 即可 |
+| D16 | Minimal Extension Registry | PASS | 是 | DeliveryContract 版本 + required items + Artifact 映射 + missing items + 6 tests（Completion 公式 D18 E2E 组合） |
 | D17 | Desktop UI | TODO | 是 | 单 Project Dashboard |
 | D18 | E2E Demo | TODO | 是 | 全链路真实跑通 |
 
