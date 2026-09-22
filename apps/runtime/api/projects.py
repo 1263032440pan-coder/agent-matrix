@@ -83,6 +83,35 @@ async def upload_method_asset(
         Path(tmp_path).unlink(missing_ok=True)
 
 
+@router.post("/{project_id}/plan", status_code=200)
+async def run_planning(project_id: int, session: AsyncSession = Depends(get_session)):
+    """Run D06→D10 chain: normalize → assess → classify → build → plan."""
+    project = await session.get(Project, project_id)
+    if project is None:
+        raise HTTPException(404, "Project not found")
+
+    from project_runtime.gap.classifier import GapClassifier
+    from project_runtime.planner.planner import DynamicPlanner
+    from project_runtime.playbook.builder import PlaybookBuilder
+    from project_runtime.procedure.normalizer import ProcedureNormalizer
+    from project_runtime.readiness.assessor import MethodReadinessAssessor
+
+    model = await ProcedureNormalizer(session).normalize(project_id)
+    assessment = await MethodReadinessAssessor(session).assess(project_id, model.id)
+    gaps = await GapClassifier(session).classify(assessment.id)
+    playbook = await PlaybookBuilder(session).build(project_id)
+    tasks = await DynamicPlanner(session).plan(playbook)
+    result = {
+        "model_id": model.id,
+        "assessment_id": assessment.id,
+        "gaps": len(gaps),
+        "playbook_id": playbook.id,
+        "tasks": len(tasks),
+    }
+    await session.commit()
+    return result
+
+
 @router.get("")
 async def list_projects(session: AsyncSession = Depends(get_session)):
     result = await session.execute(select(Project).order_by(Project.id))

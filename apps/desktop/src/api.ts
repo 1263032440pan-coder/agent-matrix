@@ -75,6 +75,16 @@ export async function uploadMethodAsset(
   return resp.json();
 }
 
+export async function runPlanning(
+  projectId: number
+): Promise<{ model_id: number; gaps: number; tasks: number }> {
+  const resp = await fetch(`${API_BASE}/api/projects/${projectId}/plan`, {
+    method: 'POST',
+  });
+  if (!resp.ok) throw new Error(`Planning failed: ${resp.status}`);
+  return resp.json();
+}
+
 export interface LLMConfig {
   base_url: string;
   model: string;

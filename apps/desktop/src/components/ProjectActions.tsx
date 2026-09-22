@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { createProject, uploadMethodAsset } from '../api';
+import { createProject, runPlanning, uploadMethodAsset } from '../api';
 
 export function ProjectActions({
   projectId,
@@ -34,8 +34,22 @@ export function ProjectActions({
     setBusy(true);
     try {
       const r = await uploadMethodAsset(projectId, f);
-      setMessage(`已导入方法资料 (hash ${r.content_hash.slice(0, 8)}…)`);
+      setMessage(`已导入方法资料 #${r.id} (hash ${r.content_hash.slice(0, 8)}…) — 点「生成计划」继续`);
       onImported();
+    } catch (e) {
+      setMessage(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const doPlan = async () => {
+    if (projectId === null) return;
+    setBusy(true);
+    try {
+      const r = await runPlanning(projectId);
+      setMessage(`规划完成：${r.tasks} 个任务 / ${r.gaps} 个 Gap`);
+      onImported(); // reuse refresh
     } catch (e) {
       setMessage(String(e));
     } finally {
@@ -81,6 +95,13 @@ export function ProjectActions({
           disabled={busy || projectId === null}
         />
       </label>
+      <button
+        onClick={doPlan}
+        disabled={busy || projectId === null}
+        style={{ padding: '6px 14px' }}
+      >
+        生成计划
+      </button>
       {message && <span style={{ color: '#555', fontSize: 13 }}>{message}</span>}
     </div>
   );
