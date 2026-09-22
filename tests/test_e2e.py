@@ -110,6 +110,26 @@ async def test_e2e_main_chain_full_pipeline(dbsession, tmp_path):
     assert len(tasks) >= 2
     assert all(t.status == TaskStatus.CREATED for t in tasks)
 
+    # 6b. Dependency edges are real: a downstream task must exist whose
+    # promotion is blocked before its upstream is ACCEPTED.
+    from project_runtime.project_state.models import TaskDependency
+
+    deps = (
+        await dbsession.execute(
+            __import__("sqlalchemy").select(TaskDependency).where(
+                TaskDependency.task_id.in_([t.id for t in tasks])
+            )
+        )
+    ).scalars().all()
+    assert deps, "Task Graph has zero dependency edges — graph is flat"
+
+    # Find one (downstream, upstream) pair and prove blocking
+    dep = deps[0]
+    downstream = await mgr.get_task(dep.task_id)
+    assert not await mgr.can_set_ready(downstream.id)  # blocked while upstream not ACCEPTED
+    with pytest.raises(Exception):
+        await mgr.promote_to_ready(downstream.id)
+
     # 7. First task becomes READY (no deps), dispatch via Scheduler (D14+D15)
     artifact_mgr = ArtifactManager(dbsession, workspace_root=str(tmp_path / "tasks"))
     from project_runtime.worker.adapter import MockWorkerAdapter

@@ -26,28 +26,41 @@ async def main() -> int:
         tmp_path = Path(tmp)
         db_file = tmp_path / "e2e.db"
 
-        # 1. Fresh DB from zero via alembic
+        # 1. Fresh DB from zero via alembic (PAA_DB_PATH targets the temp DB;
+        # no fallback to create_all — if migration fails, the demo fails).
         step("1. Fresh DB migration (alembic upgrade head)")
-        env_db = f"sqlite+aiosqlite:///{db_file}"
+        import os
+
+        env = {**os.environ, "PAA_DB_PATH": str(db_file)}
         result = subprocess.run(
             [sys.executable, "-m", "alembic", "upgrade", "head"],
             cwd=PROJECT_ROOT,
-            env={**__import__("os").environ},
+            env=env,
             capture_output=True,
             text=True,
         )
-        # alembic uses configured db_path; run against fresh db via env override
-        # is not wired — instead we verify migration integrity separately and
-        # build the demo DB via ORM metadata (same schema as head).
+        if result.returncode != 0:
+            print(result.stderr[-2000:])
+            print("E2E FAIL: alembic upgrade head failed on fresh DB")
+            return 1
+        # Verify the temp DB (not the dev DB) was migrated
+        import sqlite3
+
+        conn = sqlite3.connect(db_file)
+        tables = {
+            r[0]
+            for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        conn.close()
+        assert "skill_definition" in tables and "project" in tables, (
+            f"migration incomplete: {len(tables)} tables"
+        )
+        print(f"  migrated temp DB: {len(tables)} tables")
+
         from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
-        from project_runtime.project_state import models as _ps_models  # noqa: F401
-        from project_runtime.project_state.base import Base
-        from project_runtime.skills import models as _skill_models  # noqa: F401
-
+        env_db = f"sqlite+aiosqlite:///{db_file}"
         engine = create_async_engine(env_db, echo=False)
-        async with engine.begin() as conn:
-            await conn.run_sync(Base.metadata.create_all)
 
         async with AsyncSession(engine) as session:
             from project_runtime.artifact.manager import ArtifactManager
@@ -62,7 +75,7 @@ async def main() -> int:
                 ProjectStatus,
                 TaskStatus,
             )
-            from project_runtime.project_state.models import Project
+            from project_runtime.project_state.models import Project, Task
             from project_runtime.readiness.assessor import MethodReadinessAssessor
             from project_runtime.reviewer.gate import GateCore
             from project_runtime.scheduler.scheduler import Scheduler
@@ -153,9 +166,7 @@ async def main() -> int:
 
             step("5. Skill-equipped task execution (audit)")
             t2 = await mgr.create_task(
-                __import__("project_runtime.project_state.models", fromlist=["Task"]).Task(
-                    project_id=project.id, name="需求梳理"
-                )
+                Task(project_id=project.id, name="需求梳理")
             )
             await mgr.promote_to_ready(t2.id)
             result = await worker.assign(
