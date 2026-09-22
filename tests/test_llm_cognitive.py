@@ -146,8 +146,7 @@ def test_gap_llm_answer_parsing():
     from project_runtime.gap.classifier import GapClassifier
     from project_runtime.project_state.enums import GapType
 
-    # Unit-test the parse loop logic via a stubbed _classify_gap_type_llm
-    clf = GapClassifier.__new__(GapClassifier)
+    # Unit-test the parse loop logic (same loop as in _classify_gap_type_llm)
     for answer, expected in [
         ("PRIVATE", GapType.PRIVATE), ("CAPABILITY", GapType.CAPABILITY),
         ("DOMAIN", GapType.DOMAIN), ("TECHNICAL", GapType.TECHNICAL),
