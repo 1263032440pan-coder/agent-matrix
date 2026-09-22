@@ -27,7 +27,7 @@ AMBIGUOUS = "AMBIGUOUS"
 class NormalizerExtractor(Protocol):
     """Pluggable extractor: raw text → list of ProcedureNode dicts."""
 
-    def extract(self, text: str, source_name: str) -> list[dict]:
+    async def extract(self, text: str, source_name: str) -> list[dict]:
         ...
 
 
@@ -54,7 +54,7 @@ class KeywordExtractor:
 
     _AMBIGUOUS_MARKERS = ("待定", "TBD", "未定", "暂不明确", "?")
 
-    def extract(self, text: str, source_name: str) -> list[dict]:
+    async def extract(self, text: str, source_name: str) -> list[dict]:
         # Split text by markdown headings
         heading_positions: list[tuple[int, int, str]] = []
         for m in self._SECTION_PATTERN.finditer(text):
@@ -144,7 +144,20 @@ class ProcedureNormalizer:
 
     def __init__(self, session: AsyncSession, extractor: NormalizerExtractor | None = None):
         self._session = session
+        # Keyword extraction is the default. LLM extraction is opt-in via
+        # ProcedureNormalizer.with_llm(session) — never silently read global
+        # LLM config (tests must not hit real LLM).
         self._extractor = extractor or KeywordExtractor()
+
+    @classmethod
+    def with_llm(cls, session: AsyncSession) -> "ProcedureNormalizer":
+        """LLM-first normalizer: uses configured LLM, keyword fallback."""
+        from project_runtime.llm import load_llm_settings
+        from project_runtime.procedure.llm_extractor import LLMExtractor
+
+        cfg = load_llm_settings()
+        extractor = LLMExtractor(cfg) if (cfg.base_url and cfg.api_key and cfg.model) else None
+        return cls(session, extractor=extractor)
 
     async def normalize(self, project_id: int) -> ProjectProcedureModel:
         """Process all MethodAssets for a project into a Procedure Model.
@@ -170,35 +183,45 @@ class ProcedureNormalizer:
 
         source_entries: list[dict] = []
 
+        all_node_dicts: list[dict] = []
         for asset in assets:
             source_name = asset.source_path or f"asset-{asset.id}"
-            node_dicts = self._extractor.extract(asset.content, source_name)
+            node_dicts = await self._extractor.extract(asset.content, source_name)
+            all_node_dicts.extend(node_dicts)
+            source_entries.append(
+                {"asset_id": asset.id, "nodes": len(node_dicts)}
+            )
 
-            for nd in node_dicts:
-                node = ProcedureNode(
-                    model_id=model.id,
-                    name=nd["name"],
-                    workstream=nd.get("workstream"),
-                    inputs=nd.get("inputs", UNKNOWN),
-                    activities=nd.get("activities", UNKNOWN),
-                    outputs=nd.get("outputs", UNKNOWN),
-                    roles=nd.get("roles", UNKNOWN),
-                    dependencies=nd.get("dependencies", UNKNOWN),
-                    gate=nd.get("gate", UNKNOWN),
-                    acceptance_criteria=nd.get("acceptance_criteria", UNKNOWN),
-                    evidence_requirements=nd.get("evidence_requirements", UNKNOWN),
-                    constraints=nd.get("constraints", UNKNOWN),
-                    rework_path=nd.get("rework_path", UNKNOWN),
-                    readiness_status=ReadinessStatus(nd.get("readiness_status", "MISSING")),
-                    source_ref=nd.get("source_ref"),
-                    provenance=json.dumps(
-                        {"asset_id": asset.id, "asset_type": asset.asset_type.value}
-                    ),
-                )
-                self._session.add(node)
-                source_entries.append(
-                    {"asset_id": asset.id, "nodes": len(node_dicts)}
-                )
+        # Batch 3 (D06-TD01): CONFLICTED detection across the whole asset set
+        from project_runtime.procedure.llm_extractor import detect_conflicts
+
+        detect_conflicts(all_node_dicts)
+
+        for nd in all_node_dicts:
+            # source asset id for provenance (best-effort match by source_ref)
+            asset_id = next(
+                (a.id for a in assets if (a.source_path or f"asset-{a.id}") == nd.get("source_ref")),
+                assets[0].id if assets else None,
+            )
+            node = ProcedureNode(
+                model_id=model.id,
+                name=nd["name"],
+                workstream=nd.get("workstream"),
+                inputs=nd.get("inputs", UNKNOWN),
+                activities=nd.get("activities", UNKNOWN),
+                outputs=nd.get("outputs", UNKNOWN),
+                roles=nd.get("roles", UNKNOWN),
+                dependencies=nd.get("dependencies", UNKNOWN),
+                gate=nd.get("gate", UNKNOWN),
+                acceptance_criteria=nd.get("acceptance_criteria", UNKNOWN),
+                evidence_requirements=nd.get("evidence_requirements", UNKNOWN),
+                constraints=nd.get("constraints", UNKNOWN),
+                rework_path=nd.get("rework_path", UNKNOWN),
+                readiness_status=ReadinessStatus(nd.get("readiness_status", "MISSING")),
+                source_ref=nd.get("source_ref"),
+                provenance=json.dumps({"asset_id": asset_id}),
+            )
+            self._session.add(node)
 
         model.source_map = json.dumps(source_entries)
         await self._session.flush()

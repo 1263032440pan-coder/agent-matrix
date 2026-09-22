@@ -24,7 +24,8 @@ async def dbsession():
 
 @pytest.fixture
 def normalizer(dbsession: AsyncSession) -> ProcedureNormalizer:
-    return ProcedureNormalizer(dbsession)
+    # Explicit keyword extractor — tests must not hit real LLM config
+    return ProcedureNormalizer(dbsession, extractor=KeywordExtractor())
 
 
 @pytest.fixture
@@ -147,44 +148,50 @@ async def test_partial_content_node_is_partial(normalizer, project, dbsession):
 # ════════════════════════════════════════════════════════════════════════════
 
 
-def test_extractor_markdown_sections():
+@pytest.mark.asyncio
+async def test_extractor_markdown_sections():
     extractor = KeywordExtractor()
     text = "# 需求\n输入: 文档\n\n# 设计\n活动: 画图"
-    nodes = extractor.extract(text, "test.md")
+    nodes = await extractor.extract(text, "test.md")
     assert len(nodes) == 2
     assert nodes[0]["name"] == "需求"
     assert nodes[1]["name"] == "设计"
 
 
-def test_extractor_no_markdown():
+@pytest.mark.asyncio
+async def test_extractor_no_markdown():
     extractor = KeywordExtractor()
     text = "做需求分析，输入是文档，活动是编码"
-    nodes = extractor.extract(text, "plain.txt")
+    nodes = await extractor.extract(text, "plain.txt")
     assert len(nodes) == 1
 
 
-def test_extractor_unknown_is_default():
+@pytest.mark.asyncio
+async def test_extractor_unknown_is_default():
     extractor = KeywordExtractor()
-    nodes = extractor.extract("# 标题\n没有结构化内容", "x.md")
+    nodes = await extractor.extract("# 标题\n没有结构化内容", "x.md")
     assert nodes[0]["acceptance_criteria"] == "UNKNOWN"
 
 
 # ── All 4 readiness states ────────────────────────────────────────────────
 
 
-def test_readiness_missing():
+@pytest.mark.asyncio
+async def test_readiness_missing():
     extractor = KeywordExtractor()
-    nodes = extractor.extract("# 空流程\n", "empty.md")
+    nodes = await extractor.extract("# 空流程\n", "empty.md")
     assert nodes[0]["readiness_status"] == "MISSING"
 
 
-def test_readiness_partial():
+@pytest.mark.asyncio
+async def test_readiness_partial():
     extractor = KeywordExtractor()
-    nodes = extractor.extract("# 部分流程\n输入: 需求\n活动: 编码", "partial.md")
+    nodes = await extractor.extract("# 部分流程\n输入: 需求\n活动: 编码", "partial.md")
     assert nodes[0]["readiness_status"] == "PARTIAL"
 
 
-def test_readiness_ready():
+@pytest.mark.asyncio
+async def test_readiness_ready():
     extractor = KeywordExtractor()
     text = (
         "# 完整流程\n"
@@ -199,13 +206,14 @@ def test_readiness_ready():
         "约束: 内存<512MB\n"
         "返工: 修复后重测\n"
     )
-    nodes = extractor.extract(text, "full.md")
+    nodes = await extractor.extract(text, "full.md")
     assert nodes[0]["readiness_status"] == "READY"
 
 
-def test_readiness_ambiguous():
+@pytest.mark.asyncio
+async def test_readiness_ambiguous():
     extractor = KeywordExtractor()
-    nodes = extractor.extract("# 未定流程\n输入: 待定\n活动: TBD\n输出: 暂不明确", "ambig.md")
+    nodes = await extractor.extract("# 未定流程\n输入: 待定\n活动: TBD\n输出: 暂不明确", "ambig.md")
     assert nodes[0]["readiness_status"] == "AMBIGUOUS"
 
 
