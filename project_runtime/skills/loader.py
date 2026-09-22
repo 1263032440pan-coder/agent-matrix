@@ -59,6 +59,17 @@ class SkillLoader:
             )
 
         body, refs = self._read_package(skill, required_references)
+
+        # Tamper check: recompute hash over the full package content on disk
+        # and compare with the import-time snapshot (D17B). A mismatch means
+        # the package was modified after import — refuse to load.
+        actual_hash = self._package_hash(skill)
+        if skill.content_hash and actual_hash != skill.content_hash:
+            raise SkillLoadError(
+                f"content tampered: {skill_id}@{version} on-disk hash "
+                f"{actual_hash[:12]} != registered {skill.content_hash[:12]}"
+            )
+
         logger.info(
             "Skill loaded: %s@%s refs=%d", skill_id, version, len(refs)
         )
@@ -86,9 +97,33 @@ class SkillLoader:
             return self._read_zip(package_ref, required_references)
         return self._read_dir(package_ref, required_references)
 
+    def _package_hash(self, skill: SkillDefinition) -> str:
+        """Recompute content hash over ALL package files (same algorithm as importer)."""
+        from project_runtime.skills.importer import compute_content_hash
+
+        package_ref = skill.package_ref
+        if not package_ref:
+            return ""
+        files: dict[str, bytes] = {}
+        if package_ref.endswith(".zip"):
+            import zipfile
+
+            with zipfile.ZipFile(package_ref) as zf:
+                for info in zf.infolist():
+                    if not info.is_dir():
+                        files[info.filename] = zf.read(info)
+        else:
+            root = Path(package_ref)
+            if not root.is_dir():
+                raise SkillLoadError(f"Package path missing: {package_ref}")
+            for f in sorted(root.rglob("*")):
+                if f.is_file() and not f.is_symlink():
+                    files[f.relative_to(root).as_posix()] = f.read_bytes()
+        return compute_content_hash(files)
+
     def _read_dir(
         self, root: str, required_references: list[str] | None
-    ) -> tuple[str, str]:
+    ) -> tuple[str, dict[str, str]]:
         root_path = Path(root)
         skill_md = root_path / "SKILL.md"
         if not skill_md.exists():

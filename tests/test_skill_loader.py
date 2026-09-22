@@ -105,6 +105,47 @@ async def test_e04_hash_mismatch(dbsession, imported_skill):
         await loader.load("exec-skill", "1.0.0", expected_hash="0" * 64)
 
 
+# E04b — disk tampering detected (post-import modification)
+@pytest.mark.asyncio
+async def test_e04b_disk_tamper_detected(dbsession, tmp_path):
+    root = tmp_path / "pkg"
+    (root / "references").mkdir(parents=True)
+    skill_md = root / "SKILL.md"
+    skill_md.write_text(SKILL_MD, encoding="utf-8")
+    await SkillPackageImporter(dbsession).import_directory(str(root))
+
+    # Tamper the on-disk file after import
+    skill_md.write_text(SKILL_MD + "\nTAMPERED\n", encoding="utf-8")
+
+    loader = SkillLoader(dbsession)
+    with pytest.raises(SkillLoadError, match="tampered"):
+        await loader.load("exec-skill", "1.0.0")
+
+    # Restore original content → load succeeds again
+    skill_md.write_text(SKILL_MD, encoding="utf-8")
+    ctx = await loader.load("exec-skill", "1.0.0")
+    assert "Execution method" in ctx.skill_body
+
+
+# E04c — ZIP tampering detected
+@pytest.mark.asyncio
+async def test_e04c_zip_tamper_detected(dbsession, tmp_path):
+    import zipfile
+
+    zp = tmp_path / "pkg.zip"
+    with zipfile.ZipFile(zp, "w") as zf:
+        zf.writestr("SKILL.md", SKILL_MD)
+    await SkillPackageImporter(dbsession).import_zip(str(zp))
+
+    # Rewrite zip with tampered content
+    with zipfile.ZipFile(zp, "w") as zf:
+        zf.writestr("SKILL.md", SKILL_MD + "\nTAMPERED\n")
+
+    loader = SkillLoader(dbsession)
+    with pytest.raises(SkillLoadError, match="tampered"):
+        await loader.load("exec-skill", "1.0.0")
+
+
 # E05 — Worker result tracks actual skill id/version/hash
 @pytest.mark.asyncio
 async def test_e05_worker_result_skill_audit(dbsession, project, imported_skill):
