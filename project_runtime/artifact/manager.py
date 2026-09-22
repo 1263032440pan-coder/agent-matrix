@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 from pathlib import Path
 
 from sqlalchemy import select
@@ -42,8 +43,10 @@ class ArtifactManager:
         latest_version = await self._get_latest_version(logical_id)
         version = latest_version + 1
 
-        # Write file
-        file_path = task_dir / f"{name}"
+        # Write file with version suffix to prevent overwrite
+        stem, ext = os.path.splitext(name)
+        versioned_name = f"{stem}.v{version}{ext}"
+        file_path = task_dir / versioned_name
         if isinstance(content, str):
             content = content.encode("utf-8")
         file_path.write_bytes(content)
