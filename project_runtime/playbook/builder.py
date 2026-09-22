@@ -28,7 +28,15 @@ class PlaybookBuilder:
         self._session = session
 
     async def build(self, project_id: int) -> ProjectPlaybook:
-        """Synthesise D05–D08 outputs into a Project Playbook."""
+        """Synthesise D05–D08 outputs into a Project Playbook.
+
+        Idempotent (D07-TD01 batch-1): repeated builds for the same project
+        return the latest existing playbook instead of creating duplicates.
+        """
+        existing = await self._get_latest_playbook(project_id)
+        if existing is not None:
+            return existing
+
         assets = await self._get_assets(project_id)
         procedure_model = await self._get_latest_procedure_model(project_id)
         assessment = await self._get_latest_assessment(project_id)
@@ -177,6 +185,15 @@ class PlaybookBuilder:
         )
         result = await self._session.execute(stmt)
         return result.scalar_one_or_none()
+
+    async def _get_latest_playbook(self, project_id: int) -> ProjectPlaybook | None:
+        stmt = (
+            select(ProjectPlaybook)
+            .where(ProjectPlaybook.project_id == project_id)
+            .order_by(ProjectPlaybook.id.desc())
+            .limit(1)
+        )
+        return (await self._session.execute(stmt)).scalar_one_or_none()
 
     async def _get_nodes(self, model: ProjectProcedureModel | None) -> list[ProcedureNode]:
         if model is None:

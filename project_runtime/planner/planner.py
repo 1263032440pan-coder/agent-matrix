@@ -39,15 +39,19 @@ class DynamicPlanner:
         self._mgr = TaskGraphManager(session)
 
     async def plan(self, playbook: ProjectPlaybook) -> list[Task]:
-        """Generate a Task Graph from a ProjectPlaybook."""
+        """Generate a Task Graph from a ProjectPlaybook.
+
+        Idempotent (D07-TD01 batch-1): planning the same playbook twice returns
+        existing tasks (matched by name) instead of duplicating them.
+        """
         workstreams = json.loads(playbook.workstreams or "[]")
         if not workstreams:
             return []
 
-        # Phase 1: Create Task for each workstream
+        # Phase 1: Create or reuse Task for each workstream
         task_map: dict[str, Task] = {}
         for ws in workstreams:
-            task = await self._create_task_for_workstream(playbook.project_id, ws)
+            task = await self._get_or_create_task(playbook.project_id, ws)
             task_map[ws["name"]] = task
 
         # Phase 2: Establish dependencies
@@ -55,6 +59,17 @@ class DynamicPlanner:
 
         # Phase 3: Validate (cycle check implicit via add_dependency)
         return list(task_map.values())
+
+    async def _get_or_create_task(self, project_id: int, ws: dict) -> Task:
+        from sqlalchemy import select
+
+        stmt = select(Task).where(
+            Task.project_id == project_id, Task.name == ws["name"]
+        )
+        existing = (await self._session.execute(stmt)).scalar_one_or_none()
+        if existing is not None:
+            return existing
+        return await self._create_task_for_workstream(project_id, ws)
 
     async def _create_task_for_workstream(self, project_id: int, ws: dict) -> Task:
         authority = (ws.get("source") or {}).get("authority", _OPTIONAL)

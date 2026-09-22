@@ -35,7 +35,15 @@ class MethodReadinessAssessor:
         self._session = session
 
     async def assess(self, project_id: int, model_id: int) -> ProjectReadinessAssessment:
-        """Run readiness assessment on all ProcedureNodes in a model."""
+        """Run readiness assessment on all ProcedureNodes in a model.
+
+        Idempotent (D07-TD01 batch-1): same (project_id, model_id) returns the
+        existing record instead of creating a duplicate.
+        """
+        existing = await self._find_existing(project_id, model_id)
+        if existing is not None:
+            return existing
+
         nodes = await self._get_nodes(model_id)
         if not nodes:
             return await self._create_assessment(project_id, model_id, [])
@@ -176,3 +184,12 @@ class MethodReadinessAssessor:
         stmt = select(ProcedureNode).where(ProcedureNode.model_id == model_id)
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
+
+    async def _find_existing(
+        self, project_id: int, model_id: int
+    ) -> ProjectReadinessAssessment | None:
+        stmt = select(ProjectReadinessAssessment).where(
+            ProjectReadinessAssessment.project_id == project_id,
+            ProjectReadinessAssessment.model_id == model_id,
+        )
+        return (await self._session.execute(stmt)).scalars().first()

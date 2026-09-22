@@ -81,7 +81,21 @@ class Scheduler:
                 continue
 
             if project.automation_mode == AutomationMode.MANUAL:
-                # MANUAL: create ManualAction, do not dispatch
+                # MANUAL: create ManualAction, do not dispatch.
+                # Idempotent (D07-TD01 batch-1): skip if a PENDING action for
+                # this task already exists.
+                existing_action = await self._session.execute(
+                    select(ManualAction).where(
+                        ManualAction.task_id == task.id,
+                        ManualAction.action_type == ManualActionType.TASK_DISPATCH,
+                        ManualAction.status == ManualActionStatus.PENDING,
+                    )
+                )
+                if existing_action.scalars().first() is not None:
+                    decisions.append(
+                        DispatchDecision(task.id, "MANUAL_PENDING", "already pending")
+                    )
+                    continue
                 action = ManualAction(
                     project_id=project_id,
                     task_id=task.id,

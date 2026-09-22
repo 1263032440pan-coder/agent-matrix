@@ -49,9 +49,15 @@ class GapClassifier:
         self._session = session
 
     async def classify(self, assessment_id: int) -> list[MethodGap]:
+        """Idempotent (D07-TD01 batch-1): repeated calls on the same assessment
+        return the existing gaps instead of duplicating them."""
         assessment = await self._get_assessment(assessment_id)
         if assessment is None:
             return []
+
+        existing = await self.list_gaps(assessment_id)
+        if existing:
+            return existing
 
         gaps_data = json.loads(assessment.gaps or "{}")
         raw_gaps: list[dict] = gaps_data.get("method_gaps", [])
