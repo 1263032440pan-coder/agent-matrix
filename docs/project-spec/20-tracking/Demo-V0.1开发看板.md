@@ -21,7 +21,7 @@
 | D15 | Resource Governor Lite | PASS | 是 | FROZEN |
 | D16 | Minimal Extension Registry | PASS | 是 | FROZEN |
 | D17 | Desktop UI | PASS | 是 | FROZEN |
-| D17A | Skill Registry | TODO | 是 | Registry + Binding + Version Pin |
+| D17A | Skill Registry | PASS | 是 | Registry + Binding + Version Pin |
 | D17B | Skill Package Import + Validation | TODO | 是 | 用户外部 Skill 目录/ZIP |
 | D17C | Skill Resolver + Project Binding | TODO | 是 | Rule-first |
 | D17D | Skill Loader + Worker Execution Integration | TODO | 是 | 不内置具体 Skill |
