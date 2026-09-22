@@ -120,10 +120,16 @@ async def test_gap_six_types_produced_without_llm(dbsession):
 
     clf = GapClassifier(dbsession)
     # Direct unit: dimension fallback
-    assert await clf._classify_gap_type({"dimension": "scope_coverage"}) == GapType.PROCESS
-    assert await clf._classify_gap_type({"dimension": "artifact_definition"}) == GapType.EXPLICITNESS
+    assert await clf._classify_gap_type(
+        {"dimension": "scope_coverage"}
+    ) == GapType.PROCESS
+    assert await clf._classify_gap_type(
+        {"dimension": "artifact_definition"}
+    ) == GapType.EXPLICITNESS
     # UNKNOWN dim → EXPLICITNESS default
-    assert await clf._classify_gap_type({"dimension": "nonexistent"}) == GapType.EXPLICITNESS
+    assert await clf._classify_gap_type(
+        {"dimension": "nonexistent"}
+    ) == GapType.EXPLICITNESS
 
 
 @pytest.mark.asyncio
