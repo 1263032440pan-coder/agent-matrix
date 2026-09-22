@@ -151,3 +151,73 @@ async def test_manual_action_no_duplicates(dbsession, tmp_path):
         )
     ).scalar_one()
     assert count == 1
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# Evolution cases — idempotency must NOT block new inputs (返修单 P2)
+# ════════════════════════════════════════════════════════════════════════════
+
+SOP_V2 = SOP + "\n## 交付\n\n输入: app\n活动: 部署\n依赖: 开发\n验收: 签字\n"
+
+
+@pytest.mark.asyncio
+async def test_normalize_evolution_new_assets_new_model(dbsession, project, tmp_path):
+    f = tmp_path / "sop.md"
+    f.write_text(SOP, encoding="utf-8")
+    await MethodAssetImporter(dbsession).import_file(project.id, f)
+
+    normalizer = ProcedureNormalizer(dbsession)
+    m1 = await normalizer.normalize(project.id)
+    m1_again = await normalizer.normalize(project.id)
+    assert m1.id == m1_again.id  # idempotent
+
+    # Asset set changes → new model
+    f2 = tmp_path / "sop2.md"
+    f2.write_text(SOP_V2, encoding="utf-8")
+    await MethodAssetImporter(dbsession).import_file(project.id, f2)
+    m2 = await normalizer.normalize(project.id)
+    assert m2.id != m1.id
+
+
+@pytest.mark.asyncio
+async def test_evolution_chain_new_playbook_new_tasks(dbsession, project, tmp_path):
+    """Full evolution: new asset → new model → new assessment → new playbook →
+    new task set (返修单 P1 regression)."""
+    f = tmp_path / "sop.md"
+    f.write_text(SOP, encoding="utf-8")
+    await MethodAssetImporter(dbsession).import_file(project.id, f)
+
+    normalizer = ProcedureNormalizer(dbsession)
+    assessor = MethodReadinessAssessor(dbsession)
+    classifier = GapClassifier(dbsession)
+    builder = PlaybookBuilder(dbsession)
+    planner = DynamicPlanner(dbsession)
+
+    m1 = await normalizer.normalize(project.id)
+    a1 = await assessor.assess(project.id, m1.id)
+    await classifier.classify(a1.id)
+    pb1 = await builder.build(project.id)
+    await planner.plan(pb1)
+    pb_count_1 = await _count(dbsession, ProjectPlaybook)
+    task_count_1 = await _count(dbsession, Task)
+
+    # Evolve: second asset arrives
+    f2 = tmp_path / "sop2.md"
+    f2.write_text(SOP_V2, encoding="utf-8")
+    await MethodAssetImporter(dbsession).import_file(project.id, f2)
+
+    m2 = await normalizer.normalize(project.id)
+    assert m2.id != m1.id  # new model
+
+    a2 = await assessor.assess(project.id, m2.id)
+    assert a2.id != a1.id  # new assessment (different model_id key)
+
+    await classifier.classify(a2.id)
+    pb2 = await builder.build(project.id)
+    assert pb2.id != pb1.id  # NEW playbook — evolution not blocked
+    assert await _count(dbsession, ProjectPlaybook) == pb_count_1 + 1
+
+    t2 = await planner.plan(pb2)
+    # plan reuses tasks by name (same project), but new playbook drives planning
+    assert t2
+    assert await _count(dbsession, Task) >= task_count_1

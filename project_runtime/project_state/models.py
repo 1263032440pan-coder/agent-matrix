@@ -484,6 +484,7 @@ class ProjectProcedureModel(Base):
     project_id: Mapped[int] = mapped_column(ForeignKey("project.id"), nullable=False)
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
     source_map: Mapped[str | None] = mapped_column(Text, nullable=True)
+    asset_fingerprint: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )

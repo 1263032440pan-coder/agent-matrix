@@ -147,10 +147,24 @@ class ProcedureNormalizer:
         self._extractor = extractor or KeywordExtractor()
 
     async def normalize(self, project_id: int) -> ProjectProcedureModel:
-        """Process all MethodAssets for a project into a Procedure Model."""
-        assets = await self._get_assets(project_id)
+        """Process all MethodAssets for a project into a Procedure Model.
 
-        model = ProjectProcedureModel(project_id=project_id, source_map=json.dumps([]))
+        Idempotent (ADR-038): the key is the fingerprint of the project's
+        current asset set (sorted content_hashes). Unchanged assets return the
+        existing model; changed assets produce a new model.
+        """
+        assets = await self._get_assets(project_id)
+        fingerprint = self._assets_fingerprint(assets)
+
+        existing = await self._find_model_by_fingerprint(project_id, fingerprint)
+        if existing is not None:
+            return existing
+
+        model = ProjectProcedureModel(
+            project_id=project_id,
+            source_map=json.dumps([]),
+            asset_fingerprint=fingerprint,  # idempotency key (ADR-038)
+        )
         self._session.add(model)
         await self._session.flush()
 
@@ -189,6 +203,22 @@ class ProcedureNormalizer:
         model.source_map = json.dumps(source_entries)
         await self._session.flush()
         return model
+
+    async def _find_model_by_fingerprint(
+        self, project_id: int, fingerprint: str
+    ) -> ProjectProcedureModel | None:
+        stmt = select(ProjectProcedureModel).where(
+            ProjectProcedureModel.project_id == project_id,
+            ProjectProcedureModel.asset_fingerprint == fingerprint,
+        )
+        return (await self._session.execute(stmt)).scalars().first()
+
+    @staticmethod
+    def _assets_fingerprint(assets: list) -> str:
+        import hashlib
+
+        hashes = sorted(a.content_hash for a in assets)
+        return hashlib.sha256("|".join(hashes).encode()).hexdigest()
 
     async def get_nodes(self, model_id: int) -> list[ProcedureNode]:
         stmt = select(ProcedureNode).where(ProcedureNode.model_id == model_id)

@@ -30,16 +30,21 @@ class PlaybookBuilder:
     async def build(self, project_id: int) -> ProjectPlaybook:
         """Synthesise D05–D08 outputs into a Project Playbook.
 
-        Idempotent (D07-TD01 batch-1): repeated builds for the same project
-        return the latest existing playbook instead of creating duplicates.
+        Idempotent (ADR-038): repeated builds for the same (project, latest
+        procedure model) return the existing playbook. A NEW model (driven by
+        new assets → new normalize → new assessment) produces a NEW playbook —
+        evolution is not blocked by idempotency.
         """
-        existing = await self._get_latest_playbook(project_id)
-        if existing is not None:
-            return existing
-
         assets = await self._get_assets(project_id)
         procedure_model = await self._get_latest_procedure_model(project_id)
         assessment = await self._get_latest_assessment(project_id)
+
+        existing = await self._get_playbook_for_model(
+            project_id, procedure_model.id if procedure_model else None
+        )
+        if existing is not None:
+            return existing
+
         gaps = await self._get_gaps(assessment)
 
         # ── workstreams ──────────────────────────────────────────────────
@@ -186,14 +191,22 @@ class PlaybookBuilder:
         result = await self._session.execute(stmt)
         return result.scalar_one_or_none()
 
-    async def _get_latest_playbook(self, project_id: int) -> ProjectPlaybook | None:
-        stmt = (
-            select(ProjectPlaybook)
-            .where(ProjectPlaybook.project_id == project_id)
-            .order_by(ProjectPlaybook.id.desc())
-            .limit(1)
+    async def _get_playbook_for_model(
+        self, project_id: int, model_id: int | None
+    ) -> ProjectPlaybook | None:
+        """Idempotency key: (project_id, latest procedure model id).
+
+        procedure_model_version JSON contains model_id; match on it so a new
+        model (new assets → new normalize) yields a NEW playbook while repeat
+        builds on the same model return the existing one.
+        """
+        if model_id is None:
+            return None
+        stmt = select(ProjectPlaybook).where(
+            ProjectPlaybook.project_id == project_id,
+            ProjectPlaybook.procedure_model_version.like(f'%"model_id": {model_id}%'),
         )
-        return (await self._session.execute(stmt)).scalar_one_or_none()
+        return (await self._session.execute(stmt)).scalars().first()
 
     async def _get_nodes(self, model: ProjectProcedureModel | None) -> list[ProcedureNode]:
         if model is None:
