@@ -18,9 +18,17 @@ export interface DashboardData {
   gate_results: Array<{ id: number; task_id: number; status: string }>;
   readiness: { id: number; version: number; coverage_summary: string | null } | null;
   gap_count: number;
+  timeline: Array<{
+    id: number;
+    task_id: number;
+    task_name: string;
+    attempt: number;
+    started_at: string | null;
+    finished_at: string | null;
+  }>;
 }
 
-const API_BASE = 'http://127.0.0.1:9100';
+const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:9100';
 
 export async function fetchDashboard(projectId: number): Promise<DashboardData> {
   const resp = await fetch(`${API_BASE}/api/projects/${projectId}/dashboard`);

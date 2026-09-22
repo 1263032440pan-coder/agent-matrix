@@ -111,6 +111,18 @@ export function Dashboard({ projectId }: { projectId: number }) {
           ))}
         </ul>
       </section>
+
+      <section data-testid="timeline">
+        <h3>Execution Timeline</h3>
+        <ul>
+          {data.timeline.map((r) => (
+            <li key={r.id}>
+              {r.task_name} (attempt {r.attempt}) — {r.started_at ?? '…'} →{' '}
+              {r.finished_at ?? '…'}
+            </li>
+          ))}
+        </ul>
+      </section>
     </div>
   );
 }

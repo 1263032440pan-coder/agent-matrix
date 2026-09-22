@@ -14,6 +14,7 @@ from project_runtime.project_state.models import (
     Project,
     ProjectReadinessAssessment,
     Task,
+    TaskRun,
 )
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
@@ -110,6 +111,19 @@ async def project_dashboard(project_id: int, session: AsyncSession = Depends(get
         )
     ).scalar_one()
 
+    # Execution timeline (TaskRun, newest first)
+    runs = (
+        (
+            await session.execute(
+                select(TaskRun, Task.name)
+                .join(Task, TaskRun.task_id == Task.id)
+                .where(Task.project_id == project_id)
+                .order_by(TaskRun.id.desc())
+            )
+        )
+        .all()
+    )
+
     return {
         "project": {
             "id": project.id,
@@ -149,4 +163,19 @@ async def project_dashboard(project_id: int, session: AsyncSession = Depends(get
             else None
         ),
         "gap_count": gap_count,
+        "timeline": [
+            {
+                "id": r.TaskRun.id,
+                "task_id": r.TaskRun.task_id,
+                "task_name": r.name,
+                "attempt": r.TaskRun.attempt,
+                "started_at": (
+                    r.TaskRun.started_at.isoformat() if r.TaskRun.started_at else None
+                ),
+                "finished_at": (
+                    r.TaskRun.finished_at.isoformat() if r.TaskRun.finished_at else None
+                ),
+            }
+            for r in runs
+        ],
     }

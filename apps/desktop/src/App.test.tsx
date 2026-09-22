@@ -15,6 +15,16 @@ const MOCK: DashboardData = {
   gate_results: [{ id: 3, task_id: 1, status: 'PASS' }],
   readiness: { id: 1, version: 2, coverage_summary: null },
   gap_count: 4,
+  timeline: [
+    {
+      id: 1,
+      task_id: 1,
+      task_name: 'task-a',
+      attempt: 1,
+      started_at: '2026-09-22T10:00:00',
+      finished_at: '2026-09-22T10:01:00',
+    },
+  ],
 };
 
 vi.mock('./api', () => ({
@@ -42,6 +52,7 @@ describe('Dashboard', () => {
     expect(screen.getByTestId('artifacts')).toHaveTextContent('out.txt v1');
     expect(screen.getByTestId('gate-results')).toHaveTextContent('PASS');
     expect(screen.getByTestId('readiness')).toHaveTextContent('Gap Count: 4');
+    expect(screen.getByTestId('timeline')).toHaveTextContent('task-a (attempt 1)');
   });
 
   it('shows error on fetch failure', async () => {
