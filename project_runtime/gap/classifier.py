@@ -73,8 +73,10 @@ class GapClassifier:
         raw_gaps: list[dict] = gaps_data.get("method_gaps", [])
 
         method_gaps: list[MethodGap] = []
-        for raw in raw_gaps:
-            gap_type = await self._classify_gap_type(raw)
+        # Batch 3: batch LLM classification — one call for all gaps (not per-gap)
+        llm_types = await self._classify_gaps_batch_llm(raw_gaps)
+        for i, raw in enumerate(raw_gaps):
+            gap_type = llm_types[i] if llm_types else self._classify_gap_type_fallback(raw)
             severity = self._classify_severity(raw)
             strategy = _RESOLUTION_STRATEGIES[gap_type]
 
@@ -102,6 +104,74 @@ class GapClassifier:
         stmt = select(MethodGap).where(MethodGap.assessment_id == assessment_id)
         result = await self._session.execute(stmt)
         return list(result.scalars().all())
+
+    def _classify_gap_type_fallback(self, raw_gap: dict) -> GapType:
+        """Dimension-mapping fallback (only EXPLICITNESS/PROCESS reachable)."""
+        dim = raw_gap.get("dimension", "")
+        return _DIMENSION_TO_GAP_TYPE.get(dim, GapType.EXPLICITNESS)
+
+    async def _classify_gaps_batch_llm(
+        self, raw_gaps: list[dict]
+    ) -> list[GapType] | None:
+        """One LLM call classifies all gaps. Returns None when LLM off/fails."""
+        if not self._llm_enabled or not raw_gaps:
+            return None
+        try:
+            from project_runtime.llm import load_llm_settings
+
+            cfg = load_llm_settings()
+            if not (cfg.base_url and cfg.api_key and cfg.model):
+                return None
+        except Exception:
+            return None
+
+        import litellm
+
+        lines = "\n".join(
+            f"{i}. {g.get('reason', '')[:80]}" for i, g in enumerate(raw_gaps)
+        )
+        prompt = (
+            "将下列项目缺口逐条归类为六类之一，仅输出编号+类别（每行一条）：\n"
+            "PRIVATE / EXPLICITNESS / DOMAIN / TECHNICAL / PROCESS / CAPABILITY\n\n"
+            f"{lines}\n\n输出格式：0: PROCESS\\n1: EXPLICITNESS\\n..."
+        )
+        model = cfg.model
+        known = ("openai/", "azure/", "anthropic/", "huggingface/", "ollama/",
+                 "gemini/", "deepseek/", "mistral/")
+        if "/" in model and not model.startswith(known):
+            model = f"openai/{model}"
+        try:
+            resp = await litellm.acompletion(
+                model=model, api_base=cfg.base_url, api_key=cfg.api_key,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=min(4096, 50 + len(raw_gaps) * 10), timeout=120,
+            )
+            answer = (resp.choices[0].message.content or "").strip()
+            return self._parse_batch(answer, len(raw_gaps))
+        except Exception as e:
+            import logging
+
+            logging.getLogger(__name__).warning("LLM batch gap classify failed: %s", e)
+            return None
+
+    @staticmethod
+    def _parse_batch(answer: str, count: int) -> list[GapType] | None:
+        import re
+
+        result: list[GapType | None] = [None] * count
+        for line in answer.splitlines():
+            m = re.match(r"\s*(\d+)\s*[:：.]\s*(\w+)", line)
+            if not m:
+                continue
+            idx, word = int(m.group(1)), m.group(2).upper()
+            if 0 <= idx < count:
+                for gt in GapType:
+                    if gt.value in word:
+                        result[idx] = gt
+                        break
+        if any(r is None for r in result):
+            return None  # incomplete parse → fallback
+        return result  # type: ignore[return-value]
 
     async def _classify_gap_type(self, raw_gap: dict) -> GapType:
         """Batch 3 (D08-TD01): LLM semantic classification when configured,
