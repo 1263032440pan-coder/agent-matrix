@@ -200,7 +200,11 @@ class ProcedureNormalizer:
         for nd in all_node_dicts:
             # source asset id for provenance (best-effort match by source_ref)
             asset_id = next(
-                (a.id for a in assets if (a.source_path or f"asset-{a.id}") == nd.get("source_ref")),
+                (
+                    a.id
+                    for a in assets
+                    if (a.source_path or f"asset-{a.id}") == nd.get("source_ref")
+                ),
                 assets[0].id if assets else None,
             )
             node = ProcedureNode(
