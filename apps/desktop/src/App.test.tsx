@@ -6,8 +6,8 @@ import type { DashboardData } from './api';
 const MOCK: DashboardData = {
   project: { id: 1, name: 'demo', status: 'ACTIVE', automation_mode: 'FULL_AUTO' },
   tasks: [
-    { id: 1, name: 'task-a', status: 'ACCEPTED' },
-    { id: 2, name: 'task-b', status: 'RUNNING' },
+    { id: 1, name: 'task-a', status: 'ACCEPTED', depends_on: [] },
+    { id: 2, name: 'task-b', status: 'RUNNING', depends_on: [1] },
   ],
   current_task: { id: 2, name: 'task-b' },
   worker_status: { running: 1, ready: 0 },
@@ -39,20 +39,33 @@ describe('Dashboard', () => {
     vi.mocked(fetchDashboard).mockResolvedValue(MOCK);
   });
 
-  it('renders project status, tasks, artifacts, gates', async () => {
+  it('renders header, graph nodes, artifacts, gates', async () => {
     render(<Dashboard projectId={1} />);
-    await waitFor(() =>
-      expect(screen.getByTestId('project-status')).toHaveTextContent('demo')
-    );
+    await waitFor(() => screen.getByText('demo'));
 
-    expect(screen.getByTestId('project-status')).toHaveTextContent('ACTIVE');
     expect(screen.getByTestId('task-graph')).toHaveTextContent('task-a');
     expect(screen.getByTestId('task-graph')).toHaveTextContent('task-b');
+    // Graph nodes are SVG groups
+    expect(screen.getByTestId('task-node-1')).toBeDefined();
+    expect(screen.getByTestId('task-node-2')).toBeDefined();
+    // Dependency edge rendered as polyline
+    const svg = screen.getByTestId('task-graph').querySelector('svg')!;
+    expect(svg.querySelectorAll('polyline').length).toBe(1);
     expect(screen.getByTestId('current-task')).toHaveTextContent('task-b');
     expect(screen.getByTestId('artifacts')).toHaveTextContent('out.txt v1');
     expect(screen.getByTestId('gate-results')).toHaveTextContent('PASS');
     expect(screen.getByTestId('readiness')).toHaveTextContent('Gap Count: 4');
     expect(screen.getByTestId('timeline')).toHaveTextContent('task-a (attempt 1)');
+  });
+
+  it('shows task detail on node click', async () => {
+    render(<Dashboard projectId={1} />);
+    await waitFor(() => screen.getByTestId('task-node-1'));
+    screen.getByTestId('task-node-1').dispatchEvent(
+      new MouseEvent('click', { bubbles: true })
+    );
+    await waitFor(() => screen.getByTestId('task-detail'));
+    expect(screen.getByTestId('task-detail')).toHaveTextContent('task-a');
   });
 
   it('shows error on fetch failure', async () => {

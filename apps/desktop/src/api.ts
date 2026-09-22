@@ -5,7 +5,7 @@ export interface DashboardData {
     status: string;
     automation_mode: string;
   };
-  tasks: Array<{ id: number; name: string; status: string }>;
+  tasks: Array<{ id: number; name: string; status: string; depends_on?: number[] }>;
   current_task: { id: number; name: string } | null;
   worker_status: { running: number; ready: number };
   artifacts: Array<{
@@ -45,5 +45,32 @@ export async function listProjects(): Promise<
   if (!resp.ok) {
     throw new Error(`Projects fetch failed: ${resp.status}`);
   }
+  return resp.json();
+}
+
+export async function createProject(
+  name: string,
+  automationMode = 'FULL_AUTO'
+): Promise<{ id: number; name: string }> {
+  const resp = await fetch(`${API_BASE}/api/projects`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, automation_mode: automationMode }),
+  });
+  if (!resp.ok) throw new Error(`Create project failed: ${resp.status}`);
+  return resp.json();
+}
+
+export async function uploadMethodAsset(
+  projectId: number,
+  file: File
+): Promise<{ id: number; content_hash: string }> {
+  const form = new FormData();
+  form.append('file', file);
+  const resp = await fetch(
+    `${API_BASE}/api/projects/${projectId}/method-assets/upload`,
+    { method: 'POST', body: form }
+  );
+  if (!resp.ok) throw new Error(`Upload failed: ${resp.status}`);
   return resp.json();
 }

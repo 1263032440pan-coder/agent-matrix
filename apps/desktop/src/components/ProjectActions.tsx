@@ -1,0 +1,87 @@
+import { useState } from 'react';
+import { createProject, uploadMethodAsset } from '../api';
+
+export function ProjectActions({
+  projectId,
+  onCreated,
+  onImported,
+}: {
+  projectId: number | null;
+  onCreated: (id: number) => void;
+  onImported: () => void;
+}) {
+  const [name, setName] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+
+  const doCreate = async () => {
+    if (!name.trim()) return;
+    setBusy(true);
+    try {
+      const p = await createProject(name.trim());
+      setMessage(`已创建项目 #${p.id}`);
+      setName('');
+      onCreated(p.id);
+    } catch (e) {
+      setMessage(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const doUpload = async (f: File | null) => {
+    if (!f || projectId === null) return;
+    setBusy(true);
+    try {
+      const r = await uploadMethodAsset(projectId, f);
+      setMessage(`已导入方法资料 (hash ${r.content_hash.slice(0, 8)}…)`);
+      onImported();
+    } catch (e) {
+      setMessage(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div
+      data-testid="project-actions"
+      style={{
+        background: '#fff',
+        border: '1px solid #e5e7eb',
+        borderRadius: 8,
+        padding: 16,
+        marginBottom: 16,
+        display: 'flex',
+        gap: 12,
+        alignItems: 'center',
+        flexWrap: 'wrap',
+      }}
+    >
+      <input
+        placeholder="输入项目目标 / 名称"
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        style={{ padding: '6px 10px', border: '1px solid #ccc', borderRadius: 4, minWidth: 240 }}
+      />
+      <button
+        onClick={doCreate}
+        disabled={busy || !name.trim()}
+        style={{ padding: '6px 14px' }}
+      >
+        创建项目
+      </button>
+      <label style={{ padding: '6px 14px', border: '1px solid #ccc', borderRadius: 4, cursor: 'pointer' }}>
+        导入方法资料 (.md/.txt)
+        <input
+          type="file"
+          accept=".md,.txt"
+          style={{ display: 'none' }}
+          onChange={(e) => doUpload(e.target.files?.[0] ?? null)}
+          disabled={busy || projectId === null}
+        />
+      </label>
+      {message && <span style={{ color: '#555', fontSize: 13 }}>{message}</span>}
+    </div>
+  );
+}

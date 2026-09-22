@@ -1,12 +1,17 @@
-"""Read-only project dashboard API (D17)."""
+"""Project dashboard API (D17 read-only + minimal write actions for demo)."""
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+import tempfile
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from infrastructure.database import engine
+from project_runtime.project_state.enums import AutomationMode, ProjectStatus
 from project_runtime.project_state.models import (
     Artifact,
     GateResult,
@@ -23,6 +28,55 @@ router = APIRouter(prefix="/api/projects", tags=["projects"])
 async def get_session():
     async with AsyncSession(engine) as session:
         yield session
+
+
+class CreateProjectRequest(BaseModel):
+    name: str
+    automation_mode: str = "FULL_AUTO"
+
+
+@router.post("", status_code=201)
+async def create_project(
+    req: CreateProjectRequest, session: AsyncSession = Depends(get_session)
+):
+    if req.automation_mode not in ("FULL_AUTO", "MANUAL"):
+        raise HTTPException(400, "automation_mode must be FULL_AUTO or MANUAL")
+    project = Project(
+        name=req.name,
+        automation_mode=AutomationMode(req.automation_mode),
+        status=ProjectStatus.CREATED,
+    )
+    session.add(project)
+    await session.commit()
+    return {"id": project.id, "name": project.name}
+
+
+@router.post("/{project_id}/method-assets/upload", status_code=201)
+async def upload_method_asset(
+    project_id: int,
+    file: UploadFile,
+    session: AsyncSession = Depends(get_session),
+):
+    """Import a method asset file (md/txt) uploaded from the UI."""
+    project = await session.get(Project, project_id)
+    if project is None:
+        raise HTTPException(404, "Project not found")
+
+    from project_runtime.method_asset.importer import MethodAssetImporter
+
+    content = await file.read()
+    with tempfile.NamedTemporaryFile(
+        delete=False, suffix=Path(file.filename or "asset.md").suffix
+    ) as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+    try:
+        importer = MethodAssetImporter(session)
+        asset = await importer.import_file(project_id, tmp_path)
+        await session.commit()
+        return {"id": asset.id, "content_hash": asset.content_hash}
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
 
 
 @router.get("")
@@ -47,14 +101,36 @@ async def project_dashboard(project_id: int, session: AsyncSession = Depends(get
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
 
-    # Tasks
+    # Tasks (with dependency edges for graph rendering)
     tasks = (
         (await session.execute(select(Task).where(Task.project_id == project_id)))
         .scalars()
         .all()
     )
+    from project_runtime.project_state.models import TaskDependency
+
+    dep_rows = (
+        (
+            await session.execute(
+                select(TaskDependency).where(
+                    TaskDependency.task_id.in_([t.id for t in tasks] or [0])
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    deps_by_task: dict[int, list[int]] = {}
+    for d in dep_rows:
+        deps_by_task.setdefault(d.task_id, []).append(d.depends_on_id)
     task_list = [
-        {"id": t.id, "name": t.name, "status": t.status.value} for t in tasks
+        {
+            "id": t.id,
+            "name": t.name,
+            "status": t.status.value,
+            "depends_on": deps_by_task.get(t.id, []),
+        }
+        for t in tasks
     ]
     current_task = next(
         (t for t in tasks if t.status.value == "RUNNING"), None
