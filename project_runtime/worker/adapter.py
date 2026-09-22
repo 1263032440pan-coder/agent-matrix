@@ -100,21 +100,26 @@ class MockWorkerAdapter(WorkerAdapter):
         self._mgr = TaskGraphManager(session)
         self._artifact_mgr = artifact_mgr
         self._running: dict[int, asyncio.Task] = {}
+        # AsyncSession is NOT coroutine-safe: serialize all DB-touching
+        # operations through this lock (batch-2 cancel race fix).
+        self._db_lock = asyncio.Lock()
 
     async def assign(self, wp: WorkPackage) -> ExecutionResult:
-        task = await self._mgr.get_task(wp.task_id)
-        if task is None:
-            raise ValueError(f"Task not found: {wp.task_id}")
+        # Phase 1 (DB, locked): validate READY + RUNNING transition
+        async with self._db_lock:
+            task = await self._mgr.get_task(wp.task_id)
+            if task is None:
+                raise ValueError(f"Task not found: {wp.task_id}")
 
-        # Red line 3: must be READY
-        if task.status != TaskStatus.READY:
-            raise ValueError(
-                f"Worker cannot start task in status {task.status.value}. Must be READY."
-            )
+            # Red line 3: must be READY
+            if task.status != TaskStatus.READY:
+                raise ValueError(
+                    f"Worker cannot start task in status {task.status.value}. Must be READY."
+                )
 
-        # READY → RUNNING
-        await self._fsm.transition_task(task, TaskStatus.RUNNING)
-        await self._session.flush()
+            # READY → RUNNING
+            await self._fsm.transition_task(task, TaskStatus.RUNNING)
+            await self._session.flush()
 
         # Simulate work (skill context, when provided, is consumed read-only)
         await asyncio.sleep(self._simulate_delay)
@@ -123,43 +128,51 @@ class MockWorkerAdapter(WorkerAdapter):
             sc = wp.skill_context
             result_output += f" [skill={sc.skill_id}@{sc.skill_version}]"
 
-        # RUNNING → EXECUTION_DONE (NEVER ACCEPTED — red line 1+2)
-        await self._fsm.transition_task(task, TaskStatus.EXECUTION_DONE)
-        await self._session.flush()
+        # Phase 2 (DB, locked): EXECUTION_DONE + TaskRun + Artifact
+        async with self._db_lock:
+            await self._session.refresh(task)
 
-        # Create TaskRun audit record
-        from project_runtime.project_state.models import TaskRun
+            # If cancelled during simulated work, do not force EXECUTION_DONE
+            if task.status == TaskStatus.CANCELLED:
+                return ExecutionResult(task_id=wp.task_id, success=False, output="cancelled")
 
-        now = datetime.datetime.now(datetime.timezone.utc)
-        run_payload: dict = {"output": result_output}
-        if wp.skill_context is not None:
-            run_payload["skill"] = {
-                "skill_id": wp.skill_context.skill_id,
-                "skill_version": wp.skill_context.skill_version,
-                "content_hash": wp.skill_context.skill_content_hash,
-            }
-        run = TaskRun(
-            task_id=task.id,
-            attempt=1,
-            started_at=now - datetime.timedelta(seconds=self._simulate_delay),
-            finished_at=now,
-            result=json.dumps(run_payload),
-        )
-        self._session.add(run)
+            # RUNNING → EXECUTION_DONE (NEVER ACCEPTED — red line 1+2)
+            await self._fsm.transition_task(task, TaskStatus.EXECUTION_DONE)
+            await self._session.flush()
 
-        # Create Artifact if manager is wired
-        artifact_id: int | None = None
-        if self._artifact_mgr is not None:
-            artifact = await self._artifact_mgr.create_artifact(
-                project_id=task.project_id,
+            # Create TaskRun audit record
+            from project_runtime.project_state.models import TaskRun
+
+            now = datetime.datetime.now(datetime.timezone.utc)
+            run_payload: dict = {"output": result_output}
+            if wp.skill_context is not None:
+                run_payload["skill"] = {
+                    "skill_id": wp.skill_context.skill_id,
+                    "skill_version": wp.skill_context.skill_version,
+                    "content_hash": wp.skill_context.skill_content_hash,
+                }
+            run = TaskRun(
                 task_id=task.id,
-                logical_id=f"task-{task.id}-output",
-                name=f"{task.name}_output.txt",
-                content=result_output,
+                attempt=1,
+                started_at=now - datetime.timedelta(seconds=self._simulate_delay),
+                finished_at=now,
+                result=json.dumps(run_payload),
             )
-            artifact_id = artifact.id
+            self._session.add(run)
 
-        await self._session.flush()
+            # Create Artifact if manager is wired
+            artifact_id: int | None = None
+            if self._artifact_mgr is not None:
+                artifact = await self._artifact_mgr.create_artifact(
+                    project_id=task.project_id,
+                    task_id=task.id,
+                    logical_id=f"task-{task.id}-output",
+                    name=f"{task.name}_output.txt",
+                    content=result_output,
+                )
+                artifact_id = artifact.id
+
+            await self._session.flush()
 
         return ExecutionResult(
             task_id=wp.task_id,
@@ -178,12 +191,13 @@ class MockWorkerAdapter(WorkerAdapter):
         )
 
     async def cancel(self, task_id: int) -> None:
-        task = await self._mgr.get_task(task_id)
-        if task is None:
-            return
-        if task.status == TaskStatus.RUNNING:
-            await self._fsm.transition_task(task, TaskStatus.CANCELLED)
-            await self._session.flush()
+        async with self._db_lock:
+            task = await self._mgr.get_task(task_id)
+            if task is None:
+                return
+            if task.status == TaskStatus.RUNNING:
+                await self._fsm.transition_task(task, TaskStatus.CANCELLED)
+                await self._session.flush()
 
     async def health(self) -> str:
         return "healthy"
