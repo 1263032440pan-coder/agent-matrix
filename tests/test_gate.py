@@ -181,7 +181,8 @@ async def test_execution_done_to_accepted_only_via_gate(dbsession, project):
 
     # Non-GATE actor is rejected by FSM actor guard
     fsm = StateTransitionService(dbsession)
-    with pytest.raises(Exception, match=""):
+    from project_runtime.project_state.fsm import InvalidStateTransitionError
+    with pytest.raises(InvalidStateTransitionError):
         await fsm.transition_task(task, TaskStatus.ACCEPTED, actor="WORKER")
     await dbsession.refresh(task)
     assert task.status == TaskStatus.EXECUTION_DONE  # unchanged
