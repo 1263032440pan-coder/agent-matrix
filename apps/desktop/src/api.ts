@@ -39,7 +39,7 @@ export async function fetchDashboard(projectId: number): Promise<DashboardData> 
 }
 
 export async function listProjects(): Promise<
-  Array<{ id: number; name: string; status: string }>
+  Array<{ id: number; name: string; status: string; automation_mode?: string }>
 > {
   const resp = await fetch(`${API_BASE}/api/projects`);
   if (!resp.ok) {
@@ -58,6 +58,19 @@ export async function createProject(
     body: JSON.stringify({ name, automation_mode: automationMode }),
   });
   if (!resp.ok) throw new Error(`Create project failed: ${resp.status}`);
+  return resp.json();
+}
+
+export async function updateProjectMode(
+  projectId: number,
+  automationMode: 'FULL_AUTO' | 'MANUAL'
+): Promise<{ id: number; automation_mode: string }> {
+  const resp = await fetch(`${API_BASE}/api/projects/${projectId}/mode`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ automation_mode: automationMode }),
+  });
+  if (!resp.ok) throw new Error(`Update mode failed: ${resp.status}`);
   return resp.json();
 }
 

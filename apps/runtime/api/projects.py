@@ -35,6 +35,10 @@ class CreateProjectRequest(BaseModel):
     automation_mode: str = "FULL_AUTO"
 
 
+class ModeUpdateRequest(BaseModel):
+    automation_mode: str
+
+
 @router.post("", status_code=201)
 async def create_project(
     req: CreateProjectRequest, session: AsyncSession = Depends(get_session)
@@ -51,6 +55,23 @@ async def create_project(
     pid, pname = project.id, project.name
     await session.commit()
     return {"id": pid, "name": pname}
+
+
+@router.patch("/{project_id}/mode", status_code=200)
+async def update_project_mode(
+    project_id: int, req: ModeUpdateRequest, session: AsyncSession = Depends(get_session)
+):
+    """Toggle FULL_AUTO / MANUAL at runtime (V0.1: no FSM rule blocks this)."""
+    if req.automation_mode not in ("FULL_AUTO", "MANUAL"):
+        raise HTTPException(400, "automation_mode must be FULL_AUTO or MANUAL")
+    project = await session.get(Project, project_id)
+    if project is None:
+        raise HTTPException(404, "Project not found")
+    project.automation_mode = AutomationMode(req.automation_mode)
+    pid = project.id
+    mode = project.automation_mode.value  # read before commit (attrs expire)
+    await session.commit()
+    return {"id": pid, "automation_mode": mode}
 
 
 @router.post("/{project_id}/method-assets/upload", status_code=201)

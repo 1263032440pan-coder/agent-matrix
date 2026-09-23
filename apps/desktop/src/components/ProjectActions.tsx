@@ -1,13 +1,15 @@
 import { useState } from 'react';
-import { createProject, executeProject, runPlanning, uploadMethodAsset } from '../api';
+import { createProject, executeProject, runPlanning, updateProjectMode, uploadMethodAsset } from '../api';
 
 export function ProjectActions({
   projectId,
+  currentMode,
   onCreated,
   onImported,
   onBusyChange,
 }: {
   projectId: number | null;
+  currentMode?: string | null;
   onCreated: (id: number) => void;
   onImported: () => void;
   onBusyChange?: (busy: boolean) => void;
@@ -82,6 +84,21 @@ export function ProjectActions({
     }
   };
 
+  const doToggleMode = async () => {
+    if (projectId === null) return;
+    const next = currentMode === 'FULL_AUTO' ? 'MANUAL' : 'FULL_AUTO';
+    setBusy(true);
+    try {
+      const r = await updateProjectMode(projectId, next);
+      setMessage(`模式已切换为 ${r.automation_mode}`);
+      onImported();
+    } catch (e) {
+      setMessage(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   return (
     <div
       data-testid="project-actions"
@@ -133,6 +150,14 @@ export function ProjectActions({
         style={{ padding: '6px 14px' }}
       >
         执行项目
+      </button>
+      <button
+        onClick={doToggleMode}
+        disabled={busy || projectId === null || !currentMode}
+        style={{ padding: '6px 14px' }}
+        title={`当前：${currentMode ?? '未知'}`}
+      >
+        {currentMode === 'FULL_AUTO' ? '切换为 MANUAL' : '切换为 FULL_AUTO'}
       </button>
       {message && <span style={{ color: '#555', fontSize: 13 }}>{message}</span>}
     </div>

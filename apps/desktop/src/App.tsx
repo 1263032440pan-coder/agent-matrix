@@ -10,15 +10,20 @@ function App() {
   const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [busy, setBusy] = useState(false);
+  const [projectMode, setProjectMode] = useState<string | null>(null);
 
   const reload = useCallback(() => {
     listProjects()
       .then((projects) => {
-        setProjectId((current) =>
-          current === null && projects.length > 0
-            ? projects[projects.length - 1].id
-            : current
-        );
+        setProjectId((current) => {
+          const id =
+            current === null && projects.length > 0
+              ? projects[projects.length - 1].id
+              : current;
+          const p = projects.find((x) => x.id === id);
+          setProjectMode(p?.automation_mode ?? null);
+          return id;
+        });
       })
       .catch((e) => setError(String(e)));
   }, []);
@@ -32,6 +37,7 @@ function App() {
       <LLMSettingsCard />
       <ProjectActions
         projectId={projectId}
+        currentMode={projectMode}
         onCreated={(id) => {
           setProjectId(id);
           setRefreshKey((k) => k + 1);

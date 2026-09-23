@@ -66,7 +66,7 @@ app.add_middleware(
         "tauri://localhost",
         "http://tauri.localhost",  # Tauri 2 desktop webview origin
     ],
-    allow_methods=["GET", "POST"],
+    allow_methods=["GET", "POST", "PATCH"],
     allow_headers=["*"],
 )
 
