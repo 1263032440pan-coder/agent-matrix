@@ -6,6 +6,12 @@
 D01～D18 = PASS / FROZEN
 ```
 
+## 阶段结论
+
+```text
+Runtime Hardening = PASS（RH-01 + RH-02 + RH-03 + RH-E2E，V1.13 收官 2026-09-23）
+```
+
 ---
 
 ## RH-01 — Async Execution
@@ -19,7 +25,7 @@ WP-040
 状态：
 
 ```text
-PASS（待检查方复验确认）
+PASS（复验 PASS 2026-09-23）
 ```
 
 Gate 勾选（依据 tests/test_execution.py 7 用例 + 返修单-RH01 整改）：
@@ -47,7 +53,7 @@ WP-041
 状态：
 
 ```text
-PASS（待检查方复验确认）
+PASS（复验 PASS 2026-09-23）
 ```
 
 Gate 勾选（依据 tests/test_concurrency_hardening.py 3 用例 + 全量回归）：
@@ -73,7 +79,7 @@ WP-042
 状态：
 
 ```text
-PASS（待检查方复验确认）
+PASS（复验 PASS 2026-09-23）
 ```
 
 Gate 勾选（依据 tests/test_event_engine.py 5 用例 + 真实 LLM 实测 execution #4 事件链 + SSE 流实测）：
@@ -107,7 +113,7 @@ AND RH-03 PASS
 状态：
 
 ```text
-PASS（待检查方复验确认）
+PASS（复验 PASS 2026-09-23）
 ```
 
 覆盖（tests/test_rh_e2e.py 5 用例，走真实 API 层 httpx ASGI + 真实 ExecutionService 后台 runner，LLM 在 Worker 边界 mock）：
