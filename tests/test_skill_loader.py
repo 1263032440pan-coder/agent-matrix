@@ -167,8 +167,9 @@ async def test_e05_worker_result_skill_audit(dbsession, project, imported_skill)
     )
 
     worker = MockWorkerAdapter(dbsession)
+    task_id = task.id  # capture before worker's short-tx commit expires ORM objects
     result = await worker.assign(
-        WorkPackage(task_id=task.id, task_name=task.name, skill_context=ctx)
+        WorkPackage(task_id=task_id, task_name=task.name, skill_context=ctx)
     )
     assert result.actual_skill_id == "exec-skill"
     assert result.actual_skill_version == "1.0.0"
@@ -178,7 +179,7 @@ async def test_e05_worker_result_skill_audit(dbsession, project, imported_skill)
     from sqlalchemy import select
 
     run = (
-        await dbsession.execute(select(TaskRun).where(TaskRun.task_id == task.id))
+        await dbsession.execute(select(TaskRun).where(TaskRun.task_id == task_id))
     ).scalar_one()
     payload = json.loads(run.result)
     assert payload["skill"]["skill_id"] == "exec-skill"

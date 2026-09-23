@@ -22,9 +22,13 @@ def step(msg: str) -> None:
 
 
 async def main() -> int:
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp)
-        db_file = tmp_path / "e2e.db"
+    tmp = tempfile.mkdtemp(prefix="paa-e2e-")
+    tmp_path = Path(tmp)
+    db_file = tmp_path / "e2e.db"
+    # NOTE: body below was originally a `with tempfile.TemporaryDirectory()`
+    # block; converted to manual cleanup because Windows holds SQLite WAL/shm
+    # file handles past engine.dispose() and cleanup raised PermissionError.
+    if True:
 
         # 1. Fresh DB from zero via alembic (PAA_DB_PATH targets the temp DB;
         # no fallback to create_all — if migration fails, the demo fails).
@@ -102,9 +106,10 @@ async def main() -> int:
             )
             session.add(project)
             await session.flush()
+            project_id = project.id  # snapshot — worker commits expire ORM objects
 
             asset = await MethodAssetImporter(session).import_file(
-                project.id, FIXTURES / "method" / "sop.md"
+                project_id, FIXTURES / "method" / "sop.md"
             )
             model = await ProcedureNormalizer(session).normalize(project.id)
             assessment = await MethodReadinessAssessor(session).assess(
@@ -149,16 +154,23 @@ async def main() -> int:
                 except Exception:
                     pass
 
-            decisions = await scheduler.dispatch_once(project.id)
+            decisions = await scheduler.dispatch_once(project_id)
             dispatched = [d for d in decisions if d.action == "DISPATCHED"]
             assert dispatched, "nothing dispatched"
+
+            from sqlalchemy import select as _sel
+
+            async def _task_status(tid):
+                return (
+                    await session.execute(_sel(Task.status).where(Task.id == tid))
+                ).scalar_one()
 
             gate = GateCore(session)
             accepted = 0
             for d in dispatched:
-                t = await mgr.get_task(d.task_id)
-                if t.status == TaskStatus.EXECUTION_DONE:
-                    g = await gate.evaluate(t.id)
+                # worker short-tx commits (WP-041) expire ORM objects — scalar read
+                if await _task_status(d.task_id) == TaskStatus.EXECUTION_DONE:
+                    g = await gate.evaluate(d.task_id)
                     if g.status == GateStatus.PASS:
                         accepted += 1
             assert accepted >= 1
@@ -166,21 +178,32 @@ async def main() -> int:
 
             step("5. Skill-equipped task execution (audit)")
             t2 = await mgr.create_task(
-                Task(project_id=project.id, name="需求梳理")
+                Task(project_id=project_id, name="需求梳理")
             )
             await mgr.promote_to_ready(t2.id)
+            t2_id = t2.id  # snapshot before worker short-tx commit expires ORM objects
+            t2_name = t2.name
             result = await worker.assign(
-                WorkPackage(task_id=t2.id, task_name=t2.name, skill_context=ctx)
+                WorkPackage(task_id=t2_id, task_name=t2_name, skill_context=ctx)
             )
             assert result.actual_skill_id == "e2e-mock-skill"
             assert result.actual_skill_version == "1.0.0"
-            await session.refresh(t2)
-            assert t2.status == TaskStatus.EXECUTION_DONE  # not ACCEPTED by skill
-            g2 = await gate.evaluate(t2.id)
+            assert await _task_status(t2_id) == TaskStatus.EXECUTION_DONE  # not ACCEPTED by skill
+            g2 = await gate.evaluate(t2_id)
             assert g2.status == GateStatus.PASS
             print(f"  skill task accepted via gate; audit={result.actual_skill_id}")
 
         await engine.dispose()
+
+        # Windows: release WAL/shm file handles before TemporaryDirectory cleanup
+        import sqlite3 as _sq3
+
+        try:
+            _c = _sq3.connect(str(db_file))
+            _c.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            _c.close()
+        except Exception:
+            pass
 
     step("E2E PASS")
     return 0

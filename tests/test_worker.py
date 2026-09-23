@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from project_runtime.project_state.base import Base
 from project_runtime.project_state.enums import TaskStatus
-from project_runtime.project_state.models import Project
+from project_runtime.project_state.models import Project, Task
 from project_runtime.task_graph.manager import CreateTaskRequest, TaskGraphManager
 from project_runtime.worker.adapter import MockWorkerAdapter, WorkPackage
 
@@ -36,6 +36,15 @@ async def _create_ready_task(dbsession, project, name="test-task"):
     return task
 
 
+async def _status_of(dbsession, task_id):
+    """Scalar status query — immune to ORM expiry after worker short-tx commits."""
+    from sqlalchemy import select
+
+    return (
+        await dbsession.execute(select(Task.status).where(Task.id == task_id))
+    ).scalar_one()
+
+
 # ════════════════════════════════════════════════════════════════════════════
 # Basic execution
 # ════════════════════════════════════════════════════════════════════════════
@@ -45,15 +54,14 @@ async def _create_ready_task(dbsession, project, name="test-task"):
 async def test_mock_worker_executes_task(dbsession, project):
     task = await _create_ready_task(dbsession, project)
     assert task.status == TaskStatus.READY
+    task_id = task.id
 
     worker = MockWorkerAdapter(dbsession)
-    result = await worker.assign(WorkPackage(task_id=task.id, task_name=task.name))
+    result = await worker.assign(WorkPackage(task_id=task_id, task_name=task.name))
 
     assert result.success
-    # Verify Task is EXECUTION_DONE (NOT ACCEPTED)
-    mgr = TaskGraphManager(dbsession)
-    updated = await mgr.get_task(task.id)
-    assert updated.status == TaskStatus.EXECUTION_DONE
+    # Verify Task is EXECUTION_DONE (NOT ACCEPTED) — scalar read post-commit
+    assert await _status_of(dbsession, task_id) == TaskStatus.EXECUTION_DONE
 
 
 @pytest.mark.asyncio
@@ -67,13 +75,15 @@ async def test_mock_worker_pipeline_integration(dbsession, project):
     from project_runtime.project_state.models import Artifact, TaskRun
 
     task = await _create_ready_task(dbsession, project)
+    task_id = task.id
+    project_id = project.id
     artifact_mgr = ArtifactManager(dbsession, workspace_root="data/test_pipeline")
     worker = MockWorkerAdapter(dbsession, artifact_mgr=artifact_mgr)
 
-    result = await worker.assign(WorkPackage(task_id=task.id, task_name=task.name))
+    result = await worker.assign(WorkPackage(task_id=task_id, task_name=task.name))
 
     # (a) TaskRun exists with expected fields
-    stmt = select(TaskRun).where(TaskRun.task_id == task.id)
+    stmt = select(TaskRun).where(TaskRun.task_id == task_id)
     run = (await dbsession.execute(stmt)).scalar_one_or_none()
     assert run is not None
     assert run.attempt == 1
@@ -87,8 +97,8 @@ async def test_mock_worker_pipeline_integration(dbsession, project):
     # (c) Artifact record exists, file on disk
     artifact = await dbsession.get(Artifact, result.artifacts[0])
     assert artifact is not None
-    assert artifact.task_id == task.id
-    assert artifact.project_id == project.id
+    assert artifact.task_id == task_id
+    assert artifact.project_id == project_id
     assert os.path.exists(artifact.path)
 
 
@@ -120,16 +130,16 @@ async def test_mock_worker_cancel(dbsession, project):
 async def test_worker_cannot_accept_directly(dbsession, project):
     """Red line 1+2: Worker must NOT set ACCEPTED. Only Gate can."""
     task = await _create_ready_task(dbsession, project)
+    task_id = task.id
 
     # Simulate what would happen if Worker tried to go CREATED→ACCEPTED
     # (FSM prevents this — tested in D03)
 
     # After execution, task is at EXECUTION_DONE
     worker = MockWorkerAdapter(dbsession)
-    await worker.assign(WorkPackage(task_id=task.id, task_name=task.name))
+    await worker.assign(WorkPackage(task_id=task_id, task_name=task.name))
 
-    updated = await TaskGraphManager(dbsession).get_task(task.id)
-    assert updated.status == TaskStatus.EXECUTION_DONE
+    assert await _status_of(dbsession, task_id) == TaskStatus.EXECUTION_DONE
 
     # Attempting EXECUTION_DONE → ACCEPTED directly (Gate should do this)
     # This transition IS legal (for Gate), but Worker never calls it.

@@ -40,6 +40,7 @@ async def _ready_task(dbsession, project, name="llm-task") -> Task:
 async def test_llm_worker_executes_and_produces_artifact(dbsession, project, monkeypatch):
     """LLMWorker: READY → RUNNING → EXECUTION_DONE with LLM output artifact."""
     task = await _ready_task(dbsession, project)
+    task_id = task.id
     artifact_mgr = ArtifactManager(dbsession, workspace_root="data/test_llm_worker")
     worker = LLMWorkerAdapter(dbsession, artifact_mgr=artifact_mgr)
 
@@ -51,21 +52,26 @@ async def test_llm_worker_executes_and_produces_artifact(dbsession, project, mon
 
     from project_runtime.worker.adapter import WorkPackage
 
-    result = await worker.assign(WorkPackage(task_id=task.id, task_name=task.name))
+    result = await worker.assign(WorkPackage(task_id=task_id, task_name=task.name))
 
     assert result.success
     assert "产出" in result.output
     assert len(result.artifacts) == 1
 
-    mgr = TaskGraphManager(dbsession)
-    updated = await mgr.get_task(task.id)
-    assert updated.status == TaskStatus.EXECUTION_DONE  # not ACCEPTED
+    # Worker commits short tx (WP-041) — scalar query avoids ORM expiry pitfalls
+    from sqlalchemy import select
+
+    status = (
+        await dbsession.execute(select(Task.status).where(Task.id == task_id))
+    ).scalar_one()
+    assert status == TaskStatus.EXECUTION_DONE  # not ACCEPTED
 
 
 @pytest.mark.asyncio
 async def test_llm_worker_failure_marks_failed(dbsession, project, monkeypatch):
     """LLM failure → FAILED (not silently EXECUTION_DONE)."""
     task = await _ready_task(dbsession, project)
+    task_id = task.id
     worker = LLMWorkerAdapter(dbsession)
 
     async def fail_llm(wp):
@@ -75,12 +81,15 @@ async def test_llm_worker_failure_marks_failed(dbsession, project, monkeypatch):
 
     from project_runtime.worker.adapter import WorkPackage
 
-    result = await worker.assign(WorkPackage(task_id=task.id, task_name=task.name))
+    result = await worker.assign(WorkPackage(task_id=task_id, task_name=task.name))
     assert not result.success
 
-    mgr = TaskGraphManager(dbsession)
-    updated = await mgr.get_task(task.id)
-    assert updated.status == TaskStatus.FAILED
+    from sqlalchemy import select
+
+    status = (
+        await dbsession.execute(select(Task.status).where(Task.id == task_id))
+    ).scalar_one()
+    assert status == TaskStatus.FAILED
 
 
 @pytest.mark.asyncio

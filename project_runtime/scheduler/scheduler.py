@@ -66,6 +66,9 @@ class Scheduler:
         project = await self._session.get(Project, project_id)
         if project is None:
             raise ValueError(f"Project not found: {project_id}")
+        # Snapshot mode up-front: worker short-tx commits (WP-041) expire ORM
+        # objects mid-loop; attribute access after commit would trigger sync IO.
+        automation_mode = project.automation_mode
 
         decisions: list[DispatchDecision] = []
 
@@ -88,7 +91,7 @@ class Scheduler:
                 )
                 continue
 
-            if project.automation_mode == AutomationMode.MANUAL:
+            if automation_mode == AutomationMode.MANUAL:
                 # MANUAL: create ManualAction, do not dispatch.
                 # Idempotent (D07-TD01 batch-1): skip if a PENDING action for
                 # this task already exists.
@@ -130,10 +133,11 @@ class Scheduler:
             task = await self._session.get(Task, task_id)
             if task is None:
                 continue
+            task_name = task.name  # read before worker's commit expires it
             await self._worker.assign(
-                WorkPackage(task_id=task.id, task_name=task.name)
+                WorkPackage(task_id=task_id, task_name=task_name)
             )
-            decisions.append(DispatchDecision(task.id, "DISPATCHED"))
+            decisions.append(DispatchDecision(task_id, "DISPATCHED"))
 
         await self._session.flush()
         return decisions
@@ -149,9 +153,11 @@ class Scheduler:
             raise ValueError("No worker registered")
 
         action.status = ManualActionStatus.CONFIRMED
-        task = await self._session.get(Task, action.task_id)
+        task_id = action.task_id
+        task = await self._session.get(Task, task_id)
+        task_name = task.name  # read before worker's commit expires objects
         await self._worker.assign(
-            WorkPackage(task_id=task.id, task_name=task.name)
+            WorkPackage(task_id=task_id, task_name=task_name)
         )
         await self._session.flush()
-        return DispatchDecision(task.id, "DISPATCHED", f"manual action {action_id}")
+        return DispatchDecision(task_id, "DISPATCHED", f"manual action {action_id}")

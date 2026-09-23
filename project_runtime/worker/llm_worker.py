@@ -48,7 +48,12 @@ class LLMWorkerAdapter(WorkerAdapter):
         self._db_lock = asyncio.Lock()
 
     async def assign(self, wp: WorkPackage) -> ExecutionResult:
-        # Phase 1 (DB, locked): validate READY + RUNNING transition
+        # Phase 1 (short tx): validate READY + RUNNING transition, commit
+        # immediately — the LLM call must not hold a write transaction (WP-041
+        # §3 / DB-04). Previously flush()-only kept the tx open across the
+        # network call.
+        from infrastructure.database.short_tx import commit_with_retry
+
         async with self._db_lock:
             task = await self._mgr.get_task(wp.task_id)
             if task is None:
@@ -58,9 +63,9 @@ class LLMWorkerAdapter(WorkerAdapter):
                     f"Worker cannot start task in status {task.status.value}. Must be READY."
                 )
             await self._fsm.transition_task(task, TaskStatus.RUNNING)
-            await self._session.flush()
+            await commit_with_retry(self._session, context="llm_worker.phase1")
 
-        # Execute via LLM (outside DB lock — network call)
+        # Execute via LLM (zero DB transaction held — network call)
         try:
             output = await self._execute_llm(wp)
             success = True
@@ -69,9 +74,12 @@ class LLMWorkerAdapter(WorkerAdapter):
             output = f"LLM execution failed: {e}"
             success = False
 
-        # Phase 2 (DB, locked): EXECUTION_DONE + TaskRun + Artifact
+        # Phase 2 (short tx): re-fetch task (Phase-1 commit expired it),
+        # EXECUTION_DONE/FAILED + TaskRun + Artifact, then commit.
         async with self._db_lock:
-            await self._session.refresh(task)
+            task = await self._mgr.get_task(wp.task_id)
+            if task is None:
+                raise ValueError(f"Task not found: {wp.task_id}")
             if task.status == TaskStatus.CANCELLED:
                 return ExecutionResult(task_id=wp.task_id, success=False, output="cancelled")
 
@@ -111,9 +119,10 @@ class LLMWorkerAdapter(WorkerAdapter):
                     name=f"{task.name}_output.md",
                     content=output,
                 )
+                await self._session.flush()
                 artifact_id = artifact.id
 
-            await self._session.flush()
+            await commit_with_retry(self._session, context="llm_worker.phase2")
 
         return ExecutionResult(
             task_id=wp.task_id,

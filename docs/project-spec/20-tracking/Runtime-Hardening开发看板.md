@@ -47,16 +47,18 @@ WP-041
 状态：
 
 ```text
-NOT_STARTED
+PASS（待检查方复验确认）
 ```
 
-Gate：
+Gate 勾选（依据 tests/test_concurrency_hardening.py 3 用例 + 全量回归）：
 
-- session isolation；
-- no long transaction；
-- short mutation transaction；
-- concurrent execution test；
-- database locked 显著消除。
+- [x] session isolation（ExecutionRunner 每阶段独立 AsyncSession；测试 fixture 直传 async engine）
+- [x] no long transaction（LLMWorker/MockWorker Phase 1 改 commit —— 此前 flush 导致 LLM 全程持写事务，实测并发写被挡 5.2s → 修复后 DB-04 用例实证 LLM 飞行期外部写毫秒级成功）
+- [x] short mutation transaction（commit_with_retry：3 次上限 + 指数退避 + 审计事件，DB-06 用例覆盖）
+- [x] concurrent execution test（3 Execution 并发全 SUCCEEDED，无持续 locked，耗时 <1s）
+- [x] database locked 显著消除（busy_timeout 30s 保留为防御，正常路径不依赖——DB-07 断言）
+
+连带修复（commit 后 ORM expire 系统性适配）：Scheduler 快照 automation_mode/task id/name；test_llm_worker/test_worker/test_scheduler/test_skill_loader/test_e2e/scripts/e2e_demo.py 全部改 scalar select 读法。
 
 ---
 

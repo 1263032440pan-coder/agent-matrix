@@ -48,6 +48,7 @@ async def _ready_task(dbsession, project, name: str) -> Task:
 @pytest.mark.asyncio
 async def test_full_auto_dispatches_ready_task(dbsession, project):
     task = await _ready_task(dbsession, project, "t1")
+    task_id = task.id
     worker = MockWorkerAdapter(dbsession)
     sched = Scheduler(dbsession, worker=worker)
 
@@ -55,8 +56,13 @@ async def test_full_auto_dispatches_ready_task(dbsession, project):
 
     assert len(decisions) == 1
     assert decisions[0].action == "DISPATCHED"
-    await dbsession.refresh(task)
-    assert task.status == TaskStatus.EXECUTION_DONE  # MockWorker completes instantly
+    # MockWorker commits short tx per task (WP-041) — scalar status read
+    from sqlalchemy import select
+
+    status = (
+        await dbsession.execute(select(Task.status).where(Task.id == task_id))
+    ).scalar_one()
+    assert status == TaskStatus.EXECUTION_DONE  # MockWorker completes instantly
 
 
 @pytest.mark.asyncio
@@ -151,6 +157,7 @@ async def test_confirm_manual_action_dispatches(dbsession, project):
     await dbsession.flush()
 
     task = await _ready_task(dbsession, project, "t1")
+    task_id = task.id
     worker = MockWorkerAdapter(dbsession)
     sched = Scheduler(dbsession, worker=worker)
 
@@ -159,15 +166,23 @@ async def test_confirm_manual_action_dispatches(dbsession, project):
 
     from sqlalchemy import select
 
-    stmt = select(ManualAction).where(ManualAction.task_id == task.id)
+    stmt = select(ManualAction).where(ManualAction.task_id == task_id)
     action = (await dbsession.execute(stmt)).scalar_one()
+    action_id = action.id
 
-    result = await sched.confirm_manual_action(action.id)
+    result = await sched.confirm_manual_action(action_id)
     assert result.action == "DISPATCHED"
-    await dbsession.refresh(task)
-    assert task.status == TaskStatus.EXECUTION_DONE
-    await dbsession.refresh(action)
-    assert action.status == ManualActionStatus.CONFIRMED
+    # Worker committed short tx (WP-041) — scalar reads post-commit
+    status = (
+        await dbsession.execute(select(Task.status).where(Task.id == task_id))
+    ).scalar_one()
+    assert status == TaskStatus.EXECUTION_DONE
+    a_status = (
+        await dbsession.execute(
+            select(ManualAction.status).where(ManualAction.id == action_id)
+        )
+    ).scalar_one()
+    assert a_status == ManualActionStatus.CONFIRMED
 
 
 # ════════════════════════════════════════════════════════════════════════════

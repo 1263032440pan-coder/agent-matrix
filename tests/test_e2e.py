@@ -75,9 +75,10 @@ async def test_e2e_main_chain_full_pipeline(dbsession, tmp_path):
     )
     dbsession.add(project)
     await dbsession.flush()
+    project_id = project.id  # snapshot — worker commits expire ORM objects
 
     importer = MethodAssetImporter(dbsession)
-    asset = await importer.import_file(project.id, FIXTURES / "method" / "sop.md")
+    asset = await importer.import_file(project_id, FIXTURES / "method" / "sop.md")
     assert asset.id is not None
 
     # 2. Procedure normalization (D06)
@@ -138,11 +139,13 @@ async def test_e2e_main_chain_full_pipeline(dbsession, tmp_path):
     scheduler = Scheduler(dbsession, worker=worker, max_workers=1)
 
     # Promote eligible tasks to READY (dependency-blocked ones stay CREATED)
+    # Snapshot ids up-front: worker short-tx commits (WP-041) expire ORM objects.
+    task_ids = [t.id for t in tasks]
     promoted_ids = []
-    for t in tasks:
+    for tid in task_ids:
         try:
-            await mgr.promote_to_ready(t.id)
-            promoted_ids.append(t.id)
+            await mgr.promote_to_ready(tid)
+            promoted_ids.append(tid)
         except Exception:
             pass
 
@@ -154,8 +157,15 @@ async def test_e2e_main_chain_full_pipeline(dbsession, tmp_path):
     assert len(dispatched) >= 1
 
     first_task_id = dispatched[0].task_id
-    first = await mgr.get_task(first_task_id)
-    assert first.status == TaskStatus.EXECUTION_DONE
+    # Post-commit: read status via scalar query (ORM objects expired by worker tx)
+    from sqlalchemy import select as _select
+
+    async def _status(tid):
+        return (
+            await dbsession.execute(_select(Task.status).where(Task.id == tid))
+        ).scalar_one()
+
+    assert await _status(first_task_id) == TaskStatus.EXECUTION_DONE
 
     # 8. Artifact produced and persisted (D12)
     artifacts = await artifact_mgr.list_by_task(first_task_id)
@@ -166,18 +176,16 @@ async def test_e2e_main_chain_full_pipeline(dbsession, tmp_path):
     gate = GateCore(dbsession)
     result = await gate.evaluate(first_task_id)
     assert result.status == GateStatus.PASS
-    await dbsession.refresh(first)
-    assert first.status == TaskStatus.ACCEPTED
+    assert await _status(first_task_id) == TaskStatus.ACCEPTED
 
     # 10. Next task unblocked → READY (HARD dep satisfied by ACCEPTED)
     promoted = 0
-    for t in tasks:
-        if t.id == first_task_id:
+    for tid in task_ids:
+        if tid == first_task_id:
             continue
-        await dbsession.refresh(t)
-        if t.status == TaskStatus.CREATED:
+        if await _status(tid) == TaskStatus.CREATED:
             try:
-                await mgr.promote_to_ready(t.id)
+                await mgr.promote_to_ready(tid)
                 promoted += 1
             except Exception:
                 pass
@@ -185,15 +193,15 @@ async def test_e2e_main_chain_full_pipeline(dbsession, tmp_path):
     # so at least one further task may remain dependency-blocked; require
     # only that the graph advanced — the first task was accepted and the
     # remaining tasks are either promoted or explicitly blocked by deps.
-    remaining = [t for t in tasks if t.id != first_task_id]
-    statuses = {(await mgr.get_task(t.id)).status for t in remaining}
+    remaining = [tid for tid in task_ids if tid != first_task_id]
+    statuses = {(await _status(tid)) for tid in remaining}
     assert statuses <= {TaskStatus.CREATED, TaskStatus.READY, TaskStatus.EXECUTION_DONE}
 
     # Sanity: no fake state — every transition went through the real modules
     db_artifacts = (
         await dbsession.execute(
             __import__("sqlalchemy").select(Artifact).where(
-                Artifact.project_id == project.id
+                Artifact.project_id == project_id
             )
         )
     ).scalars().all()
@@ -250,29 +258,36 @@ async def test_e2e_skill_branch(dbsession, tmp_path):
         Task(project_id=project.id, name="需求梳理")
     )
     await mgr.promote_to_ready(task.id)
+    task_id = task.id  # snapshot before worker short-tx commit
 
     artifact_mgr = ArtifactManager(dbsession, workspace_root=str(tmp_path / "tasks"))
     from project_runtime.worker.adapter import MockWorkerAdapter, WorkPackage
 
     worker = MockWorkerAdapter(dbsession, artifact_mgr=artifact_mgr)
+    expected_hash = skill.content_hash  # snapshot before worker commit
     result = await worker.assign(
-        WorkPackage(task_id=task.id, task_name=task.name, skill_context=ctx)
+        WorkPackage(task_id=task_id, task_name=task.name, skill_context=ctx)
     )
 
     # Worker audit tracks skill identity
     assert result.actual_skill_id == "e2e-mock-skill"
     assert result.actual_skill_version == "1.0.0"
-    assert result.actual_skill_content_hash == skill.content_hash
+    assert result.actual_skill_content_hash == expected_hash
 
     # Skill result COMPLETED != Task ACCEPTED: gate still required
-    await dbsession.refresh(task)
-    assert task.status == TaskStatus.EXECUTION_DONE
+    from sqlalchemy import select as _sel
+
+    async def _st():
+        return (
+            await dbsession.execute(_sel(Task.status).where(Task.id == task_id))
+        ).scalar_one()
+
+    assert await _st() == TaskStatus.EXECUTION_DONE
 
     gate = GateCore(dbsession)
-    g = await gate.evaluate(task.id)
+    g = await gate.evaluate(task_id)
     assert g.status == GateStatus.PASS
-    await dbsession.refresh(task)
-    assert task.status == TaskStatus.ACCEPTED
+    assert await _st() == TaskStatus.ACCEPTED
 
 
 # L3 — pin holds after newer version registered

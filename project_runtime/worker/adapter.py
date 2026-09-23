@@ -117,9 +117,9 @@ class MockWorkerAdapter(WorkerAdapter):
                     f"Worker cannot start task in status {task.status.value}. Must be READY."
                 )
 
-            # READY → RUNNING
+            # READY → RUNNING (short tx: commit before simulated work — WP-041 §3)
             await self._fsm.transition_task(task, TaskStatus.RUNNING)
-            await self._session.flush()
+            await self._session.commit()
 
         # Simulate work (skill context, when provided, is consumed read-only)
         await asyncio.sleep(self._simulate_delay)
@@ -128,9 +128,11 @@ class MockWorkerAdapter(WorkerAdapter):
             sc = wp.skill_context
             result_output += f" [skill={sc.skill_id}@{sc.skill_version}]"
 
-        # Phase 2 (DB, locked): EXECUTION_DONE + TaskRun + Artifact
+        # Phase 2 (short tx): re-fetch task (Phase-1 commit expired it)
         async with self._db_lock:
-            await self._session.refresh(task)
+            task = await self._mgr.get_task(wp.task_id)
+            if task is None:
+                raise ValueError(f"Task not found: {wp.task_id}")
 
             # If cancelled during simulated work, do not force EXECUTION_DONE
             if task.status == TaskStatus.CANCELLED:
@@ -170,9 +172,10 @@ class MockWorkerAdapter(WorkerAdapter):
                     name=f"{task.name}_output.txt",
                     content=result_output,
                 )
+                await self._session.flush()
                 artifact_id = artifact.id
 
-            await self._session.flush()
+            await self._session.commit()  # short tx closes here (WP-041 §6)
 
         return ExecutionResult(
             task_id=wp.task_id,
