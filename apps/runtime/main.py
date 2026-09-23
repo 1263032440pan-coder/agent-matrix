@@ -22,8 +22,16 @@ async def lifespan(app: FastAPI):
     yield
 
 
+class SchemaBehindError(RuntimeError):
+    """DB schema is behind alembic head — runtime refuses to start (F2/RH-02)."""
+
+
 async def _check_migration_version() -> None:
-    """Warn if the DB schema is behind the alembic head (no auto-upgrade)."""
+    """Refuse to start when the DB schema is behind the alembic head.
+
+    F2 (RH-02 复验遗留): previously only warned, then endpoints failed with
+    'no such table: execution' → 500. Now raises with a clear fix hint.
+    """
     import pathlib
 
     from sqlalchemy import text
@@ -35,9 +43,11 @@ async def _check_migration_version() -> None:
         try:
             result = await conn.execute(text("SELECT version_num FROM alembic_version"))
             current = result.scalar_one_or_none()
-        except Exception:
-            logger.warning("alembic_version table missing — DB not migrated")
-            return
+        except Exception as e:
+            raise SchemaBehindError(
+                "alembic_version table missing — DB not migrated. "
+                "Run `alembic upgrade head` before starting the runtime."
+            ) from e
     # Determine head revision from alembic env (single-head assumption)
     import alembic.config
 
@@ -46,9 +56,9 @@ async def _check_migration_version() -> None:
 
     head = ScriptDirectory.from_config(cfg).get_current_head()
     if current != head:
-        logger.warning(
-            "DB schema behind: current=%s head=%s — run `alembic upgrade head`",
-            current, head,
+        raise SchemaBehindError(
+            f"DB schema behind: current={current} head={head} — "
+            "Run `alembic upgrade head` before starting the runtime."
         )
 
 
