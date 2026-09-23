@@ -84,43 +84,55 @@ async def upload_method_asset(
 
 
 @router.post("/{project_id}/execute", status_code=200)
-async def execute_project(project_id: int, session: AsyncSession = Depends(get_session)):
+async def execute_project(project_id: int):
     """Dispatch READY tasks via Scheduler + LLMWorker (real LLM execution).
 
-    SQLite single-file: the long-running LLM call happens outside the DB
-    lock, but the write phase can still collide with dashboard polling.
-    On 'database is locked' we roll back and retry once.
+    Dedicated session (isolated from dashboard polling) to avoid SQLite
+    lock contention.
     """
-    project = await session.get(Project, project_id)
-    if project is None:
-        raise HTTPException(404, "Project not found")
-
     from project_runtime.artifact.manager import ArtifactManager
+    from project_runtime.project_state.enums import TaskStatus
     from project_runtime.scheduler.scheduler import Scheduler
+    from project_runtime.task_graph.manager import TaskGraphManager
     from project_runtime.worker.llm_worker import LLMWorkerAdapter
 
-    artifact_mgr = ArtifactManager(session, workspace_root=f"data/tasks/{project_id}")
-    worker = LLMWorkerAdapter(session, artifact_mgr=artifact_mgr)
-    scheduler = Scheduler(session, worker=worker, max_workers=1)
+    async def _run(session: AsyncSession):
+        project = await session.get(Project, project_id)
+        if project is None:
+            raise HTTPException(404, "Project not found")
 
-    from project_runtime.project_state.enums import TaskStatus
-    from project_runtime.task_graph.manager import TaskGraphManager
+        artifact_mgr = ArtifactManager(session, workspace_root=f"data/tasks/{project_id}")
+        worker = LLMWorkerAdapter(session, artifact_mgr=artifact_mgr)
+        scheduler = Scheduler(session, worker=worker, max_workers=1)
 
-    mgr = TaskGraphManager(session)
-    tasks = (
-        (await session.execute(select(Task).where(Task.project_id == project_id)))
-        .scalars()
-        .all()
-    )
-    for t in tasks:
-        if t.status == TaskStatus.CREATED:
+        mgr = TaskGraphManager(session)
+        tasks = (
+            (await session.execute(select(Task).where(Task.project_id == project_id)))
+            .scalars()
+            .all()
+        )
+        for t in tasks:
+            if t.status == TaskStatus.CREATED:
+                try:
+                    await mgr.promote_to_ready(t.id)
+                except Exception:
+                    pass
+
+        decisions = await scheduler.dispatch_once(project_id)
+        await session.commit()
+        return decisions
+
+    for attempt in range(2):
+        async with AsyncSession(engine) as session:
             try:
-                await mgr.promote_to_ready(t.id)
+                decisions = await _run(session)
+                break
+            except HTTPException:
+                raise
             except Exception:
-                pass
-
-    decisions = await scheduler.dispatch_once(project_id)
-    await session.commit()
+                await session.rollback()
+                if attempt == 1:
+                    raise
 
     manual_pending = sum(1 for d in decisions if d.action == "MANUAL_PENDING")
     return {
@@ -139,20 +151,22 @@ async def execute_project(project_id: int, session: AsyncSession = Depends(get_s
 
 
 @router.post("/{project_id}/plan", status_code=200)
-async def run_planning(project_id: int, session: AsyncSession = Depends(get_session)):
-    """Run D06→D10 chain: normalize → assess → classify → build → plan."""
-    project = await session.get(Project, project_id)
-    if project is None:
-        raise HTTPException(404, "Project not found")
+async def run_planning(project_id: int):
+    """Run D06→D10 chain: normalize → assess → classify → build → plan.
 
+    Uses a dedicated session (separate from dashboard polling sessions) so
+    long-running writes don't contend with read polling on the same session.
+    """
     from project_runtime.gap.classifier import GapClassifier
     from project_runtime.planner.planner import DynamicPlanner
     from project_runtime.playbook.builder import PlaybookBuilder
     from project_runtime.procedure.normalizer import ProcedureNormalizer
     from project_runtime.readiness.assessor import MethodReadinessAssessor
 
-    # Batch 3: LLM-first extraction + semantic gap classification when configured
-    async def _run():
+    async def _run(session: AsyncSession):
+        project = await session.get(Project, project_id)
+        if project is None:
+            raise HTTPException(404, "Project not found")
         model = await ProcedureNormalizer.with_llm(session).normalize(project_id)
         assessment = await MethodReadinessAssessor(session).assess(project_id, model.id)
         gaps = await GapClassifier.with_llm(session).classify(assessment.id)
@@ -166,16 +180,18 @@ async def run_planning(project_id: int, session: AsyncSession = Depends(get_sess
             "tasks": len(tasks),
         }
 
-    # SQLite lock contention with dashboard polling: retry once on lock error
     for attempt in range(2):
-        try:
-            result = await _run()
-            await session.commit()
-            return result
-        except Exception:
-            await session.rollback()
-            if attempt == 1:
+        async with AsyncSession(engine) as session:
+            try:
+                result = await _run(session)
+                await session.commit()
+                return result
+            except HTTPException:
                 raise
+            except Exception:
+                await session.rollback()
+                if attempt == 1:
+                    raise
 
 
 @router.get("")
