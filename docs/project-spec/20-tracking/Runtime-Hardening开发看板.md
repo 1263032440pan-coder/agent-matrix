@@ -19,17 +19,20 @@ WP-040
 状态：
 
 ```text
-NOT_STARTED
+PASS（待检查方复验确认）
 ```
 
-Gate：
+Gate 勾选（依据 tests/test_execution.py 7 用例 + 返修单-RH01 整改）：
 
-- 202 Accepted；
-- execution_id；
-- background execution；
-- Task/Execution 分离；
-- retry attempt；
-- 页面刷新可恢复。
+- [x] 202 Accepted（POST /api/executions 秒回，test_submit_returns_immediately 实测 <0.2s）
+- [x] execution_id（响应含 id，持久化可查）
+- [x] background execution（asyncio.create_task 后台 runner，HTTP 返回后仍完成）
+- [x] Task/Execution 分离（Execution 独立表 + FSM；Task 仅 EXECUTION_DONE，ACCEPTED 归 Gate — AE-07 断言）
+- [x] retry attempt（attempt_no 递增，历史保留不覆盖 — AE-06）
+- [x] 页面刷新可恢复（DB 持久化，新 session 可查 — AE-04 实测）
+- [x] AE-05 并发防重（部分唯一索引 ux_execution_task_active_one DB 层兜底，asyncio.gather 双并发实测恰好一个成功）
+
+旧端点处置（前置 2 方案 A）：/api/projects/{id}/execute 改 202 薄封装，MANUAL 模式仍走 ManualAction 红线保持。
 
 ---
 

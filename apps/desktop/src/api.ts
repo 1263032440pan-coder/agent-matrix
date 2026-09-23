@@ -101,10 +101,10 @@ export async function runPlanning(
 export async function executeProject(
   projectId: number
 ): Promise<{
-  dispatched: number;
+  executions: number[];
+  skipped_active: number;
   manual_pending: number;
   hint: string;
-  decisions: Array<{ task_id: number; action: string }>;
 }> {
   const resp = await fetch(`${API_BASE}/api/projects/${projectId}/execute`, {
     method: 'POST',

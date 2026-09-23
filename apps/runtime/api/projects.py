@@ -104,27 +104,25 @@ async def upload_method_asset(
         Path(tmp_path).unlink(missing_ok=True)
 
 
-@router.post("/{project_id}/execute", status_code=200)
+@router.post("/{project_id}/execute", status_code=202)
 async def execute_project(project_id: int):
-    """Dispatch READY tasks via Scheduler + LLMWorker (real LLM execution).
+    """V1.13 (CR-003 方案 A): thin wrapper over the async Execution channel.
 
-    Dedicated session (isolated from dashboard polling) to avoid SQLite
-    lock contention.
+    Promotes CREATED→READY, then admits one QUEUED Execution per READY task
+    (MANUAL mode still yields ManualAction, not Executions — mode red line).
+    Returns 202 immediately; execution continues in background.
     """
-    from project_runtime.artifact.manager import ArtifactManager
+    from project_runtime.execution.repository import (
+        ActiveExecutionExistsError,
+    )
+    from project_runtime.execution.service import ExecutionService
     from project_runtime.project_state.enums import TaskStatus
-    from project_runtime.scheduler.scheduler import Scheduler
     from project_runtime.task_graph.manager import TaskGraphManager
-    from project_runtime.worker.llm_worker import LLMWorkerAdapter
 
-    async def _run(session: AsyncSession):
+    async with AsyncSession(engine) as session:
         project = await session.get(Project, project_id)
         if project is None:
             raise HTTPException(404, "Project not found")
-
-        artifact_mgr = ArtifactManager(session, workspace_root=f"data/tasks/{project_id}")
-        worker = LLMWorkerAdapter(session, artifact_mgr=artifact_mgr)
-        scheduler = Scheduler(session, worker=worker, max_workers=1)
 
         mgr = TaskGraphManager(session)
         tasks = (
@@ -138,37 +136,39 @@ async def execute_project(project_id: int):
                     await mgr.promote_to_ready(t.id)
                 except Exception:
                     pass
-        await session.commit()  # READY transitions visible before dispatch
-
-        decisions = await scheduler.dispatch_once(project_id)
         await session.commit()
-        return decisions
 
-    for attempt in range(2):
-        async with AsyncSession(engine) as session:
-            try:
-                decisions = await _run(session)
-                break
-            except HTTPException:
-                raise
-            except Exception:
-                await session.rollback()
-                if attempt == 1:
-                    raise
+        ready_ids = [
+            t.id
+            for t in (
+                await session.execute(select(Task).where(Task.project_id == project_id))
+            ).scalars().all()
+            if t.status == TaskStatus.READY
+        ]
+        is_manual = project.automation_mode == AutomationMode.MANUAL
 
-    manual_pending = sum(1 for d in decisions if d.action == "MANUAL_PENDING")
+    if is_manual:
+        return {
+            "executions": [],
+            "manual_pending": len(ready_ids),
+            "hint": "MANUAL 模式：不自动创建 Execution；请切换 FULL_AUTO 或走 ManualAction 确认",
+        }
+
+    service = ExecutionService()
+    created: list[int] = []
+    skipped_active = 0
+    for task_id in ready_ids:
+        try:
+            ex_id = await service.submit(project_id, task_id)
+            created.append(ex_id)
+        except ActiveExecutionExistsError:
+            skipped_active += 1  # AE-05 idempotency: already active
+
     return {
-        "dispatched": sum(1 for d in decisions if d.action == "DISPATCHED"),
-        "manual_pending": manual_pending,
-        "hint": (
-            "MANUAL 模式：已创建 ManualAction 等待确认；切换到 FULL_AUTO 或确认后执行"
-            if manual_pending
-            else ""
-        ),
-        "decisions": [
-            {"task_id": d.task_id, "action": d.action, "detail": d.detail}
-            for d in decisions
-        ],
+        "executions": created,
+        "skipped_active": skipped_active,
+        "manual_pending": 0,
+        "hint": "",
     }
 
 

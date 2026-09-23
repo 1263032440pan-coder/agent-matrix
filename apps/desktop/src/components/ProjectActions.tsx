@@ -71,9 +71,10 @@ export function ProjectActions({
     try {
       const r = await executeProject(projectId);
       setMessage(
-        r.dispatched > 0
-          ? `执行完成：${r.dispatched} 个任务已调度`
-          : r.hint || '没有可调度的任务'
+        r.executions.length > 0
+          ? `已提交 ${r.executions.length} 个执行任务（后台异步执行，轮询可见进度）` +
+            (r.skipped_active ? `；${r.skipped_active} 个已在执行中跳过` : '')
+          : r.hint || '没有可执行的任务'
       );
       onImported();
     } catch (e) {
