@@ -55,7 +55,14 @@ class EventEngine:
 
         Failures are logged and swallowed: event persistence must never
         break the execution path (progress trail is best-effort audit).
+
+        Message is truncated (RH-03 修改单瑕疵 1): the event table is
+        append-heavy; full LLM output belongs to Execution.message (500) /
+        TaskRun.result / Artifact files — events only POINT at it.
         """
+        # Truncate: keep the event row small for SSE frames & list queries.
+        if message and len(message) > 120:
+            message = message[:120] + "…"
         ev = RuntimeEvent(
             event_type=event_type.value,
             project_id=project_id,

@@ -191,3 +191,21 @@ async def test_event_write_is_short_tx(patched_engines, project_id, monkeypatch)
         project_id=project_id, execution_id=5, message="x",
     )
     assert calls == ["event.ARTIFACT_CREATED"]  # one short tx per event
+
+
+@pytest.mark.asyncio
+async def test_terminal_event_message_truncated(patched_engines, project_id):
+    """RH-03 修改单瑕疵 1: LLM 全文不进事件表——message ≤ 128 chars（120 + ellipsis）."""
+    long_output = "# 大标题\n\n" + ("很长的 LLM 输出内容。" * 200)
+    assert len(long_output) > 1000
+
+    await EventEngine().record(
+        RuntimeEventType.EXECUTION_COMPLETED,
+        project_id=project_id, execution_id=42, message=long_output,
+    )
+    events = await EventEngine().list_for_execution(42)
+    assert len(events) == 1
+    stored = events[0].message
+    assert len(stored) <= 128  # 120 + "…"
+    assert stored.endswith("…")
+    assert stored.startswith("# 大标题")
