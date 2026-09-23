@@ -107,6 +107,21 @@ class GateCore:
                 f"Gate requires EXECUTION_DONE, got {task.status.value}"
             )
 
+        # WP-042: GATE_STARTED event (best-effort, never blocks the gate path)
+        try:
+            from project_runtime.event import EventEngine, RuntimeEventType
+
+            await EventEngine().record(
+                RuntimeEventType.GATE_STARTED,
+                project_id=task.project_id,
+                task_id=task_id,
+                phase="GATE",
+                actor=self.ACTOR,
+                message=f"gate_core evaluating task {task_id}",
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
         # Artifact collection
         stmt = select(Artifact).where(Artifact.task_id == task.id)
         artifacts = list((await self._session.execute(stmt)).scalars().all())
@@ -143,4 +158,23 @@ class GateCore:
 
         await self._session.flush()
         logger.info("Gate %s → %s for task %d", "gate_core", final.value, task_id)
+
+        # WP-042: GATE_PASSED / GATE_FAILED event (best-effort)
+        try:
+            from project_runtime.event import EventEngine, RuntimeEventType
+
+            await EventEngine().record(
+                RuntimeEventType.GATE_PASSED
+                if final == GateStatus.PASS
+                else RuntimeEventType.GATE_FAILED,
+                project_id=task.project_id,
+                task_id=task_id,
+                phase="GATE",
+                actor=self.ACTOR,
+                message=f"gate_core → {final.value}",
+                payload={"details": "\n".join(details)[:500]},
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
         return gate_result

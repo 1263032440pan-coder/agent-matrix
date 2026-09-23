@@ -291,6 +291,24 @@ export function Dashboard({ projectId, paused }: { projectId: number; paused?: b
           ))}
         </ul>
       </section>
+
+      {(data.runtime_events?.length ?? 0) > 0 && (
+        <section data-testid="runtime-events" style={{ ...card, marginTop: 16 }}>
+          <h3 style={{ marginTop: 0 }}>Runtime Events（实时进度）</h3>
+          <ul style={{ paddingLeft: 18, maxHeight: 240, overflowY: 'auto' }}>
+            {(data.runtime_events ?? []).map((e) => (
+              <li key={e.event_id} style={{ fontSize: 13 }}>
+                <code style={{ color: '#666' }}>
+                  {e.timestamp ? e.timestamp.slice(11, 19) : '--:--:--'}
+                </code>{' '}
+                <strong>{e.event_type}</strong>
+                {e.phase ? ` · ${e.phase}` : ''}
+                {e.message ? ` — ${e.message}` : ''}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
     </div>
   );
 }

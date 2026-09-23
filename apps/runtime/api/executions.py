@@ -20,6 +20,19 @@ router = APIRouter(prefix="/api/executions", tags=["executions"])
 _service = ExecutionService()
 
 
+@router.get("/diagnostics/locks")
+async def lock_diagnostics():
+    """RH-02 衔接: expose commit_with_retry lock audit (DB-06 evidence).
+
+    In-process counters since startup; consumed by ops/diagnostics, not by
+    the normal execution path.
+    """
+    from infrastructure.database.short_tx import get_lock_audit
+
+    events = get_lock_audit()
+    return {"lock_retry_count": len(events), "events": events[-50:]}
+
+
 class CreateExecutionRequest(BaseModel):
     project_id: int
     task_id: int
@@ -77,3 +90,76 @@ async def get_execution(execution_id: int):
         if ex is None:
             raise HTTPException(404, "Execution not found")
         return _serialize(ex)
+
+
+def _serialize_event(ev) -> dict:
+    return {
+        "event_id": ev.id,
+        "event_type": ev.event_type,
+        "timestamp": ev.timestamp.isoformat() if ev.timestamp else None,
+        "project_id": ev.project_id,
+        "task_id": ev.task_id,
+        "execution_id": ev.execution_id,
+        "phase": ev.phase,
+        "message": ev.message,
+        "actor": ev.actor,
+        "payload": ev.payload,
+    }
+
+
+@router.get("/{execution_id}/events")
+async def list_execution_events(execution_id: int, after_id: int = 0, limit: int = 200):
+    """Event history for an execution (spec §8 after_id reconnection recovery)."""
+    from project_runtime.event import EventEngine
+
+    async with AsyncSession(engine) as session:
+        if await session.get(Execution, execution_id) is None:
+            raise HTTPException(404, "Execution not found")
+
+    events = await EventEngine().list_for_execution(
+        execution_id, after_id=after_id, limit=limit
+    )
+    return {
+        "execution_id": execution_id,
+        "events": [_serialize_event(e) for e in events],
+        "last_event_id": events[-1].id if events else after_id,
+    }
+
+
+@router.get("/{execution_id}/events/stream")
+async def stream_execution_events(execution_id: int, after_id: int = 0):
+    """SSE live event stream (WP-042).
+
+    Polls the Event Store and pushes new events. Subscriber disconnects are
+    silently ignored — Worker never depends on SSE health (acceptance §4).
+    """
+    import asyncio
+    import json as _json
+
+    from fastapi.responses import StreamingResponse
+
+    from project_runtime.event import EventEngine
+
+    engine_ev = EventEngine()
+
+    async def event_gen():
+        cursor = after_id
+        idle_ticks = 0
+        while True:
+            events = await engine_ev.list_for_execution(execution_id, after_id=cursor)
+            for ev in events:
+                cursor = ev.id
+                data = _json.dumps(_serialize_event(ev), ensure_ascii=False)
+                yield f"id: {ev.id}\nevent: {ev.event_type}\ndata: {data}\n\n"
+                idle_ticks = 0
+            if not events:
+                idle_ticks += 1
+                if idle_ticks % 5 == 0:  # ~2.5s heartbeat comment keeps proxies open
+                    yield ": keep-alive\n\n"
+            await asyncio.sleep(0.5)
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )

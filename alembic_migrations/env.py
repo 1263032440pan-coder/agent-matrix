@@ -25,6 +25,7 @@ if config.config_file_name is not None:
 
 # add your model's MetaData object here
 # for 'autogenerate' support
+import project_runtime.event.models  # noqa: E402, F401 — register runtime_event table
 import project_runtime.execution.models  # noqa: E402, F401 — register execution table
 import project_runtime.project_state.models  # noqa: E402, F401 — register all tables
 import project_runtime.skills.models  # noqa: E402, F401 — register skill tables

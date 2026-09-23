@@ -391,4 +391,31 @@ async def project_dashboard(project_id: int, session: AsyncSession = Depends(get
             }
             for r in runs
         ],
+        # WP-042: recent runtime events for this project (live progress trail)
+        "runtime_events": await _recent_events(session, project_id),
     }
+
+
+async def _recent_events(session: AsyncSession, project_id: int) -> list[dict]:
+    """Latest 30 runtime events for a project (newest first)."""
+    from project_runtime.event.models import RuntimeEvent
+
+    stmt = (
+        select(RuntimeEvent)
+        .where(RuntimeEvent.project_id == project_id)
+        .order_by(RuntimeEvent.id.desc())
+        .limit(30)
+    )
+    events = list((await session.execute(stmt)).scalars().all())
+    return [
+        {
+            "event_id": e.id,
+            "event_type": e.event_type,
+            "timestamp": e.timestamp.isoformat() if e.timestamp else None,
+            "execution_id": e.execution_id,
+            "task_id": e.task_id,
+            "phase": e.phase,
+            "message": e.message,
+        }
+        for e in reversed(events)
+    ]

@@ -73,16 +73,23 @@ WP-042
 状态：
 
 ```text
-NOT_STARTED
+PASS（待检查方复验确认）
 ```
 
-Gate：
+Gate 勾选（依据 tests/test_event_engine.py 5 用例 + 真实 LLM 实测 execution #4 事件链 + SSE 流实测）：
 
-- WP-011 接入；
-- Event Store；
-- Execution timeline；
-- SSE；
-- refresh/reconnect recovery。
+- [x] Event Store（runtime_event 表，spec §4 全字段 + 21 事件类型；migration c3d7e8f4a9b1 手写 DDL）
+- [x] Execution timeline（ExecutionRunner 全链埋点：QUEUED→STARTED→WORKER_STARTED/COMPLETED→ARTIFACT_CREATED→COMPLETED/FAILED；GateCore GATE_STARTED/PASSED/FAILED）
+- [x] SSE（`GET /api/executions/{id}/events/stream`，实测标准 id/event/data 帧 + keep-alive 心跳；订阅者断开不影响 Worker——EventEngine 纯持久化，推送独立拉取）
+- [x] refresh/reconnect recovery（事件持久化 + after_id 增量恢复；test_after_id_reconnection_recovery + events API 实测）
+- [x] Event 顺序可追踪（id 严格递增；全事件携带 execution_id）
+- [x] Event 写入不产生长事务（每事件独立 session + commit_with_retry；test_event_write_is_short_tx spy 实证）
+- [x] 事件失败不破坏执行（_emit best-effort 双层吞异常；test_event_failure_never_breaks_execution 实证事件存储挂掉执行仍 SUCCEEDED）
+- [x] WP-011 接入（Event Engine 落地为 WP-042 范围的最小实现；完整 Event Engine 事件总线按 ADR-041 阶段划分不提前做）
+
+衔接：`GET /api/executions/diagnostics/locks` 消费 get_lock_audit（RH-02 复验要求）；UI Dashboard 新增「Runtime Events」实时进度区块。
+
+技术备注：SQLite BigInteger 主键破坏 autoincrement（BIGINT 不做 rowid 别名）→ runtime_event.id 用 Integer。
 
 ---
 

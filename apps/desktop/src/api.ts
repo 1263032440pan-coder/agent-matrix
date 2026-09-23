@@ -26,9 +26,39 @@ export interface DashboardData {
     started_at: string | null;
     finished_at: string | null;
   }>;
+  runtime_events?: Array<{
+    event_id: number;
+    event_type: string;
+    timestamp: string | null;
+    execution_id: number | null;
+    task_id: number | null;
+    phase: string | null;
+    message: string | null;
+  }>;
 }
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:9100';
+
+export interface RuntimeEvent {
+  event_id: number;
+  event_type: string;
+  timestamp: string | null;
+  execution_id: number | null;
+  task_id: number | null;
+  phase: string | null;
+  message: string | null;
+}
+
+export async function fetchExecutionEvents(
+  executionId: number,
+  afterId = 0
+): Promise<{ events: RuntimeEvent[]; last_event_id: number }> {
+  const resp = await fetch(
+    `${API_BASE}/api/executions/${executionId}/events?after_id=${afterId}`
+  );
+  if (!resp.ok) throw new Error(`Events fetch failed: ${resp.status}`);
+  return resp.json();
+}
 
 export async function fetchDashboard(projectId: number): Promise<DashboardData> {
   const resp = await fetch(`${API_BASE}/api/projects/${projectId}/dashboard`);

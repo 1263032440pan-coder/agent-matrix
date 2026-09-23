@@ -24,11 +24,34 @@ from project_runtime.execution.repository import ExecutionRepository
 logger = logging.getLogger(__name__)
 
 
+async def _emit(
+    event_type, *, project_id=None, task_id=None, execution_id=None,
+    phase=None, message=None, actor="RUNTIME", payload=None,
+) -> None:
+    """Best-effort event record (WP-042) — never breaks the execution path."""
+    try:
+        from project_runtime.event import EventEngine
+
+        await EventEngine().record(
+            event_type,
+            project_id=project_id,
+            task_id=task_id,
+            execution_id=execution_id,
+            phase=phase,
+            message=message,
+            actor=actor,
+            payload=payload,
+        )
+    except Exception:  # noqa: BLE001 — progress trail is best-effort
+        logger.debug("event emit failed (%s)", event_type, exc_info=True)
+
+
 class ExecutionRunner:
     """Background runner: executes one Execution end-to-end with short transactions."""
 
     async def run(self, execution_id: int) -> None:
         from project_runtime.artifact.manager import ArtifactManager
+        from project_runtime.event import RuntimeEventType
         from project_runtime.project_state.enums import TaskStatus
         from project_runtime.task_graph.manager import TaskGraphManager
         from project_runtime.worker.adapter import WorkPackage
@@ -51,6 +74,12 @@ class ExecutionRunner:
                     ex, False, error_code="TASK_NOT_FOUND", error_message="task missing"
                 )
                 await session.commit()
+                await _emit(
+                    RuntimeEventType.EXECUTION_FAILED,
+                    project_id=project_id, task_id=task_id, execution_id=execution_id,
+                    phase="ADMISSION", message="task missing",
+                    payload={"error_code": "TASK_NOT_FOUND"},
+                )
                 return
             # CREATED → READY before worker pickup (mirrors /plan-execute chain)
             if task.status == TaskStatus.CREATED:
@@ -63,6 +92,12 @@ class ExecutionRunner:
             task_ready = task.status == TaskStatus.READY
             await session.commit()
 
+        await _emit(
+            RuntimeEventType.EXECUTION_STARTED,
+            project_id=project_id, task_id=task_id, execution_id=execution_id,
+            phase="RUNNING", message=f"execution {execution_id} started",
+        )
+
         # Phase B: LLM execution — NO DB transaction held (DB-04)
         if not task_ready:
             async with AsyncSession(engine) as session:
@@ -74,7 +109,19 @@ class ExecutionRunner:
                         error_message="task not in READY state",
                     )
                     await session.commit()
+            await _emit(
+                RuntimeEventType.EXECUTION_FAILED,
+                project_id=project_id, task_id=task_id, execution_id=execution_id,
+                phase="ADMISSION", message="task not in READY state",
+                payload={"error_code": "TASK_NOT_READY"},
+            )
             return
+
+        await _emit(
+            RuntimeEventType.WORKER_STARTED,
+            project_id=project_id, task_id=task_id, execution_id=execution_id,
+            phase="WORKER_EXECUTION", message=f"worker executing: {task_name}",
+        )
 
         worker_session = AsyncSession(engine)
         try:
@@ -89,14 +136,31 @@ class ExecutionRunner:
             skill_version = result.actual_skill_version
             skill_hash = result.actual_skill_content_hash
             error = None if success else message
+            artifact_ids = list(result.artifacts)
         except Exception as e:  # worker-level failure (e.g. not READY race)
             logger.error("Execution %s worker failed: %s", execution_id, e)
             await worker_session.rollback()
             success, message = False, None
             skill_id = skill_version = skill_hash = None
             error = str(e)[:500]
+            artifact_ids = []
         finally:
             await worker_session.close()
+
+        await _emit(
+            RuntimeEventType.WORKER_COMPLETED,
+            project_id=project_id, task_id=task_id, execution_id=execution_id,
+            phase="WORKER_EXECUTION",
+            message="worker completed" if success else "worker failed",
+            payload={"success": success, "artifacts": artifact_ids},
+        )
+        for aid in artifact_ids:
+            await _emit(
+                RuntimeEventType.ARTIFACT_CREATED,
+                project_id=project_id, task_id=task_id, execution_id=execution_id,
+                phase="ARTIFACT", message=f"artifact #{aid}",
+                payload={"artifact_id": aid},
+            )
 
         # Phase C: Execution → SUCCEEDED/FAILED (short tx). Task stays
         # EXECUTION_DONE — ACCEPTED belongs to Gate only (AE-07/AE-08).
@@ -117,6 +181,14 @@ class ExecutionRunner:
             )
             await session.commit()
 
+        await _emit(
+            RuntimeEventType.EXECUTION_COMPLETED if success else RuntimeEventType.EXECUTION_FAILED,
+            project_id=project_id, task_id=task_id, execution_id=execution_id,
+            phase="DONE" if success else "FAILED",
+            message=message if success else (error or "worker failed"),
+            payload={"skill_id": skill_id, "skill_version": skill_version},
+        )
+
 
 class ExecutionService:
     """Admission + query. No execution logic in the request lifecycle."""
@@ -126,11 +198,18 @@ class ExecutionService:
 
     async def submit(self, project_id: int, task_id: int) -> int:
         """Create QUEUED Execution (committed), spawn background runner, return id."""
+        from project_runtime.event import RuntimeEventType
+
         async with AsyncSession(engine) as session:
             repo = ExecutionRepository(session)
             ex = await repo.create(project_id, task_id)
             execution_id = ex.id
             await session.commit()
+        await _emit(
+            RuntimeEventType.EXECUTION_QUEUED,
+            project_id=project_id, task_id=task_id, execution_id=execution_id,
+            phase="QUEUED", message=f"execution {execution_id} queued",
+        )
         # Background: runs beyond HTTP request lifecycle (ADR-041)
         asyncio.create_task(self._runner.run(execution_id))
         return execution_id
