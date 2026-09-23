@@ -138,6 +138,7 @@ async def execute_project(project_id: int):
                     await mgr.promote_to_ready(t.id)
                 except Exception:
                     pass
+        await session.commit()  # READY transitions visible before dispatch
 
         decisions = await scheduler.dispatch_once(project_id)
         await session.commit()

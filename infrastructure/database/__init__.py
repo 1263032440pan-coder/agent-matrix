@@ -23,6 +23,9 @@ def set_sqlite_pragma(dbapi_connection, connection_record):
     cursor = dbapi_connection.cursor()
     cursor.execute("PRAGMA journal_mode=WAL;")
     cursor.execute("PRAGMA foreign_keys=ON;")
+    # 30s busy timeout: write endpoints (plan/execute) wait out dashboard
+    # polling reads instead of failing immediately with "database is locked".
+    cursor.execute("PRAGMA busy_timeout=30000;")
     cursor.close()
 
 

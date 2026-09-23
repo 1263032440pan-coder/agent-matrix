@@ -69,21 +69,21 @@ class Scheduler:
 
         decisions: list[DispatchDecision] = []
 
-        # Ready candidates
+        # Ready candidates — snapshot ids (commit expires objects)
         stmt = (
-            select(Task)
+            select(Task.id)
             .where(Task.project_id == project_id, Task.status == TaskStatus.READY)
             .order_by(Task.id)
         )
-        ready_tasks = list((await self._session.execute(stmt)).scalars().all())
+        ready_task_ids = list((await self._session.execute(stmt)).scalars().all())
 
-        for task in ready_tasks:
+        for task_id in ready_task_ids:
             # D15: dispatch gated by ResourceGovernor decision
             decision = await self._governor.evaluate(project_id)
             if decision == ResourceDecision.DEFER_RESOURCE:
                 decisions.append(
                     DispatchDecision(
-                        task.id, "SKIP_NO_CAPACITY", "DEFER_RESOURCE: max_workers reached"
+                        task_id, "SKIP_NO_CAPACITY", "DEFER_RESOURCE: max_workers reached"
                     )
                 )
                 continue
@@ -94,38 +94,42 @@ class Scheduler:
                 # this task already exists.
                 existing_action = await self._session.execute(
                     select(ManualAction).where(
-                        ManualAction.task_id == task.id,
+                        ManualAction.task_id == task_id,
                         ManualAction.action_type == ManualActionType.TASK_DISPATCH,
                         ManualAction.status == ManualActionStatus.PENDING,
                     )
                 )
                 if existing_action.scalars().first() is not None:
                     decisions.append(
-                        DispatchDecision(task.id, "MANUAL_PENDING", "already pending")
+                        DispatchDecision(task_id, "MANUAL_PENDING", "already pending")
                     )
                     continue
                 action = ManualAction(
                     project_id=project_id,
-                    task_id=task.id,
+                    task_id=task_id,
                     action_type=ManualActionType.TASK_DISPATCH,
                     proposal_payload=json.dumps(
-                        {"task_id": task.id, "task_name": task.name}
+                        {"task_id": task_id, "task_name": f"task-{task_id}"}
                     ),
                     status=ManualActionStatus.PENDING,
                 )
                 self._session.add(action)
                 decisions.append(
-                    DispatchDecision(task.id, "MANUAL_PENDING", "ManualAction created")
+                    DispatchDecision(task_id, "MANUAL_PENDING", "ManualAction created")
                 )
                 continue
 
             # FULL_AUTO: dispatch to worker
             if self._worker is None:
                 decisions.append(
-                    DispatchDecision(task.id, "SKIP_NO_WORKER", "no worker registered")
+                    DispatchDecision(task_id, "SKIP_NO_WORKER", "no worker registered")
                 )
                 continue
 
+            # Fetch fresh task object (previous commit expired objects)
+            task = await self._session.get(Task, task_id)
+            if task is None:
+                continue
             await self._worker.assign(
                 WorkPackage(task_id=task.id, task_name=task.name)
             )
