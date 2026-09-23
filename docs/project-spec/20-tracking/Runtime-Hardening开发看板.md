@@ -101,3 +101,22 @@ AND RH-02 PASS
 AND RH-03 PASS
 → Runtime Hardening PASS
 ```
+
+## RH-E2E — Runtime Hardening 总验收
+
+状态：
+
+```text
+PASS（待检查方复验确认）
+```
+
+覆盖（tests/test_rh_e2e.py 5 用例，走真实 API 层 httpx ASGI + 真实 ExecutionService 后台 runner，LLM 在 Worker 边界 mock）：
+
+- [x] **E 组全链**：POST /api/executions → 202 + QUEUED → 轮询观察 RUNNING → SUCCEEDED；Worker 产出 Artifact；Task 停 EXECUTION_DONE；Gate PASS → ACCEPTED（actor=GATE）；事件链完整（QUEUED→…→ARTIFACT_CREATED→COMPLETED，id 严格递增）
+- [x] **F 组负断言**：Execution SUCCEEDED ≠ Task ACCEPTED（Gate 前实测停 EXECUTION_DONE）；刷新可恢复（新 session 查 Execution + ≥5 事件持久）
+- [x] **D 组并发**：3 Execution 并发全链 SUCCEEDED，各自 Artifact 齐、事件序完整、无持续锁
+- [x] **修改单瑕疵 1 抽查**：1500 字符 LLM 输出全链后事件表 message 全部 ≤128
+
+修复过程中发现并根治：
+1. GATE_PASSED 事件原走独立 EventEngine session，与 Gate 主写事务互撞（SQLite 单写者）导致事件丢失——改为调用方事务内直插（与 GateResult 原子提交）；GATE 事件按 task_id 关联（Gate 是 Task 域，无 execution 上下文，语义正确）
+2. event/models 缺 Execution 注册——FK("execution.id") 在未 import execution.models 的进程（e2e_demo 链路）无法解析 → 顶层 import 注册

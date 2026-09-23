@@ -7,6 +7,7 @@ Only GateCore may transition EXECUTION_DONE → ACCEPTED (D11-TD01 actor guard).
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 from abc import ABC, abstractmethod
@@ -159,22 +160,35 @@ class GateCore:
         await self._session.flush()
         logger.info("Gate %s → %s for task %d", "gate_core", final.value, task_id)
 
-        # WP-042: GATE_PASSED / GATE_FAILED event (best-effort)
+        # WP-042: GATE_PASSED / GATE_FAILED event — inserted in the CALLER's
+        # transaction (same session) so it commits atomically with the Gate
+        # result. A separate EventEngine session here would contend with the
+        # still-open write tx (SQLite single-writer) and the event was lost.
         try:
-            from project_runtime.event import EventEngine, RuntimeEventType
+            from project_runtime.event.models import RuntimeEvent, RuntimeEventType
 
-            await EventEngine().record(
-                RuntimeEventType.GATE_PASSED
-                if final == GateStatus.PASS
-                else RuntimeEventType.GATE_FAILED,
-                project_id=task.project_id,
-                task_id=task_id,
-                phase="GATE",
-                actor=self.ACTOR,
-                message=f"gate_core → {final.value}",
-                payload={"details": "\n".join(details)[:500]},
+            message = f"gate_core → {final.value}"
+            if len(message) > 120:  # event message budget (RH-03 修改单瑕疵 1)
+                message = message[:120] + "…"
+            self._session.add(
+                RuntimeEvent(
+                    event_type=(
+                        RuntimeEventType.GATE_PASSED.value
+                        if final == GateStatus.PASS
+                        else RuntimeEventType.GATE_FAILED.value
+                    ),
+                    project_id=task.project_id,
+                    task_id=task_id,
+                    phase="GATE",
+                    actor=self.ACTOR,
+                    message=message,
+                    payload=json.dumps(
+                        {"details": "\n".join(details)[:500]}, ensure_ascii=False
+                    ),
+                )
             )
-        except Exception:  # noqa: BLE001
-            pass
+            await self._session.flush()
+        except Exception:  # noqa: BLE001 — event is best-effort
+            logger.debug("gate terminal event failed", exc_info=True)
 
         return gate_result

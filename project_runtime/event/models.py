@@ -22,6 +22,9 @@ import enum
 from sqlalchemy import BigInteger, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column
 
+# Register the Execution model in the shared metadata — RuntimeEvent's FK
+# ("execution.id") can only resolve when the target table is defined.
+from project_runtime.execution.models import Execution  # noqa: F401, I001
 from project_runtime.project_state.base import Base
 
 
