@@ -10,7 +10,6 @@ Endpoints:
 
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
@@ -54,11 +53,15 @@ async def import_skill_package(file: UploadFile):
         raise HTTPException(400, "Only .zip skill packages are accepted")
 
     content = await file.read()
-    with tempfile.NamedTemporaryFile(
-        delete=False, suffix=".zip", prefix="skill_pkg_"
-    ) as tmp:
-        tmp.write(content)
-        tmp_path = tmp.name
+    # Persist the package under data/skills/ — the Skill Loader resolves
+    # package_ref on demand; a temp file would be deleted and break loading
+    # (bug seen live: package_ref pointed at an already-deleted Temp path).
+    skills_dir = Path("data/skills")
+    skills_dir.mkdir(parents=True, exist_ok=True)
+    ts = int(__import__("time").time())
+    persist_path = skills_dir / f"import_{ts}_{file.filename or 'pkg.zip'}"
+    persist_path.write_bytes(content)
+    tmp_path = str(persist_path)
     try:
         async with AsyncSession(engine) as session:
             importer = SkillPackageImporter(session)
@@ -74,7 +77,8 @@ async def import_skill_package(file: UploadFile):
                 await session.rollback()
                 raise HTTPException(409, str(e)) from e
     finally:
-        Path(tmp_path).unlink(missing_ok=True)
+        # Keep the persisted package (data/skills/) — it IS the load source.
+        pass
 
 
 @router.get("")
