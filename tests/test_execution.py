@@ -9,9 +9,9 @@ import asyncio
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
+import project_runtime.event.engine as event_engine_module
 import project_runtime.event.models  # noqa: F401 — register runtime_event table
 import project_runtime.execution.models  # noqa: F401 — register table
-import project_runtime.event.engine as event_engine_module
 import project_runtime.execution.service as exec_service_module
 from project_runtime.execution.models import ExecutionStatus
 from project_runtime.execution.repository import (

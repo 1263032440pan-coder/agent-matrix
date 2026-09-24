@@ -166,6 +166,7 @@ async def test_event_failure_never_breaks_execution(patched_engines, project_id,
 
     # V1.13+ Phase D: auto-gate accepts after SUCCEEDED — poll for it.
     import time as _t
+
     from sqlalchemy import select as _sel
 
     deadline = _t.monotonic() + 5

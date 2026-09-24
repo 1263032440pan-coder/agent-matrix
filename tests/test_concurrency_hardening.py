@@ -13,17 +13,17 @@ import time
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
+import project_runtime.event.engine as _evmod
+import project_runtime.event.models  # noqa: F401 — register runtime_event (gate direct-insert)
 import project_runtime.execution.models  # noqa: F401 — register table
+import project_runtime.execution.service as _svc
 from infrastructure.database.short_tx import (
     commit_with_retry,
     get_lock_audit,
     reset_lock_audit,
 )
-import project_runtime.event.models  # noqa: F401 — register runtime_event (gate direct-insert)
-import project_runtime.event.engine as _evmod
 from project_runtime.execution.models import Execution, ExecutionStatus
 from project_runtime.execution.repository import ExecutionRepository
-import project_runtime.execution.service as _svc
 from project_runtime.execution.service import ExecutionRunner
 from project_runtime.project_state.base import Base
 from project_runtime.project_state.enums import AutomationMode, TaskStatus
