@@ -428,3 +428,49 @@ async def test_retry_failed_execution(rh_env, monkeypatch):
     # Gate auto-ran on retry success
     got = await _wait_task_status(rh_env, task_id, TaskStatus.ACCEPTED.value)
     assert got == TaskStatus.ACCEPTED.value
+
+
+@pytest.mark.asyncio
+async def test_full_auto_chain_runs_to_completion(rh_env, monkeypatch):
+    """FULL_AUTO 语义: 一次触发，整条 HARD 链自动推进到全部 ACCEPTED.
+
+    用户实测痛点: FULL_AUTO 还要每环手点「执行项目」——auto_advance 在
+    Gate PASS 后自动提交下游，MANUAL 不受影响。
+    """
+    _mock_llm(monkeypatch)
+    from project_runtime.project_state.models import TaskDependency
+
+    async with AsyncSession(rh_env) as s:
+        p = Project(name="auto-chain", automation_mode=AutomationMode.FULL_AUTO)
+        s.add(p)
+        await s.flush()
+        pid = p.id
+        mgr = TaskGraphManager(s)
+        t1 = await mgr.create_task(Task(project_id=pid, name="step-1"))
+        await mgr.promote_to_ready(t1.id)
+        t1_id = t1.id
+        ids = [t1_id]
+        prev = t1_id
+        for i in (2, 3):
+            t = await mgr.create_task(Task(project_id=pid, name=f"step-{i}"))
+            tid = t.id
+            ids.append(tid)
+            s.add(TaskDependency(task_id=tid, depends_on_id=prev, dependency_type="HARD"))
+            prev = tid
+        await s.commit()
+
+    # ONE submit — the chain must cascade by itself
+    from project_runtime.execution.service import ExecutionService
+
+    await ExecutionService().submit(pid, t1_id)
+
+    import time as _t
+    deadline = _t.monotonic() + 60
+    while _t.monotonic() < deadline:
+        statuses = [await _task_status(rh_env, i) for i in ids]
+        if all(st == TaskStatus.ACCEPTED.value for st in statuses):
+            break
+        await asyncio.sleep(0.3)
+
+    for i in ids:
+        assert await _task_status(rh_env, i) == TaskStatus.ACCEPTED.value

@@ -250,10 +250,76 @@ class ExecutionRunner:
                 logger.info(
                     "Execution %s gate result: %s", execution_id, gate_status
                 )
+
+                # FULL_AUTO chain progression: when Gate PASS unblocks
+                # downstream tasks, submit them automatically — the project
+                # runs end-to-end without per-step clicking. MANUAL mode is
+                # untouched (no auto submit — its red line).
+                if gate_status == "PASS":
+                    await self._auto_advance(project_id)
             except Exception as e:  # noqa: BLE001 — gate failure must not
                 # corrupt the execution record; task stays EXECUTION_DONE and
                 # can be re-gated via ManualAction / future retry.
                 logger.error("Execution %s gate evaluation failed: %s", execution_id, e)
+
+    async def _auto_advance(self, project_id: int) -> None:
+        """FULL_AUTO: submit executions for all READY tasks (best-effort).
+
+        Called after every Gate PASS. Idempotent: the active-execution guard
+        (partial unique index, AE-05) rejects duplicates, so overlapping
+        calls are safe. MANUAL projects are skipped.
+        """
+        from project_runtime.execution.repository import (
+            ActiveExecutionExistsError,
+        )
+        from project_runtime.project_state.enums import (
+            AutomationMode,
+            TaskStatus,
+        )
+        from project_runtime.project_state.models import (
+            Project as ProjectModel,
+        )
+        from project_runtime.project_state.models import (
+            Task as TaskModel,
+        )
+
+        try:
+            async with AsyncSession(engine) as session:
+                proj = await session.get(ProjectModel, project_id)
+                if proj is None or proj.automation_mode != AutomationMode.FULL_AUTO:
+                    return  # MANUAL: never auto-submit
+                ready_ids = list(
+                    (
+                        await session.execute(
+                            select(TaskModel).where(
+                                TaskModel.project_id == project_id,
+                                TaskModel.status == TaskStatus.READY,
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                ids = [t.id for t in ready_ids]
+
+            # Throttle: at most MAX_AUTO_SUBMIT per advance — wide graphs
+            # (many independent READY tasks) would flood the LLM gateway.
+            # Sequential chains naturally submit 1 at a time.
+            max_submit = 3
+            submitted = 0
+            for tid in ids[:max_submit]:
+                try:
+                    await ExecutionService().submit(project_id, tid)
+                    submitted += 1
+                except ActiveExecutionExistsError:
+                    pass  # already running — fine
+            if submitted:
+                logger.info(
+                    "FULL_AUTO advance: submitted %d execution(s) for project %d",
+                    submitted, project_id,
+                )
+        except Exception:  # noqa: BLE001 — auto-advance is best-effort
+            logger.debug("auto-advance failed", exc_info=True)
 
 
 class ExecutionService:
