@@ -238,3 +238,27 @@ export async function bindSkillToProject(
   }
   return resp.json();
 }
+
+// ── Artifact 内容预览 ─────────────────────────────────────────────
+
+export interface ArtifactContent {
+  id: number;
+  task_id: number | null;
+  name: string;
+  version: number;
+  path: string;
+  sha256: string | null;
+  content: string;
+  size_bytes: number;
+}
+
+export async function fetchArtifactContent(
+  artifactId: number
+): Promise<ArtifactContent> {
+  const resp = await fetch(`${API_BASE}/api/artifacts/${artifactId}/content`);
+  if (!resp.ok) {
+    const detail = await resp.json().catch(() => '');
+    throw new Error(`产物读取失败: ${detail?.detail ?? resp.status}`);
+  }
+  return resp.json();
+}

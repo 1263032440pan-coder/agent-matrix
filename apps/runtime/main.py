@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from apps.runtime.api import executions_router, projects_router, settings_router
+from apps.runtime.api.artifacts import router as artifacts_router
 from apps.runtime.api.skills import router as skills_router
 from infrastructure.config import settings
 from infrastructure.database import check_db, engine
@@ -84,6 +85,7 @@ app.add_middleware(
 app.include_router(projects_router)
 app.include_router(executions_router)
 app.include_router(skills_router)
+app.include_router(artifacts_router)
 app.include_router(settings_router)
 
 

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { DashboardData } from '../api';
 import { fetchDashboard } from '../api';
+import { ArtifactViewer } from './ArtifactViewer';
 
 const STATUS_COLORS: Record<string, string> = {
   ACCEPTED: '#52c41a',
@@ -153,6 +154,7 @@ export function Dashboard({ projectId, paused }: { projectId: number; paused?: b
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selectedTask, setSelectedTask] = useState<number | null>(null);
+  const [viewingArtifact, setViewingArtifact] = useState<number | null>(null);
 
   useEffect(() => {
     if (paused) return; // plan/execute in flight — don't contend for SQLite lock
@@ -232,9 +234,46 @@ export function Dashboard({ projectId, paused }: { projectId: number; paused?: b
                 {selected.name} <StatusTag status={selected.status} />
               </h4>
               <p style={{ color: '#555', fontSize: 13, margin: 0 }}>
-                Task #{selected.id} — 该任务的 artifacts / gate / timeline 在右侧与下方区块
-                按 task_id 关联展示。
+                Task #{selected.id}
               </p>
+              {(() => {
+                const taskArts = data.artifacts.filter(
+                  (a) => a.task_id === selected.id
+                );
+                return (
+                  <div style={{ marginTop: 8 }}>
+                    {taskArts.length === 0 ? (
+                      <span style={{ color: '#999', fontSize: 13 }}>
+                        该任务暂无产物
+                      </span>
+                    ) : (
+                      taskArts.map((a) => (
+                        <button
+                          key={a.id}
+                          onClick={() => setViewingArtifact(a.id)}
+                          style={{
+                            display: 'block',
+                            width: '100%',
+                            textAlign: 'left',
+                            padding: '6px 10px',
+                            marginBottom: 4,
+                            border: '1px solid #d9d9d9',
+                            borderRadius: 4,
+                            background: '#fafafa',
+                            cursor: 'pointer',
+                            fontSize: 13,
+                          }}
+                        >
+                          📄 {a.name} v{a.version}{' '}
+                          <span style={{ color: '#999' }}>
+                            ({a.sha256 ? a.sha256.slice(0, 8) : ''}…) 点击查看
+                          </span>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                );
+              })()}
             </div>
           )}
         </section>
@@ -260,7 +299,21 @@ export function Dashboard({ projectId, paused }: { projectId: number; paused?: b
             <ul style={{ paddingLeft: 18, margin: 0 }}>
               {data.artifacts.map((a) => (
                 <li key={a.id}>
-                  {a.name} v{a.version} {a.sha256 ? `(sha256 ${a.sha256.slice(0, 8)}…)` : ''}
+                  <a
+                    href="#"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      setViewingArtifact(a.id);
+                    }}
+                    style={{ color: '#1890ff' }}
+                  >
+                    {a.name} v{a.version}
+                  </a>{' '}
+                  {a.sha256 ? (
+                    <span style={{ color: '#999', fontSize: 12 }}>
+                      {a.sha256.slice(0, 8)}…
+                    </span>
+                  ) : null}
                 </li>
               ))}
             </ul>
@@ -284,11 +337,27 @@ export function Dashboard({ projectId, paused }: { projectId: number; paused?: b
         <h3 style={{ marginTop: 0 }}>Execution Timeline</h3>
         {data.timeline.length === 0 && <p style={{ color: '#999' }}>暂无执行记录</p>}
         <ul style={{ paddingLeft: 18 }}>
-          {data.timeline.map((r) => (
-            <li key={r.id}>
-              {r.task_name} (attempt {r.attempt}) — {r.started_at ?? '…'} → {r.finished_at ?? '…'}
-            </li>
-          ))}
+          {data.timeline.map((r) => {
+            const art = data.artifacts.find((a) => a.task_id === r.task_id);
+            return (
+              <li key={r.id}>
+                {r.task_name} (attempt {r.attempt}) — {r.started_at ?? '…'} →{' '}
+                {r.finished_at ?? '…'}
+                {art && (
+                  <a
+                    href="#"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      setViewingArtifact(art.id);
+                    }}
+                    style={{ color: '#1890ff', marginLeft: 8, fontSize: 12 }}
+                  >
+                    📄 产物
+                  </a>
+                )}
+              </li>
+            );
+          })}
         </ul>
       </section>
 
@@ -308,6 +377,12 @@ export function Dashboard({ projectId, paused }: { projectId: number; paused?: b
             ))}
           </ul>
         </section>
+      )}
+      {viewingArtifact !== null && (
+        <ArtifactViewer
+          artifactId={viewingArtifact}
+          onClose={() => setViewingArtifact(null)}
+        />
       )}
     </div>
   );
