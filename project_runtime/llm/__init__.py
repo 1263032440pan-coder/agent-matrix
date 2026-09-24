@@ -40,8 +40,14 @@ def save_llm_settings(cfg: LLMSettings) -> None:
 
 
 async def test_llm_connection(cfg: LLMSettings) -> dict:
-    """Real chat completion round-trip via LiteLLM."""
-    import litellm
+    """Real chat completion round-trip via LiteLLM.
+
+    Hardening: LiteLLM's retry/connection-pool init has synchronous blocking
+    segments that can FREEZE the event loop (seen live: /health stopped
+    responding during a test call, taking down the whole runtime). The call
+    now runs in a worker thread — a blocked test can never freeze the runtime.
+    """
+    import asyncio
 
     if not cfg.base_url or not cfg.api_key or not cfg.model:
         return {"ok": False, "error": "base_url / api_key / model 均需填写"}
@@ -54,16 +60,30 @@ async def test_llm_connection(cfg: LLMSettings) -> dict:
                           "ollama/", "gemini/", "deepseek/", "mistral/")
         if not model.startswith(known_prefixes):
             model = f"openai/{model}"
+
+    def _blocking_call() -> dict:
+        # Synchronous litellm call inside its own thread
+        import litellm
+
+        try:
+            resp = litellm.completion(  # sync variant — thread-isolated
+                model=model,
+                api_base=cfg.base_url,
+                api_key=cfg.api_key,
+                messages=[{"role": "user", "content": "ping"}],
+                max_tokens=5,
+                timeout=20,
+            )
+            text = resp.choices[0].message.content or ""
+            return {"ok": True, "sample": text[:50]}
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": str(e)[:300]}
+
     try:
-        resp = await litellm.acompletion(
-            model=model,
-            api_base=cfg.base_url,
-            api_key=cfg.api_key,
-            messages=[{"role": "user", "content": "ping"}],
-            max_tokens=5,
-            timeout=20,
+        return await asyncio.wait_for(
+            asyncio.to_thread(_blocking_call), timeout=25
         )
-        text = resp.choices[0].message.content or ""
-        return {"ok": True, "sample": text[:50]}
-    except Exception as e:
+    except asyncio.TimeoutError:
+        return {"ok": False, "error": "测试超时（25s）——网关无响应，已与 runtime 隔离"}
+    except Exception as e:  # noqa: BLE001
         return {"ok": False, "error": str(e)[:300]}
