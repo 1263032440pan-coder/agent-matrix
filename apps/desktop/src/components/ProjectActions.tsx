@@ -71,7 +71,11 @@ export function ProjectActions({
   };
 
   const doExecute = async () => {
-    if (projectId === null) return;
+    console.log('[doExecute] clicked, projectId=', projectId, 'busy=', busy);
+    if (projectId === null) {
+      setMessage('未选择项目 — projectId 为空，请先创建或等待项目列表加载');
+      return;
+    }
     setBusy(true);
     onBusyChange?.(true);
     setMessage('执行中（LLM 调用可能需要几十秒）…');
@@ -198,6 +202,7 @@ export function ProjectActions({
         {currentMode === 'FULL_AUTO' ? '切换为 MANUAL' : '切换为 FULL_AUTO'}
       </button>
       {message && <span style={{ color: '#555', fontSize: 13 }}>{message}</span>}
+      {busy && <span style={{ color: '#fa8c16', fontSize: 13 }}>⏳ 操作进行中（按钮禁用）…</span>}
     </div>
   );
 }
