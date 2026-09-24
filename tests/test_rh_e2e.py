@@ -320,3 +320,61 @@ async def test_gate_auto_review_and_downstream_unlock(rh_env, monkeypatch):
     # Downstream HARD dep satisfied → t2 unblocked to READY
     got2 = await _wait_task_status(rh_env, t2_id, TaskStatus.READY.value)
     assert got2 == TaskStatus.READY.value
+
+
+@pytest.mark.asyncio
+async def test_task_name_with_illegal_chars_writes_artifact(rh_env, monkeypatch):
+    """Windows 文件名非法字符（如 'Worker / Gate'）不再炸 Worker——名称被清洗。"""
+    _mock_llm(monkeypatch)
+    async with AsyncSession(rh_env) as s:
+        p = Project(name="fs-safe", automation_mode=AutomationMode.FULL_AUTO)
+        s.add(p)
+        await s.flush()
+        pid = p.id
+        mgr = TaskGraphManager(s)
+        t = await mgr.create_task(
+            Task(project_id=pid, name="17.7 Worker / Gate: test?")
+        )
+        await mgr.promote_to_ready(t.id)
+        tid = t.id
+        await s.commit()
+
+    from project_runtime.execution.service import ExecutionService
+
+    ex_id = await ExecutionService().submit(pid, tid)
+    assert await _wait_terminal(rh_env, ex_id) == "SUCCEEDED"
+
+    # Artifact written with sanitized file name (no / : ?)
+
+    async with AsyncSession(rh_env) as s:
+        arts = (
+            await s.execute(select(Artifact).where(Artifact.task_id == tid))
+        ).scalars().all()
+        assert len(arts) == 1
+        assert "/" not in arts[0].path and ":" not in arts[0].path.replace(":", "", 1)
+
+
+@pytest.mark.asyncio
+async def test_stranded_running_task_marked_failed(rh_env, monkeypatch):
+    """Worker 内部崩溃（artifact 落盘异常）→ 兜底把 RUNNING 任务置 FAILED，不停滞。"""
+    # LLM 成功，但 artifact 写盘炸（模拟 591 现场）
+    _mock_llm(monkeypatch)
+
+    async def broken_create_artifact(self, **kwargs):
+        raise OSError("simulated artifact write failure")
+
+    monkeypatch.setattr(
+        "project_runtime.artifact.manager.ArtifactManager.create_artifact",
+        broken_create_artifact,
+    )
+
+    project_id, task_id = await _seed_ready_task(rh_env, "crash-test")
+    from project_runtime.execution.service import ExecutionService
+
+    ex_id = await ExecutionService().submit(project_id, task_id)
+    final = await _wait_terminal(rh_env, ex_id)
+    assert final == "FAILED"
+
+    # Task NOT stranded in RUNNING — safety net moved it to FAILED
+    got = await _wait_task_status(rh_env, task_id, TaskStatus.FAILED.value)
+    assert got == TaskStatus.FAILED.value

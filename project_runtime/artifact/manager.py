@@ -36,6 +36,12 @@ class ArtifactManager:
         artifact_type: ArtifactType = ArtifactType.FILE,
     ) -> Artifact:
         """Write content to disk and register as an Artifact."""
+        # Sanitize file name: Windows forbids <>:"/\\|?* — task names with
+        # e.g. "Worker / Gate" would be split into a non-existent directory
+        # path and crash the worker (seen live on project 86, task 591).
+        for ch in '<>:"/\\|?*':
+            name = name.replace(ch, "_")
+
         task_dir = self._workspace_root / str(task_id)
         task_dir.mkdir(parents=True, exist_ok=True)
 

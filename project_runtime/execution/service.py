@@ -145,6 +145,31 @@ class ExecutionRunner:
             skill_id = skill_version = skill_hash = None
             error = str(e)[:500]
             artifact_ids = []
+            # Safety net: the worker may have crashed BETWEEN the RUNNING
+            # transition and its own FAILED handling (e.g. artifact write
+            # error) — leave no task stranded in RUNNING forever.
+            try:
+                from project_runtime.project_state.enums import TaskStatus
+                from project_runtime.task_graph.manager import TaskGraphManager
+
+                async with AsyncSession(engine) as s2:
+                    mgr2 = TaskGraphManager(s2)
+                    t = await mgr2.get_task(task_id)
+                    if t is not None and t.status == TaskStatus.RUNNING:
+                        from project_runtime.project_state.fsm import (
+                            StateTransitionService,
+                        )
+
+                        await StateTransitionService(s2).transition_task(
+                            t, TaskStatus.FAILED
+                        )
+                        await s2.commit()
+                        logger.info(
+                            "Execution %s: stranded RUNNING task %d → FAILED",
+                            execution_id, task_id,
+                        )
+            except Exception:  # noqa: BLE001 — best-effort cleanup
+                logger.debug("stranded-task cleanup failed", exc_info=True)
         finally:
             await worker_session.close()
 
