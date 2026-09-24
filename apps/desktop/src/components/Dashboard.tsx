@@ -153,8 +153,10 @@ export function TaskGraphView({
 export function Dashboard({ projectId, paused }: { projectId: number; paused?: boolean }) {
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [selectedTask, setSelectedTask] = useState<number | null>(null);
   const [viewingArtifact, setViewingArtifact] = useState<number | null>(null);
+  // null = auto-follow mode (show current running task); a task id = user
+  // pinned selection (clicking the same node again un-pins back to auto).
+  const [pinnedTask, setPinnedTask] = useState<number | null>(null);
 
   useEffect(() => {
     if (paused) return; // plan/execute in flight — don't contend for SQLite lock
@@ -183,7 +185,16 @@ export function Dashboard({ projectId, paused }: { projectId: number; paused?: b
     (t.depends_on ?? []).forEach((up) => deps.push([t.id, up]));
   });
 
-  const selected = data.tasks.find((t) => t.id === selectedTask) ?? null;
+  // Auto-follow: pinned (user click) wins; otherwise follow the running task;
+  // fallback to the latest non-terminal task for context on idle projects.
+  const runningTask = data.tasks.find((t) => t.status === 'RUNNING') ?? null;
+  const focusFallback =
+    data.tasks.find((t) => t.status === 'EXECUTION_DONE') ??
+    data.tasks.find((t) => t.status === 'READY') ??
+    null;
+  const focusId = pinnedTask ?? runningTask?.id ?? focusFallback?.id ?? null;
+  const selected = data.tasks.find((t) => t.id === focusId) ?? null;
+  const isAutoFollow = pinnedTask === null;
 
   const card: React.CSSProperties = {
     background: '#fff',
@@ -222,8 +233,15 @@ export function Dashboard({ projectId, paused }: { projectId: number; paused?: b
           <TaskGraphView
             tasks={data.tasks}
             deps={deps}
-            onSelect={(id) => setSelectedTask(id === selectedTask ? null : id)}
-            selectedId={selectedTask}
+            onSelect={(id) => {
+              // Click: pin this node; click again: unpin → back to auto-follow
+              if (pinnedTask === id) {
+                setPinnedTask(null);
+              } else {
+                setPinnedTask(id);
+              }
+            }}
+            selectedId={focusId}
           />
           {selected && (
             <div
@@ -231,7 +249,19 @@ export function Dashboard({ projectId, paused }: { projectId: number; paused?: b
               style={{ marginTop: 12, borderTop: '1px solid #eee', paddingTop: 12 }}
             >
               <h4 style={{ margin: '4px 0' }}>
-                {selected.name} <StatusTag status={selected.status} />
+                {selected.name} <StatusTag status={selected.status} />{' '}
+                <span
+                  style={{
+                    fontSize: 11,
+                    padding: '1px 8px',
+                    borderRadius: 8,
+                    background: isAutoFollow ? '#e6f7ff' : '#fff7e6',
+                    color: isAutoFollow ? '#1890ff' : '#fa8c16',
+                    border: `1px solid ${isAutoFollow ? '#91d5ff' : '#ffd591'}`,
+                  }}
+                >
+                  {isAutoFollow ? '自动跟随执行中' : '已固定（点击同节点取消）'}
+                </span>
               </h4>
               <p style={{ color: '#555', fontSize: 13, margin: 0 }}>
                 Task #{selected.id}
