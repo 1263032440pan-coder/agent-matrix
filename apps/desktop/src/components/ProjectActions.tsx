@@ -1,5 +1,12 @@
 import { useState } from 'react';
-import { createProject, executeProject, runPlanning, updateProjectMode, uploadMethodAsset } from '../api';
+import {
+  createProject,
+  executeProject,
+  importSkillPackage,
+  runPlanning,
+  updateProjectMode,
+  uploadMethodAsset,
+} from '../api';
 
 export function ProjectActions({
   projectId,
@@ -85,6 +92,23 @@ export function ProjectActions({
     }
   };
 
+  const doImportSkill = async (f: File | null) => {
+    if (!f) return;
+    setBusy(true);
+    try {
+      const sk = await importSkillPackage(f);
+      setMessage(
+        `Skill 已导入: ${sk.name}@${sk.version}（${sk.skill_id}，状态 ${sk.status}）` +
+          (projectId !== null ? ' — 可在 Skill 列表绑定到当前项目' : '')
+      );
+      onImported();
+    } catch (e) {
+      setMessage(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const doToggleMode = async () => {
     if (projectId === null) return;
     const next = currentMode === 'FULL_AUTO' ? 'MANUAL' : 'FULL_AUTO';
@@ -136,6 +160,19 @@ export function ProjectActions({
           style={{ display: 'none' }}
           onChange={(e) => doUpload(e.target.files?.[0] ?? null)}
           disabled={busy || projectId === null}
+        />
+      </label>
+      <label
+        style={{ padding: '6px 14px', border: '1px solid #722ed1', borderRadius: 4, cursor: 'pointer', color: '#722ed1' }}
+        title="导入声明式 Skill 包（SKILL.md + references，ZIP 格式）——你的方法流程将被注册并可在执行中采用"
+      >
+        导入 Skill 包 (.zip)
+        <input
+          type="file"
+          accept=".zip"
+          style={{ display: 'none' }}
+          onChange={(e) => doImportSkill(e.target.files?.[0] ?? null)}
+          disabled={busy}
         />
       </label>
       <button

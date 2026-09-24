@@ -4,6 +4,7 @@ import { listProjects } from './api';
 import { Dashboard } from './components/Dashboard';
 import { LLMSettingsCard } from './components/LLMSettingsCard';
 import { ProjectActions } from './components/ProjectActions';
+import { SkillPanel } from './components/SkillPanel';
 
 function App() {
   const [projectId, setProjectId] = useState<number | null>(null);
@@ -45,6 +46,7 @@ function App() {
         onImported={() => setRefreshKey((k) => k + 1)}
         onBusyChange={setBusy}
       />
+      <SkillPanel projectId={projectId} />
       {error && <div role="alert">{error}</div>}
       {projectId === null && !error && <div>暂无项目 — 请先创建</div>}
       {projectId !== null && (

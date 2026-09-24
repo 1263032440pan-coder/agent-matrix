@@ -183,3 +183,58 @@ export async function testLLMConnection(cfg: {
   if (!resp.ok) throw new Error(`LLM test failed: ${resp.status}`);
   return resp.json();
 }
+// ── Skill 包管理（D17B/D17C 用户入口）─────────────────────────────────
+
+export interface SkillInfo {
+  skill_id: string;
+  name: string;
+  version: string;
+  skill_type: string | null;
+  description: string | null;
+  status: string | null;
+  content_hash: string;
+  package_ref: string | null;
+  created_at: string | null;
+}
+
+export async function importSkillPackage(file: File): Promise<SkillInfo> {
+  const form = new FormData();
+  form.append('file', file);
+  const resp = await fetch(`${API_BASE}/api/skills/import`, {
+    method: 'POST',
+    body: form,
+  });
+  if (!resp.ok) {
+    const detail = await resp.json().catch(() => '');
+    throw new Error(`Skill 导入失败: ${detail?.detail ?? resp.status}`);
+  }
+  return resp.json();
+}
+
+export async function listSkills(): Promise<SkillInfo[]> {
+  const resp = await fetch(`${API_BASE}/api/skills`);
+  if (!resp.ok) throw new Error(`Skills fetch failed: ${resp.status}`);
+  return resp.json();
+}
+
+export async function bindSkillToProject(
+  projectId: number,
+  skillId: string,
+  skillVersion: string,
+  scopeKey = ''
+): Promise<Record<string, unknown>> {
+  const resp = await fetch(`${API_BASE}/api/skills/bindings/project/${projectId}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      skill_id: skillId,
+      skill_version: skillVersion,
+      scope_key: scopeKey,
+    }),
+  });
+  if (!resp.ok) {
+    const detail = await resp.json().catch(() => '');
+    throw new Error(`绑定失败: ${detail?.detail ?? resp.status}`);
+  }
+  return resp.json();
+}
