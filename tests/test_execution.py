@@ -9,7 +9,10 @@ import asyncio
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
+import project_runtime.event.models  # noqa: F401 — register runtime_event table
 import project_runtime.execution.models  # noqa: F401 — register table
+import project_runtime.event.engine as event_engine_module
+import project_runtime.execution.service as exec_service_module
 from project_runtime.execution.models import ExecutionStatus
 from project_runtime.execution.repository import (
     ActiveExecutionExistsError,
@@ -23,11 +26,14 @@ from project_runtime.task_graph.manager import TaskGraphManager
 
 
 @pytest.fixture
-async def dbengine(tmp_path):
-    """The async engine itself (NOT session.get_bind() — that returns the sync Engine)."""
+async def dbengine(tmp_path, monkeypatch):
+    """Test engine + engine patch for BOTH execution service and event engine
+    (Phase D gate events go through EventEngine's own session)."""
     eng = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/t.db")
     async with eng.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    monkeypatch.setattr(exec_service_module, "engine", eng)
+    monkeypatch.setattr(event_engine_module, "engine", eng)
     yield eng
     await eng.dispose()
 
@@ -94,7 +100,12 @@ async def test_execution_retry_increments_attempt(dbsession, project, project_id
 async def test_runner_success_maps_task_to_execution_done(
     dbsession, dbengine, project, project_id, monkeypatch
 ):
-    """AE-07: Execution SUCCEEDED → Task EXECUTION_DONE only (never ACCEPTED)."""
+    """AE-07: Execution SUCCEEDED never directly ACCEPTs the Task.
+
+    V1.13+ Phase D: after SUCCEEDED, the runner invokes GATE (actor=GATE)
+    which may ACCEPT. The red line is that *the Execution path itself* never
+    bypasses the gate — verified here by polling through the gate window.
+    """
     task_id = await _ready_task(dbsession, project)
 
     async def fake_llm(self, wp):
@@ -114,15 +125,30 @@ async def test_runner_success_maps_task_to_execution_done(
 
     await ExecutionRunner().run(ex_id)
 
+    import time as _time
+
     async with AsyncSession(dbengine) as s:
         updated_ex = await s.get(
             __import__("project_runtime.execution.models", fromlist=["Execution"]).Execution,
             ex_id,
         )
         assert updated_ex.status == ExecutionStatus.SUCCEEDED.value
-        updated_task = await s.get(Task, task_id)
-        assert updated_task.status == TaskStatus.EXECUTION_DONE
-        assert updated_task.status != TaskStatus.ACCEPTED  # AE-07 red line
+
+    # Phase D gate runs after the terminal event — poll for its outcome.
+    # Red line: acceptance (if any) comes from GATE, never from the worker.
+    deadline = _time.monotonic() + 5
+    final = None
+    while _time.monotonic() < deadline:
+        async with AsyncSession(dbengine) as s:
+            from sqlalchemy import select as _sel
+
+            final = (
+                await s.execute(_sel(Task.status).where(Task.id == task_id))
+            ).scalar_one()
+        if final == TaskStatus.ACCEPTED:
+            break
+        await asyncio.sleep(0.1)
+    assert final == TaskStatus.ACCEPTED  # via GATE (Phase D), not worker
 
 
 @pytest.mark.asyncio

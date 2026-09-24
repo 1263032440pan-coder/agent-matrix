@@ -74,6 +74,19 @@ def _mock_llm(monkeypatch, output="# RH-E2E 产出\n完整交付内容。"):
     )
 
 
+
+async def _wait_task_status(
+    engine, task_id: int, expected: str, timeout_s: float = 15.0
+) -> str:
+    """Poll until Task reaches expected status (Gate runs AFTER the Execution
+    terminal event, so terminal-wait alone can race ahead of Phase D)."""
+    for _ in range(int(timeout_s / 0.1)):
+        if await _task_status(engine, task_id) == expected:
+            return expected
+        await asyncio.sleep(0.1)
+    return await _task_status(engine, task_id)
+
+
 async def _wait_terminal(engine, execution_id: int, timeout_s: float = 15.0) -> str:
     for _ in range(int(timeout_s / 0.1)):
         async with AsyncSession(engine) as s:
@@ -148,14 +161,11 @@ async def test_rh_e2e_full_chain_to_accepted(rh_env, monkeypatch):
     assert types[-1] == "EXECUTION_COMPLETED"
     assert all(e.execution_id == execution_id for e in events)
 
-    # Gate → ACCEPTED (the ONLY acceptance path, actor-guarded)
-    from project_runtime.reviewer.gate import GateCore
-
-    async with AsyncSession(rh_env) as s:
-        g = await GateCore(s).evaluate(task_id)
-        assert g.status.value == "PASS"
-        await s.commit()
-    assert await _task_status(rh_env, task_id) == TaskStatus.ACCEPTED  # E terminal
+    # V1.13+: Gate runs AUTOMATICALLY after SUCCEEDED (Phase D). Phase D
+    # happens after the EXECUTION_COMPLETED event, so wait for ACCEPTED
+    # explicitly (terminal-wait alone races ahead of the gate).
+    got = await _wait_task_status(rh_env, task_id, TaskStatus.ACCEPTED.value)
+    assert got == TaskStatus.ACCEPTED.value  # E terminal
 
     # GATE events recorded with actor=GATE (keyed by task_id — Gate has no
     # execution context, which is correct: Gate is Task-scoped, not Execution-scoped)
@@ -236,9 +246,10 @@ async def test_d_three_concurrent_full_chain(rh_env, monkeypatch):
     for ex_id in ex_ids:
         assert await _wait_terminal(rh_env, ex_id, timeout_s=30) == "SUCCEEDED"
 
-    # All 3 tasks EXECUTION_DONE; all 3 have artifacts; event order intact
+    # All 3 tasks ACCEPTED (auto-gate); all 3 have artifacts; event order intact
     for pid, tid in pairs:
-        assert await _task_status(rh_env, tid) == TaskStatus.EXECUTION_DONE
+        got = await _wait_task_status(rh_env, tid, TaskStatus.ACCEPTED.value)
+        assert got == TaskStatus.ACCEPTED.value
     async with AsyncSession(rh_env) as s:
         art_count = (
             await s.execute(select(Artifact).where(Artifact.task_id.in_([t for _, t in pairs])))
@@ -272,3 +283,40 @@ async def test_no_long_messages_in_event_table(rh_env, monkeypatch):
     assert len(events) >= 5
     for e in events:
         assert e.message is None or len(e.message) <= 128
+
+
+@pytest.mark.asyncio
+async def test_gate_auto_review_and_downstream_unlock(rh_env, monkeypatch):
+    """执行链闭环（04 spec §6）: SUCCEEDED 后自动 Gate → ACCEPTED → HARD 下游解锁.
+
+    此前 /execute 只到 EXECUTION_DONE，Gate 无人触发，HARD 链断在第一个节点
+    （用户实测项目 78：524 EXECUTION_DONE 但 525 永远 CREATED）。
+    """
+    _mock_llm(monkeypatch)
+    from project_runtime.project_state.models import TaskDependency
+
+    async with AsyncSession(rh_env) as s:
+        p = Project(name="chain", automation_mode=AutomationMode.FULL_AUTO)
+        s.add(p)
+        await s.flush()
+        pid = p.id
+        mgr = TaskGraphManager(s)
+        t1 = await mgr.create_task(Task(project_id=pid, name="first"))
+        await mgr.promote_to_ready(t1.id)
+        t1_id = t1.id
+        t2 = await mgr.create_task(Task(project_id=pid, name="second"))
+        t2_id = t2.id  # snapshot BEFORE commit (ORM expiry)
+        s.add(TaskDependency(task_id=t2_id, depends_on_id=t1_id, dependency_type="HARD"))
+        await s.commit()
+
+    from project_runtime.execution.service import ExecutionService
+
+    ex_id = await ExecutionService().submit(pid, t1_id)
+    assert await _wait_terminal(rh_env, ex_id) == "SUCCEEDED"
+
+    # Gate ran automatically (Phase D, after terminal event): t1 ACCEPTED
+    got = await _wait_task_status(rh_env, t1_id, TaskStatus.ACCEPTED.value)
+    assert got == TaskStatus.ACCEPTED.value
+    # Downstream HARD dep satisfied → t2 unblocked to READY
+    got2 = await _wait_task_status(rh_env, t2_id, TaskStatus.READY.value)
+    assert got2 == TaskStatus.READY.value

@@ -19,8 +19,11 @@ from infrastructure.database.short_tx import (
     get_lock_audit,
     reset_lock_audit,
 )
+import project_runtime.event.models  # noqa: F401 — register runtime_event (gate direct-insert)
+import project_runtime.event.engine as _evmod
 from project_runtime.execution.models import Execution, ExecutionStatus
 from project_runtime.execution.repository import ExecutionRepository
+import project_runtime.execution.service as _svc
 from project_runtime.execution.service import ExecutionRunner
 from project_runtime.project_state.base import Base
 from project_runtime.project_state.enums import AutomationMode, TaskStatus
@@ -29,10 +32,13 @@ from project_runtime.task_graph.manager import TaskGraphManager
 
 
 @pytest.fixture
-async def dbengine(tmp_path):
+async def dbengine(tmp_path, monkeypatch):
     eng = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/t.db")
     async with eng.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    # Phase D (auto-gate) writes events via the event engine — patch it too
+    monkeypatch.setattr(_svc, "engine", eng)
+    monkeypatch.setattr(_evmod, "engine", eng)
     yield eng
     await eng.dispose()
 
@@ -90,16 +96,31 @@ async def test_three_concurrent_executions_no_persistent_lock(
     await asyncio.gather(*(ExecutionRunner().run(eid) for eid in ex_ids))
     elapsed = time.monotonic() - t0
 
+    import time as _t
+    deadline = _t.monotonic() + 10
+    finals = {}
+    while _t.monotonic() < deadline:
+        async with AsyncSession(dbengine) as s:
+            for tid in task_ids:
+                from sqlalchemy import select as _sel
+                finals[tid] = (
+                    await s.execute(_sel(Task.status).where(Task.id == tid))
+                ).scalar_one()
+        if all(v == TaskStatus.ACCEPTED for v in finals.values()):
+            break
+        await asyncio.sleep(0.1)
+    # V1.13+: auto-gate (Phase D) accepts after execution — final task state
     async with AsyncSession(dbengine) as s:
         for eid in ex_ids:
             ex = await s.get(Execution, eid)
             assert ex.status == ExecutionStatus.SUCCEEDED.value
         for tid in task_ids:
-            t = await s.get(Task, tid)
-            assert t.status == TaskStatus.EXECUTION_DONE
+            assert finals[tid] == TaskStatus.ACCEPTED  # via auto-gate
 
-    # Concurrency succeeded in ~parallel time (3×0.05s serial would be ≥0.15s)
-    assert elapsed < 1.0
+    # Concurrency succeeded in ~parallel time (3×0.05s serial would be ≥0.15s).
+    # Budget includes Phase D (auto-gate + downstream promote per execution,
+    # added V1.13+): wall time stays well under serial-with-locks territory.
+    assert elapsed < 3.0
     # DB-06: if any lock retries happened, they were bounded & audited
     assert len(get_lock_audit()) <= 9  # 3 commits × max 3 retries
 

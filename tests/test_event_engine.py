@@ -164,14 +164,21 @@ async def test_event_failure_never_breaks_execution(patched_engines, project_id,
                 break
         await asyncio.sleep(0.1)
 
-    async with AsyncSession(patched_engines) as s:
-        ex = await s.get(
-            __import__("project_runtime.execution.models", fromlist=["Execution"]).Execution,
-            ex_id,
-        )
-        assert ex.status == ExecutionStatus.SUCCEEDED.value  # execution unaffected
-        t = await s.get(Task, task_id)
-        assert t.status == TaskStatus.EXECUTION_DONE
+    # V1.13+ Phase D: auto-gate accepts after SUCCEEDED — poll for it.
+    import time as _t
+    from sqlalchemy import select as _sel
+
+    deadline = _t.monotonic() + 5
+    final = None
+    while _t.monotonic() < deadline:
+        async with AsyncSession(patched_engines) as s:
+            final = (
+                await s.execute(_sel(Task.status).where(Task.id == task_id))
+            ).scalar_one()
+        if final == TaskStatus.ACCEPTED:
+            break
+        await asyncio.sleep(0.1)
+    assert final == TaskStatus.ACCEPTED  # execution AND auto-gate both unaffected
 
 
 @pytest.mark.asyncio

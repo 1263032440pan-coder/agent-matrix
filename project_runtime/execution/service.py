@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from infrastructure.database import engine
@@ -188,6 +189,46 @@ class ExecutionRunner:
             message=message if success else (error or "worker failed"),
             payload={"skill_id": skill_id, "skill_version": skill_version},
         )
+
+        # Phase D (spec 04 执行链): Gate review after successful execution.
+        # Worker stopped at EXECUTION_DONE (red line); ONLY Gate (actor=GATE)
+        # may transition to ACCEPTED/REWORK. On ACCEPT (PASS), HARD-dependent
+        # downstream tasks get unblocked by promote_to_ready on the next pass.
+        if success:
+            try:
+                from project_runtime.project_state.models import Task as TaskModel
+                from project_runtime.reviewer.gate import GateCore
+
+                async with AsyncSession(engine) as session:
+                    gate = GateCore(session)
+                    result = await gate.evaluate(task_id)
+                    gate_status = result.status.value
+                    if gate_status == "PASS":
+                        # Unblock HARD-dependent downstream tasks (ACCEPTED
+                        # satisfies HARD deps) so the chain keeps flowing.
+                        mgr = TaskGraphManager(session)
+                        downstream = (
+                            await session.execute(
+                                select(TaskModel).where(
+                                    TaskModel.project_id == project_id,
+                                    TaskModel.status == TaskStatus.CREATED,
+                                )
+                            )
+                        ).scalars().all()
+                        for dt in downstream:
+                            dt_id = dt.id
+                            try:
+                                await mgr.promote_to_ready(dt_id)
+                            except Exception:
+                                pass  # deps not yet satisfied — stays CREATED
+                    await session.commit()
+                logger.info(
+                    "Execution %s gate result: %s", execution_id, gate_status
+                )
+            except Exception as e:  # noqa: BLE001 — gate failure must not
+                # corrupt the execution record; task stays EXECUTION_DONE and
+                # can be re-gated via ManualAction / future retry.
+                logger.error("Execution %s gate evaluation failed: %s", execution_id, e)
 
 
 class ExecutionService:
