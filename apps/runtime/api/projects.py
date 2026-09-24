@@ -123,6 +123,10 @@ async def execute_project(project_id: int):
         project = await session.get(Project, project_id)
         if project is None:
             raise HTTPException(404, "Project not found")
+        # Snapshot mode BEFORE the promote loop's commit — ORM objects expire
+        # on commit and attribute access afterwards triggers sync IO (the
+        # MissingGreenlet 500 bug seen in production on 2026-09-24).
+        is_manual = project.automation_mode == AutomationMode.MANUAL
 
         mgr = TaskGraphManager(session)
         tasks = (
@@ -145,7 +149,6 @@ async def execute_project(project_id: int):
             ).scalars().all()
             if t.status == TaskStatus.READY
         ]
-        is_manual = project.automation_mode == AutomationMode.MANUAL
 
     if is_manual:
         return {
