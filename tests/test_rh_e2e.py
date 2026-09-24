@@ -378,3 +378,53 @@ async def test_stranded_running_task_marked_failed(rh_env, monkeypatch):
     # Task NOT stranded in RUNNING — safety net moved it to FAILED
     got = await _wait_task_status(rh_env, task_id, TaskStatus.FAILED.value)
     assert got == TaskStatus.FAILED.value
+
+
+@pytest.mark.asyncio
+async def test_retry_failed_execution(rh_env, monkeypatch):
+    """AE-06 实链: FAILED execution 重试 → 新 attempt, task FAILED→READY→再执行."""
+    calls = {"n": 0}
+
+    async def flaky_llm(self, wp):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("first attempt fails")
+        return "# retry ok"
+
+    monkeypatch.setattr(
+        "project_runtime.worker.llm_worker.LLMWorkerAdapter._execute_llm", flaky_llm
+    )
+
+    project_id, task_id = await _seed_ready_task(rh_env, "retry-me")
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.post(
+            "/api/executions", json={"project_id": project_id, "task_id": task_id}
+        )
+        assert r.status_code == 202
+        first_id = r.json()["execution_id"]
+
+    assert await _wait_terminal(rh_env, first_id) == "FAILED"
+    assert await _task_status(rh_env, task_id) == TaskStatus.FAILED
+
+    # Retry via API — old execution FAILED → task reset READY → new attempt
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        r = await client.post(f"/api/executions/{first_id}/retry")
+        assert r.status_code == 202, r.text
+        second_id = r.json()["execution_id"]
+        assert r.json()["attempt_of"] == first_id
+
+    assert await _wait_terminal(rh_env, second_id) == "SUCCEEDED"
+    # attempt_no incremented (AE-06)
+    async with AsyncSession(rh_env) as s:
+        exs = (
+            await s.execute(
+                select(Execution).where(Execution.task_id == task_id)
+            )
+        ).scalars().all()
+        attempts = sorted(e.attempt_no for e in exs)
+        assert attempts == [1, 2]
+    # Gate auto-ran on retry success
+    got = await _wait_task_status(rh_env, task_id, TaskStatus.ACCEPTED.value)
+    assert got == TaskStatus.ACCEPTED.value

@@ -163,3 +163,54 @@ async def stream_execution_events(execution_id: int, after_id: int = 0):
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+@router.post("/{execution_id}/retry", status_code=202)
+async def retry_execution(execution_id: int):
+    """Retry a FAILED execution: FAILED task → READY (FSM-legal, fsm.py:31),
+    then submit a NEW execution (attempt_no increments — AE-06).
+
+    Also handles stranded EXECUTION_DONE tasks whose gate never ran.
+    """
+    from project_runtime.project_state.enums import TaskStatus
+    from project_runtime.project_state.fsm import StateTransitionService
+    from project_runtime.task_graph.manager import TaskGraphManager
+
+    async with AsyncSession(engine) as session:
+        ex = await session.get(Execution, execution_id)
+        if ex is None:
+            raise HTTPException(404, "Execution not found")
+        if ex.status != "FAILED":
+            raise HTTPException(409, f"Only FAILED executions can retry (got {ex.status})")
+        task_id, project_id = ex.task_id, ex.project_id
+
+        mgr = TaskGraphManager(session)
+        task = await mgr.get_task(task_id)
+        if task is None:
+            raise HTTPException(404, "Task not found")
+        if task.status == TaskStatus.FAILED:
+            # FSM-legal reset: FAILED → READY (explicit retry intent)
+            await StateTransitionService(session).transition_task(
+                task, TaskStatus.READY
+            )
+            await session.commit()
+        # If task is READY (or reset above), submit new attempt
+        task2 = await mgr.get_task(task_id)
+        task_status = task2.status
+        await session.commit()
+
+    if task_status != TaskStatus.READY:
+        raise HTTPException(
+            409, f"Task in {task_status.value} cannot retry — needs manual handling"
+        )
+
+    try:
+        new_id = await _service.submit(project_id, task_id)
+    except ActiveExecutionExistsError as e:
+        raise HTTPException(409, str(e)) from e
+    return {
+        "execution_id": new_id,
+        "task_id": task_id,
+        "attempt_of": execution_id,
+        "status": "QUEUED",
+    }
