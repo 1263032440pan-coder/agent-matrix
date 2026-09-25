@@ -332,7 +332,6 @@ async def test_dead_process_second_call_raises_rpc_error(dbengine):
     ConnectionResetError——必须转换为 PluginRPCError（平台差异不外泄）。
     """
     import project_runtime.plugin.manager as mgr_mod
-
     from project_runtime.plugin.rpc import PluginRPCClient, PluginRPCError
 
     store = mgr_mod.PLUGIN_STORE
