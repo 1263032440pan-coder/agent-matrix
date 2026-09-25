@@ -25,4 +25,7 @@ Thumbs.db
 
 # Env
 .env
-.env.local
+.env.localtest-assets/
+
+# Test assets (local only, not for git)
+test-assets/
