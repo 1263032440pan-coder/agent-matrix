@@ -9,11 +9,16 @@ Operations (WP-032 必须实现):
     install / validate_manifest / enable / disable / start / stop / health / uninstall
 """
 
+
 from __future__ import annotations
 
 import logging
 import shutil
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from project_runtime.plugin.bridge import PluginBridge
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -41,11 +46,13 @@ class PluginManagerError(Exception):
 
 
 class PluginManager:
-    def __init__(self, session: AsyncSession):
+    def __init__(self, session: AsyncSession, bridge: "PluginBridge | None" = None):
         self._session = session
         self._registry = PluginRegistry(session)
         # plugin_id → live RPC client (runtime state, not persisted)
         self._processes: dict[str, PluginRPCClient] = {}
+        # WP-033 bridge: capability providers in the unified D16 registry
+        self._bridge = bridge
 
     # ── install / validate ─────────────────────────────────────────────
 
@@ -147,7 +154,20 @@ class PluginManager:
             await self._registry.set_health(plugin_id, "healthy")
             await self._session.flush()
             logger.info("Plugin %s RUNNING (init: %s)", plugin_id, result)
-            return {"plugin_id": plugin_id, "status": "RUNNING"}
+
+            # WP-033: bridge capability extensions into the unified registry
+            bridged: list[str] = []
+            if self._bridge is not None:
+                import json as _json
+
+                exts = _json.loads(rec.extensions_json or "[]")
+                perms = _json.loads(rec.permissions_json or "[]")
+                bridged = self._bridge.register_plugin(plugin_id, exts, perms, client)
+
+            return {
+                "plugin_id": plugin_id, "status": "RUNNING",
+                "bridged_providers": bridged,
+            }
         except (PluginRPCError, ManifestError, OSError) as e:
             # Failure lands in FAILED — Runtime itself keeps running (§5)
             logger.error("Plugin %s failed to start: %s", plugin_id, e)
@@ -161,6 +181,9 @@ class PluginManager:
         rec = await self._registry.get(plugin_id)
         if rec is None:
             raise PluginManagerError(f"Plugin not found: {plugin_id}")
+        # WP-033: detach capability providers first
+        if self._bridge is not None:
+            self._bridge.unregister_plugin(plugin_id)
         client = self._processes.pop(plugin_id, None)
         if client is not None:
             # Graceful shutdown request, then hard kill

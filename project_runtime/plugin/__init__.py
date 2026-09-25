@@ -1,5 +1,10 @@
 """Plugin package (WP-032): manifest / registry / manager / stdio RPC."""
 
+from project_runtime.plugin.bridge import PluginBridge
+from project_runtime.plugin.capability import (
+    PluginCapabilityProvider,
+    manifest_to_providers,
+)
 from project_runtime.plugin.manager import (
     PluginManager,
     PluginManagerError,
@@ -18,6 +23,8 @@ from project_runtime.plugin.registry import (
 
 __all__ = [
     "ManifestError",
+    "PluginBridge",
+    "PluginCapabilityProvider",
     "PluginManager",
     "PluginManagerError",
     "PluginRecord",
@@ -26,4 +33,5 @@ __all__ = [
     "PluginStatus",
     "RUNTIME_PLUGIN_API",
     "api_compatible",
+    "manifest_to_providers",
 ]
