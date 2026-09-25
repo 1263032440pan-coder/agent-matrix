@@ -69,14 +69,14 @@ class LLMExtractor:
         from project_runtime.llm import test_llm_connection  # noqa: F401 — config guard
 
         if not (self._cfg.base_url and self._cfg.api_key and self._cfg.model):
+            # LLM 未配置：允许关键词模式（用户明确没接大模型）
             logger.info("LLM not configured — keyword fallback")
             return await self._fallback.extract(text, source_name)
 
-        try:
-            return await self._extract_llm(text, source_name)
-        except Exception as e:
-            logger.warning("LLM extraction failed (%s) — keyword fallback", e)
-            return await self._fallback.extract(text, source_name)
+        # LLM 已配置：失败必须抛错，禁止静默降级（用户决策 2026-09-25）。
+        # 降级产物（标题碎片任务）比失败更糟——它会经幂等键被永久缓存，
+        # 且用户误以为大模型参与了理解。
+        return await self._extract_llm(text, source_name)
 
     async def _extract_llm(self, text: str, source_name: str) -> list[dict]:
         import litellm
@@ -94,7 +94,7 @@ class LLMExtractor:
             api_key=self._cfg.api_key,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=4000,
-            timeout=60,
+            timeout=240,  # long-doc semantic extraction is slow; 60s caused spurious fallbacks
         )
         raw = resp.choices[0].message.content or ""
         nodes = self._parse(raw)

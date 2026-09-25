@@ -213,10 +213,16 @@ async def run_planning(project_id: int):
                 return result
             except HTTPException:
                 raise
-            except Exception:
+            except Exception as e:
                 await session.rollback()
                 if attempt == 1:
-                    raise
+                    # LLM-configured extraction failure must surface clearly,
+                    # never silently degrade (user decision 2026-09-25).
+                    raise HTTPException(
+                        502,
+                        f"规划失败：LLM 抽取未成功（已配置大模型，禁止降级）。"
+                        f"请检查 LLM 配置/网关后重试。原因：{str(e)[:200]}",
+                    ) from e
 
 
 @router.get("")

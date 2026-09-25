@@ -154,3 +154,26 @@ def test_gap_llm_answer_parsing():
             if gt.value in answer:
                 assert gt == expected
                 break
+
+
+def test_llm_extractor_configured_failure_raises():
+    """已配置 LLM 时抽取失败必须抛错——禁止静默降级（用户决策 2026-09-25）.
+
+    降级产物（标题碎片）经幂等键永久缓存，用户误以为大模型参与了理解。
+    """
+    import asyncio
+
+    from project_runtime.llm import LLMSettings
+    from project_runtime.procedure.llm_extractor import LLMExtractor
+
+    cfg = LLMSettings(
+        base_url="http://127.0.0.1:1", api_key="k", model="openai/test"
+    )
+    ext = LLMExtractor(cfg)
+
+    async def run():
+        return await ext.extract("## 需求\n输入: X\n输出: Y", "test.md")
+
+    # Connection to a dead endpoint must RAISE (no keyword fallback)
+    with pytest.raises(Exception):
+        asyncio.new_event_loop().run_until_complete(run())
