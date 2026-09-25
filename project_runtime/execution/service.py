@@ -24,6 +24,13 @@ from project_runtime.execution.repository import ExecutionRepository
 
 logger = logging.getLogger(__name__)
 
+# WP-034: shared runtime hook executor — extensions register against this;
+# the runner fires stable points (worker.before/after_execute).
+from project_runtime.extension.registry import ExtensionRegistry  # noqa: E402
+from project_runtime.extension.runtime import RuntimeHookExecutor  # noqa: E402
+
+hook_executor = RuntimeHookExecutor(ExtensionRegistry())
+
 
 async def _emit(
     event_type, *, project_id=None, task_id=None, execution_id=None,
@@ -123,6 +130,35 @@ class ExecutionRunner:
             project_id=project_id, task_id=task_id, execution_id=execution_id,
             phase="WORKER_EXECUTION", message=f"worker executing: {task_name}",
         )
+
+        # WP-034: fire worker.before_execute — extensions may PAUSE/RETRY/
+        # NEED_USER_INPUT (advisory: Core decides; PROPOSAL goes through
+        # Core Validation → Transaction, never direct mutation).
+        hook_payload = {
+            "execution_id": execution_id, "task_id": task_id,
+            "task_name": task_name, "project_id": project_id,
+        }
+        try:
+            outcome = await hook_executor.fire_hook(
+                "worker.before_execute", hook_payload
+            )
+            if outcome.control.value != "CONTINUE":
+                logger.info(
+                    "worker.before_execute control=%s (extensions advise; "
+                    "Core decides)", outcome.control.value,
+                )
+                await _emit(
+                    RuntimeEventType.WORKER_COMPLETED,
+                    project_id=project_id, task_id=task_id,
+                    execution_id=execution_id,
+                    phase="WORKER_EXECUTION",
+                    message=f"hook advised {outcome.control.value}",
+                    payload={"hook": "worker.before_execute",
+                             "results": outcome.results[:5]},
+                )
+                return  # advisory pause for V0.1: do not dispatch this task now
+        except Exception:  # noqa: BLE001 — hook plane must never break execution
+            logger.debug("before_execute hook failed", exc_info=True)
 
         # Phase B-0 (D17C/D17D): resolve + load the bound skill for this
         # project, injecting the method body into the WorkPackage. Best-effort:
@@ -257,6 +293,16 @@ class ExecutionRunner:
             message=message if success else (error or "worker failed"),
             payload={"skill_id": skill_id, "skill_version": skill_version},
         )
+
+        # WP-034: fire worker.after_execute (observers/policy — advisory)
+        try:
+            await hook_executor.notify(
+                "worker.after_execute",
+                {"execution_id": execution_id, "task_id": task_id,
+                 "project_id": project_id, "success": success},
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("after_execute hook failed", exc_info=True)
 
         # Phase D (spec 04 执行链): Gate review after successful execution.
         # Worker stopped at EXECUTION_DONE (red line); ONLY Gate (actor=GATE)
