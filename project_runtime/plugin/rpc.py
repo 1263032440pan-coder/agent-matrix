@@ -85,6 +85,13 @@ class PluginRPCClient:
                     # not ours (notification/other) — keep reading
             except asyncio.TimeoutError as e:
                 raise PluginRPCError(f"RPC {method} timed out after {timeout}s") from e
+            except (ConnectionResetError, BrokenPipeError) as e:
+                # Dead-process race: pipe breaks BEFORE returncode updates
+                # (observed on Windows). All failure modes surface as
+                # PluginRPCError so callers never see platform differences.
+                raise PluginRPCError(
+                    f"plugin process pipe broken (method={method})"
+                ) from e
 
         if "error" in resp:
             err = resp["error"]

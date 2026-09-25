@@ -322,3 +322,41 @@ async def test_uninstall_requires_stopped(dbengine):
         await s.commit()
     async with AsyncSession(dbengine) as s:
         assert await PluginRegistry(s).get("test-echo") is None
+
+
+@pytest.mark.asyncio
+async def test_dead_process_second_call_raises_rpc_error(dbengine):
+    """WP-032 复验 P1: 死进程上的第二次 RPC 统一抛 PluginRPCError.
+
+    Windows 竞态：管道断开先于 returncode 更新，写入段抛
+    ConnectionResetError——必须转换为 PluginRPCError（平台差异不外泄）。
+    """
+    import project_runtime.plugin.manager as mgr_mod
+
+    from project_runtime.plugin.rpc import PluginRPCClient, PluginRPCError
+
+    store = mgr_mod.PLUGIN_STORE
+    store.mkdir(parents=True, exist_ok=True)
+    pkg = store / "src_deadtest"
+    pkg.mkdir(exist_ok=True)
+    (pkg / "plugin.yaml").write_text(GOOD_MANIFEST, encoding="utf-8")
+    (pkg / "echo_plugin.py").write_text(TEST_PLUGIN_MAIN, encoding="utf-8")
+
+    async with AsyncSession(dbengine) as s:
+        mgr = PluginManager(s)
+        await mgr.install(str(pkg))
+        await mgr.enable("test-echo")
+        await s.commit()
+
+    # Spawn a raw client and hard-kill the process out from under it
+    client = await PluginRPCClient.spawn(["python", str(pkg / "echo_plugin.py")])
+    try:
+        await client.initialize("1.0")  # healthy first
+    finally:
+        # Hard kill WITHOUT graceful shutdown — leaves pipes broken
+        await client.terminate()
+
+    # Second call on the dead client: MUST raise PluginRPCError (not
+    # ConnectionResetError / BrokenPipeError)
+    with pytest.raises(PluginRPCError):
+        await client.health()
