@@ -124,13 +124,56 @@ class ExecutionRunner:
             phase="WORKER_EXECUTION", message=f"worker executing: {task_name}",
         )
 
+        # Phase B-0 (D17C/D17D): resolve + load the bound skill for this
+        # project, injecting the method body into the WorkPackage. Best-effort:
+        # resolution failure never blocks execution (runs without a skill).
+        skill_ctx = None
+        try:
+            from project_runtime.skills import (
+                SkillLoader,
+                SkillRequirement,
+                SkillResolver,
+                SkillType,
+            )
+
+            async with AsyncSession(engine) as s:
+                resolver = SkillResolver(s)
+                resolution = await resolver.resolve(
+                    SkillRequirement(skill_type=SkillType.TASK_EXECUTION, required=False),
+                    project_id=project_id,
+                )
+                if resolution.status.value == "RESOLVED" and resolution.resolved_skill:
+                    loader = SkillLoader(s)
+                    skill_ctx = await loader.load(
+                        resolution.resolved_skill.skill_id,
+                        resolution.resolved_skill.version,
+                        expected_hash=resolution.resolved_skill.content_hash,
+                    )
+                    logger.info(
+                        "Execution %s skill: %s@%s (%s)",
+                        execution_id,
+                        skill_ctx.skill_id,
+                        skill_ctx.skill_version,
+                        resolution.reason.value if resolution.reason else "",
+                    )
+                    await _emit(
+                        RuntimeEventType.SKILL_RESOLVED,
+                        project_id=project_id, task_id=task_id, execution_id=execution_id,
+                        phase="SKILL",
+                        message=f"skill {skill_ctx.skill_id}@{skill_ctx.skill_version}",
+                    )
+        except Exception as e:  # noqa: BLE001 — skill is optional guidance
+            logger.debug("skill resolution failed for %s: %s", execution_id, e)
+
         worker_session = AsyncSession(engine)
         try:
             artifact_mgr = ArtifactManager(
                 worker_session, workspace_root=f"data/tasks/{project_id}"
             )
             worker = LLMWorkerAdapter(worker_session, artifact_mgr=artifact_mgr)
-            result = await worker.assign(WorkPackage(task_id=task_id, task_name=task_name))
+            result = await worker.assign(
+                WorkPackage(task_id=task_id, task_name=task_name, skill_context=skill_ctx)
+            )
             await worker_session.commit()
             success, message = result.success, result.output[:500]
             skill_id = result.actual_skill_id

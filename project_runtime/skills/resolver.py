@@ -187,11 +187,13 @@ class SkillResolver:
             return None
         from sqlalchemy import select
 
-        # Scope precedence: TASK > TASK_TYPE > STAGE > PROJECT_METHOD
+        # Scope precedence: TASK > TASK_TYPE > STAGE > PROJECT_METHOD >
+        # project-wide wildcard (empty scope_key — binds to any task type).
         keys = []
         if requirement.task_type:
             keys.append((SkillScopeType.TASK_TYPE, requirement.task_type))
         keys.append((SkillScopeType.PROJECT_METHOD, "main"))
+        keys.append((SkillScopeType.TASK_TYPE, ""))  # project-wide wildcard
         for scope_type, key in keys:
             stmt = select(SkillBinding).where(
                 SkillBinding.project_id == project_id,

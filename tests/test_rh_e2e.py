@@ -11,6 +11,7 @@ LLM mock 在 Worker 边界（_execute_llm）。
 """
 
 import asyncio
+import json
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -212,7 +213,8 @@ async def test_f_execution_survives_fresh_session(rh_env, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_f_success_never_directly_accepts(rh_env, monkeypatch):
-    """F: Execution SUCCEEDED 后 Task 必须停在 EXECUTION_DONE（不越权 ACCEPTED）。"""
+    """F: 验收只经 GATE 中转——SUCCEEDED 后 ACCEPT 必须来自 Gate（actor=GATE），
+    Worker/Execution 永不直接置 ACCEPTED。Phase D 自动 Gate 后语义演进。"""
     _mock_llm(monkeypatch)
     project_id, task_id = await _seed_ready_task(rh_env, "f-noaccept")
 
@@ -221,8 +223,30 @@ async def test_f_success_never_directly_accepts(rh_env, monkeypatch):
     ex_id = await ExecutionService().submit(project_id, task_id)
     final = await _wait_terminal(rh_env, ex_id)
     assert final == "SUCCEEDED"
-    assert await _task_status(rh_env, task_id) == TaskStatus.EXECUTION_DONE
-    assert await _task_status(rh_env, task_id) != TaskStatus.ACCEPTED
+
+    # ACCEPTED 必须存在 GATE_PASSED 事件（Gate 是唯一放行通道）
+    from project_runtime.event.models import RuntimeEvent
+
+    deadline_wait = 60
+    import time as _t
+    _start = _t.monotonic()
+    while _t.monotonic() - _start < deadline_wait:
+        if await _task_status(rh_env, task_id) == TaskStatus.ACCEPTED:
+            break
+        await asyncio.sleep(0.2)
+    assert await _task_status(rh_env, task_id) == TaskStatus.ACCEPTED
+
+    async with AsyncSession(rh_env) as s:
+        gate_events = (
+            await s.execute(
+                select(RuntimeEvent).where(
+                    RuntimeEvent.task_id == task_id,
+                    RuntimeEvent.event_type == "GATE_PASSED",
+                )
+            )
+        ).scalars().all()
+    assert len(gate_events) == 1
+    assert gate_events[0].actor == "GATE"  # 放行者只能是 Gate
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -474,3 +498,85 @@ async def test_full_auto_chain_runs_to_completion(rh_env, monkeypatch):
 
     for i in ids:
         assert await _task_status(rh_env, i) == TaskStatus.ACCEPTED.value
+
+
+@pytest.mark.asyncio
+async def test_bound_skill_injected_into_execution(rh_env, monkeypatch):
+    """D17C/D17D 实链: 项目绑定 skill → 执行时 Resolver/Loader 注入 WorkPackage.
+
+    用户实测痛点: skill 绑定了但 execution.skill_id 全 None——Runner 没接
+    Resolver/Loader。断言: TaskRun 审计带 skill_id + Worker prompt 含方法指导。
+    """
+    import io
+    import zipfile
+
+    from project_runtime.skills.importer import SkillPackageImporter
+
+    # 1. Import a skill into the test registry
+    skill_md = (
+        "---\n"
+        "skill_id: rh-e2e-skill\n"
+        "name: RH E2E Skill\n"
+        "version: 1.0.0\n"
+        "skill_type: PROJECT_METHOD\n"
+        "description: e2e injection test skill\n"
+        "---\n\n# 方法\n按四步交付：分析→设计→实现→验证。\n"
+    )
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("SKILL.md", skill_md)
+    import tempfile as _tf
+    from pathlib import Path as _Path
+
+    with _tf.NamedTemporaryFile(suffix=".zip", delete=False) as f:
+        f.write(buf.getvalue())
+        zpath = f.name
+    # persist to a stable path (loader reads it later)
+    stable = _Path("data") / "skills"
+    stable.mkdir(parents=True, exist_ok=True)
+    zpath2 = stable / "rh_e2e_skill.zip"
+    zpath2.write_bytes(buf.getvalue())
+
+    async with AsyncSession(rh_env) as s:
+        sk = await SkillPackageImporter(s).import_zip(str(zpath2))
+        imported_id = sk.skill_id  # snapshot BEFORE commit (ORM expiry)
+        await s.commit()
+        assert imported_id == "rh-e2e-skill"
+
+    _mock_llm(monkeypatch)
+    project_id, task_id = await _seed_ready_task(rh_env, "with-skill")
+
+    # 2. Bind to the project (TASK_TYPE wildcard — empty scope_key)
+    from project_runtime.skills.bindings import SkillBindingManager
+    from project_runtime.skills.enums import SkillScopeType
+
+    async with AsyncSession(rh_env) as s:
+        await SkillBindingManager(s).bind(
+            project_id, SkillScopeType.TASK_TYPE, "", "rh-e2e-skill", "1.0.0"
+        )
+        await s.commit()
+
+    # 3. Execute — skill must be resolved and injected
+    from project_runtime.execution.service import ExecutionService
+
+    ex_id = await ExecutionService().submit(project_id, task_id)
+    assert await _wait_terminal(rh_env, ex_id) == "SUCCEEDED"
+
+    # 4. TaskRun audit carries the skill identity
+    from project_runtime.project_state.models import TaskRun
+
+    async with AsyncSession(rh_env) as s:
+        run = (
+            await s.execute(select(TaskRun).where(TaskRun.task_id == task_id))
+        ).scalar_one()
+        payload = json.loads(run.result)
+        assert payload["skill"]["skill_id"] == "rh-e2e-skill"
+        assert payload["skill"]["skill_version"] == "1.0.0"
+
+    # 5. Execution row also carries it
+    async with AsyncSession(rh_env) as s:
+        ex = await s.get(Execution, ex_id)
+        assert ex.skill_id == "rh-e2e-skill"
+
+    import os as _os
+    _os.unlink(zpath)
