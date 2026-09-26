@@ -55,14 +55,14 @@ CHANGE_REQUIRED
 | SYS-032 | 核心不预置任何行业 Project Archetype | Generic Project Runtime | WP-026/WP-027 | TODO | TODO | TODO | TODO |
 | SYS-033 | Skill=0 时必须通过 Web Research 构建项目方法 | Zero-Skill Bootstrap | WP-027/WP-029/WP-030/WP-019 | TODO | TODO | TODO | TODO |
 
-| SYS-034 | Plugin Package 安装、启停、健康与 Manifest 校验 | Plugin Manager | WP-032 | TODO | TODO | TODO | TODO |
-| SYS-035 | Capability Extension / Provider 统一注册调用 | Capability Extension Framework | WP-033 | TODO | TODO | TODO | TODO |
-| SYS-036 | Observer/Validator/Middleware/Hook/Policy 扩展 | Runtime Extension Framework | WP-034 | TODO | TODO | TODO | TODO |
+| SYS-034 | Plugin Package 安装、启停、健康与 Manifest 校验 | Plugin Manager | WP-032 | /api/plugins 六端点（04 规范）；JSON-RPC 2.0 over stdio | project_runtime/plugin/（manifest/registry/manager/rpc） | tests/test_plugin_manager.py（11 用例，含真实进程崩溃隔离） | DONE |
+| SYS-035 | Capability Extension / Provider 统一注册调用 | Capability Extension Framework | WP-033 | D16 Provider Contract（register/invoke/health）+ point→CapabilityType 映射 | project_runtime/plugin/capability.py + bridge.py | tests/test_capability_extension.py（8 用例，真实插件进程经门面） | DONE |
+| SYS-036 | Observer/Validator/Middleware/Hook/Policy 扩展 | Runtime Extension Framework | WP-034 | 五类结果契约（04 规范）+ 21 稳定点 fire_hook | project_runtime/extension/runtime/（contracts/executor）+ Runner 接线 | tests/test_runtime_extension.py（10 用例，含 advisory pause 实证） | DONE |
 | SYS-037 | Base Pipeline + Extension Point 编译执行 | Pipeline Engine | WP-035 | TODO | TODO | TODO | TODO |
-| SYS-038 | 插件不得直接修改 Project State / Event Bus | Stable Kernel Boundary | WP-032/WP-034/WP-035 | TODO | TODO | TODO | TODO |
+| SYS-038 | 插件不得直接修改 Project State / Event Bus | Stable Kernel Boundary | WP-032/WP-034/WP-035 | 结构性保证：RPC 客户端仅持 stdio 管道；DIRECT_STATE_MUTATE 枚举缺席；Proposal 走 Core Validation→Transaction | plugin/rpc.py 管道边界 + extension/registry.py 权限 + runtime/contracts.py | test_plugin_manager（隔离）+ test_capability_extension（无跨界）+ test_runtime_extension（权限拒绝） | DONE（WP-035 部分随其交付） |
 | SYS-039 | Semantic Retrieval 通过 retrieval.providers 插件化 | Retrieval Capability Extension | WP-025 | TODO | TODO | TODO | TODO |
 
-| SYS-040 | Runtime Extension 不得引入第三种自动化模式 | Automation Boundary | WP-013/WP-034/WP-035 | TODO | TODO | TODO | TODO |
+| SYS-040 | Runtime Extension 不得引入第三种自动化模式 | Automation Boundary | WP-013/WP-034/WP-035 | NEED_USER_INPUT 仅示缺输入，等待与否由 Automation Mode Controller 决定 | extension/runtime/contracts.py（无第三模式路径） | test_runtime_extension（hook 契约归一：控制值仅五种既有枚举） | DONE（WP-035 部分随其交付） |
 
 | SYS-041 | 自动化程度与 Worker 并行度解耦 | Resource Governance | WP-036/WP-008 | TODO | TODO | TODO | TODO |
 | SYS-042 | 8GB LOW Profile 支持核心系统和单 Worker 自动执行 | Low Resource Runtime | WP-036/WP-019 | TODO | TODO | TODO | TODO |
