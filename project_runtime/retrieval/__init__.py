@@ -3,6 +3,10 @@
 from project_runtime.retrieval.fts import FTS5Indexer, FTS5Retriever, ensure_fts_table
 from project_runtime.retrieval.merger import RetrievalMerger
 from project_runtime.retrieval.models import RetrievalDocument, RetrievalSource
+from project_runtime.retrieval.providers import (
+    FTS5RetrievalProvider,
+    RetrievalOrchestrator,
+)
 from project_runtime.retrieval.repository import (
     RetrievalDocumentRepository,
     RetrievalRepositoryError,
@@ -12,7 +16,9 @@ from project_runtime.retrieval.retrievers import PathRetriever, RipgrepRetriever
 
 __all__ = [
     "FTS5Indexer",
+    "FTS5RetrievalProvider",
     "FTS5Retriever",
+    "RetrievalOrchestrator",
     "PathRetriever",
     "RetrievalDocument",
     "RetrievalDocumentRepository",

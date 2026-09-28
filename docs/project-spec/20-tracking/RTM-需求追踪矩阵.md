@@ -60,7 +60,7 @@ CHANGE_REQUIRED
 | SYS-036 | Observer/Validator/Middleware/Hook/Policy 扩展 | Runtime Extension Framework | WP-034 | 五类结果契约（04 规范）+ 21 稳定点 fire_hook | project_runtime/extension/runtime/（contracts/executor）+ Runner 接线 | tests/test_runtime_extension.py（10 用例，含 advisory pause 实证） | DONE |
 | SYS-037 | Base Pipeline + Extension Point 编译执行 | Pipeline Engine | WP-035 | GET /api/pipelines + /{id} + /{id}/compile（04 规范）；CompiledPipeline 契约 | project_runtime/pipeline/（definition/compiler/engine） | tests/test_pipeline_engine.py（14 用例） | DONE |
 | SYS-038 | 插件不得直接修改 Project State / Event Bus | Stable Kernel Boundary | WP-032/WP-034/WP-035 | 结构性保证：RPC 客户端仅持 stdio 管道；DIRECT_STATE_MUTATE 枚举缺席；Proposal 走 Core Validation→Transaction | plugin/rpc.py 管道边界 + extension/registry.py 权限 + runtime/contracts.py | test_plugin_manager（隔离）+ test_capability_extension（无跨界）+ test_runtime_extension（权限拒绝） | DONE（WP-035 部分随其交付） |
-| SYS-039 | Semantic Retrieval 通过 retrieval.providers 插件化 | Retrieval Capability Extension | WP-025 | TODO | TODO | TODO | TODO |
+| SYS-039 | Semantic Retrieval 通过 retrieval.providers 插件化 | Retrieval Capability Extension | WP-025 | D16 Provider Contract（retrieval.providers 点） | project_runtime/retrieval/providers.py | tests/test_retrieval_providers.py（7 用例） | DONE |
 
 | SYS-040 | Runtime Extension 不得引入第三种自动化模式 | Automation Boundary | WP-013/WP-034/WP-035 | NEED_USER_INPUT 仅示缺输入，等待与否由 Automation Mode Controller 决定 | extension/runtime/contracts.py（无第三模式路径） | test_runtime_extension（hook 契约归一：控制值仅五种既有枚举） | DONE（WP-035 部分随其交付） |
 
