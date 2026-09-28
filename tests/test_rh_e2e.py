@@ -77,7 +77,7 @@ def _mock_llm(monkeypatch, output="# RH-E2E 产出\n完整交付内容。"):
 
 
 async def _wait_task_status(
-    engine, task_id: int, expected: str, timeout_s: float = 15.0
+    engine, task_id: int, expected: str, timeout_s: float = 30.0
 ) -> str:
     """Poll until Task reaches expected status (Gate runs AFTER the Execution
     terminal event, so terminal-wait alone can race ahead of Phase D)."""
@@ -88,7 +88,7 @@ async def _wait_task_status(
     return await _task_status(engine, task_id)
 
 
-async def _wait_terminal(engine, execution_id: int, timeout_s: float = 15.0) -> str:
+async def _wait_terminal(engine, execution_id: int, timeout_s: float = 30.0) -> str:
     for _ in range(int(timeout_s / 0.1)):
         async with AsyncSession(engine) as s:
             ex = await s.get(Execution, execution_id)

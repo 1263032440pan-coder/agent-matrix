@@ -29,6 +29,7 @@ import project_runtime.event.models  # noqa: E402, F401 — register runtime_eve
 import project_runtime.execution.models  # noqa: E402, F401 — register execution table
 import project_runtime.plugin.registry  # noqa: E402, F401 — register plugin table
 import project_runtime.project_state.models  # noqa: E402, F401 — register all tables
+import project_runtime.retrieval.models  # noqa: E402, F401 — register retrieval table
 import project_runtime.skills.models  # noqa: E402, F401 — register skill tables
 from project_runtime.project_state.base import Base  # noqa: E402
 
