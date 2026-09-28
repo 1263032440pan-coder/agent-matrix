@@ -43,7 +43,7 @@ CHANGE_REQUIRED
 | SYS-023 | 项目完成证据链 | Completion Evidence | WP-023 | TODO | TODO | TODO | TODO |
 
 | SYS-024 | 轻量项目全文/代码检索 | Retrieval Memory Foundation | WP-024 | TODO | TODO | TODO | TODO |
-| SYS-025 | Retrieval Provider 通过 Capability Extension 接入 | Retrieval Capability Extension | WP-025 | TODO | TODO | TODO | TODO |
+| SYS-025 | Retrieval Provider 通过 Capability Extension 接入 | Retrieval Capability Extension | WP-025 | D16 Provider Contract（retrieval.providers 点） | project_runtime/retrieval/providers.py | tests/test_retrieval_providers.py（7 用例） | DONE |
 
 | SYS-026 | LLM 识别项目领域/类型、事实、假设和知识缺口 | Project Understanding | WP-026 | TODO | TODO | TODO | TODO |
 | SYS-027 | Skill 可为空并评估 Capability Coverage | Skill Registry & Capability Coverage | WP-027 | TODO | TODO | TODO | TODO |
