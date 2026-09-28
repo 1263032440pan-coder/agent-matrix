@@ -17,8 +17,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
-import re as _re
-
 _SEG_SENTINEL = "\x00"
 _WORD_SPLIT = _re.compile(r"[\s，。！？；：、,.!?;:\s]+")
 
