@@ -68,7 +68,7 @@ async def _seed_project(dbengine, pid: int = 1):
 
 @pytest.mark.asyncio
 async def test_unified_entry_all_five(dbengine):
-    tid = await _seed_project(dbengine)
+    await _seed_project(dbengine)
     mgr = ProjectMemoryManager(engine=dbengine)
 
     state = await mgr.get_state_memory(1)

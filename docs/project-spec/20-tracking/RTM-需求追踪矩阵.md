@@ -38,7 +38,7 @@ CHANGE_REQUIRED
 | SYS-019 | 完成从已有软件项目导入到最终交付的端到端闭环 | E2E | WP-019 | TODO | TODO | TODO | TODO |
 
 | SYS-020 | 长期项目记忆统一管理 | Project Memory Manager | WP-020 | 五类 Memory 六接口统一入口（WP-020 核心接口清单） | project_runtime/memory/manager.py | tests/test_project_memory.py（4 用例） | DONE |
-| SYS-021 | 分层摘要与上下文压缩 | Hierarchical Summary | WP-021 | TODO | TODO | TODO | TODO |
+| SYS-021 | 分层摘要与上下文压缩 | Hierarchical Summary | WP-021 | STALE 生命周期 + 四层 scope + 来源引用（WP-021 字段清单） | project_runtime/memory_summary/ | tests/test_hierarchical_summary.py（5 用例） | DONE |
 | SYS-022 | 需求到交付全链路追踪 | Traceability Graph | WP-022 | TODO | TODO | TODO | TODO |
 | SYS-023 | 项目完成证据链 | Completion Evidence | WP-023 | TODO | TODO | TODO | TODO |
 
