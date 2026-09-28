@@ -17,6 +17,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
+import re as _re
+
+_SEG_SENTINEL = "\x00"
+_WORD_SPLIT = _re.compile(r"[\s，。！？；：、,.!?;:\s]+")
+
 FTS_TABLE = "retrieval_fts"
 # fts rowid == retrieval_document.id for direct join
 _DDL = f"""
@@ -27,13 +32,29 @@ CREATE VIRTUAL TABLE IF NOT EXISTS {FTS_TABLE} USING fts5(
 """
 
 
-def cjk_tokenize(text: str) -> str:
+def cjk_tokenize(text: str, *, query: bool = False) -> str:
     """CJK-aware pre-tokenization for FTS5 (unicode61 has NO CJK segmentation
     — a whole Chinese sentence becomes one unmatchable token).
 
     Strategy: emit character bigrams for CJK runs, keep latin words intact.
-    Symmetric on index and query sides. Still pure SQLite FTS5 (fixed tech).
+    Still pure SQLite FTS5 (fixed tech).
+
+    Index side (query=False): bigrams across the whole run — cross-WORD
+    bigrams are harmless there and improve recall.
+
+    Query side (query=True, WP-024 返修问题 1): runs are cut at whitespace/
+    punctuation BEFORE bigram-ing — never stitching a fake bigram from the
+    tail char of one word and the head char of the next.「任务图 架构」→
+    [任务, 务图, 架构] (no 图架), so multi-word queries match documents
+    containing both words instead of dying on a nonexistent token.
     """
+    # query mode: split at non-CJK/non-word boundaries FIRST so no CJK run
+    # spans two user words (WP-024 复验问题 1 — fake cross-word bigrams)
+    segments: list[str] = [text]
+    if query:
+        segments = [seg for seg in
+                    [t for t in _WORD_SPLIT.split(text) if t.strip()]]
+
     out: list[str] = []
     buf: list[str] = []
 
@@ -42,15 +63,18 @@ def cjk_tokenize(text: str) -> str:
             out.append("".join(buf))
             buf.clear()
 
-    for ch in text:
-        if "一" <= ch <= "鿿":
-            flush()
-            out.append(ch)
-        elif ch.isalnum() or ch in "_-":
-            buf.append(ch)
-        else:
-            flush()
-    flush()
+    for seg in segments:
+        for ch in seg:
+            if "一" <= ch <= "鿿":
+                flush()
+                out.append(ch)
+            elif ch.isalnum() or ch in "_-":
+                buf.append(ch)
+            else:
+                flush()
+        flush()
+        if query and out:
+            out.append(_SEG_SENTINEL)  # segment boundary — never joins runs
 
     # char-unigrams → bigrams for CJK sequences (bigram matches cover both
     # exact substrings and partial overlaps; latin words stay whole)
@@ -70,12 +94,17 @@ def cjk_tokenize(text: str) -> str:
                 tokens.append(cjk_run[0])
             i = j
         else:
-            tokens.append(t)
+            if t != _SEG_SENTINEL:
+                tokens.append(t)
             i += 1
     return " ".join(tokens)
 
 
 async def ensure_fts_table(session: AsyncSession) -> None:
+    """DDL is committed here deliberately (unlike indexer methods): CREATE
+    TABLE IF NOT EXISTS is idempotent and happens once at startup — leaving
+    it uncommitted would risk rollback losing the virtual table mid-flight.
+    """
     await session.execute(text(_DDL))
     await session.commit()
 
@@ -134,10 +163,13 @@ class FTS5Retriever:
         the SQL metadata filter (§3).
         """
         where = ["d.active = 1"]
-        # Symmetric CJK tokenization + per-token quoting (also neutralizes
-        # FTS query syntax like NEAR/OR injected via user input)
-        toks = cjk_tokenize(query).split()
-        safe_q = " ".join(f'"{t}"' for t in toks) if toks else query
+        # Query-side tokenization (word-boundary aware) + per-token quoting
+        # (neutralizes FTS syntax injection). Multi-word semantics = OR
+        # (WP-024 返修问题 2 决策): docs containing ALL query words score
+        # higher via BM25 naturally; requiring ALL words (implicit AND)
+        # starves multi-word recall — OR + ranking is the retrieval default.
+        toks = cjk_tokenize(query, query=True).split()
+        safe_q = " OR ".join(f'"{t}"' for t in toks) if toks else query
         params: dict = {"q": safe_q, "lim": limit}
         if project_id is not None:
             where.append("d.project_id = :pid")

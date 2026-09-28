@@ -215,3 +215,53 @@ def test_merger_dedup_and_fusion():
     assert merged[0]["score"] == -2.0
     file_hits = [r for r in merged if r["source"] == "FILE"]
     assert len(file_hits) == 1  # dup line deduped
+
+
+# ── WP-024 返修：跨词 bigram 假阳性（多词中文查询整段失效）──────────
+
+
+@pytest.mark.asyncio
+async def test_multi_word_chinese_query(dbengine):
+    """返修问题 1 回归: 单词各自可命中 → 双词组合查询非空且含目标文档."""
+    async with AsyncSession(dbengine) as s:
+        # 文档同时含「任务图」与「架构」两个词（词间有空格/不同句）
+        await _index_doc(
+            s, 1, "design",
+            "本系统的任务图设计说明。架构采用分层模式。",
+            title="设计文档",
+        )
+        # 干扰文档只含其一
+        await _index_doc(s, 1, "other", "架构文档，无任务图内容。", title="干扰")
+        await s.commit()
+
+        # 单词各自命中（基线）
+        assert len(await FTS5Retriever(s).search("任务图", project_id=1)) >= 1
+        assert len(await FTS5Retriever(s).search("架构", project_id=1)) >= 1
+
+        # 双词组合：修复前因假 bigram「图架」恒空；修复后 OR 语义非空
+        combined = await FTS5Retriever(s).search("任务图 架构", project_id=1)
+        assert len(combined) >= 1
+        # 目标文档必须命中（其含全部查询词）
+        assert any(h["source_id"] == "design" for h in combined)
+
+
+def test_query_no_cross_word_bigram():
+    """返修问题 1 单元: 词边界不产 A末字+B首字 的假 bigram."""
+    from project_runtime.retrieval.fts import cjk_tokenize
+
+    # 「任务图 架构」不得产「图架」；「任务 图架构」不得产「务图」
+    toks = cjk_tokenize("任务图 架构", query=True).split()
+    assert "图架" not in toks
+    assert toks == ["任务", "务图", "架构"]
+
+    toks2 = cjk_tokenize("任务 图架构", query=True).split()
+    assert "务图" not in toks2
+    assert toks2 == ["任务", "图架", "架构"]
+
+    # 连续无空格 CJK 保持 bigram（不是词边界）
+    toks3 = cjk_tokenize("任务图架构", query=True).split()
+    assert "图架" in toks3
+
+    # 索引侧行为不变（跨词 bigram 保留，提升召回）
+    idx = cjk_tokenize("任务图 架构").split()
+    assert "图架" in idx
