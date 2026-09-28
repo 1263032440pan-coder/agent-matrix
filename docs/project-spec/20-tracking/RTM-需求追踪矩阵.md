@@ -64,8 +64,8 @@ CHANGE_REQUIRED
 
 | SYS-040 | Runtime Extension 不得引入第三种自动化模式 | Automation Boundary | WP-013/WP-034/WP-035 | NEED_USER_INPUT 仅示缺输入，等待与否由 Automation Mode Controller 决定 | extension/runtime/contracts.py（无第三模式路径） | test_runtime_extension（hook 契约归一：控制值仅五种既有枚举） | DONE（WP-035 部分随其交付） |
 
-| SYS-041 | 自动化程度与 Worker 并行度解耦 | Resource Governance | WP-036/WP-008 | TODO | TODO | TODO | TODO |
-| SYS-042 | 8GB LOW Profile 支持核心系统和单 Worker 自动执行 | Low Resource Runtime | WP-036/WP-019 | TODO | TODO | TODO | TODO |
+| SYS-041 | 自动化程度与 Worker 并行度解耦 | Resource Governance | WP-036/WP-008 | Governor 与 Automation Mode 正交（档位只调并发，不碰 FULL_AUTO/MANUAL——结构性断言）；D15 max_workers 调用面兼容 | project_runtime/resource_governor/ | tests/test_resource_profiles.py（12 用例） | DONE |
+| SYS-042 | 8GB LOW Profile 支持核心系统和单 Worker 自动执行 | Low Resource Runtime | WP-036/WP-019 | ADR-026: auto_profile ≤8GB→LOW（concurrency 1/browser 1/heavy 独占）；FULL_AUTO+LOW 无需人工确认 | project_runtime/resource_governor/profiles.py | tests/test_resource_profiles.py（12 用例） | DONE |
 | SYS-043 | Worker / Plugin 支持按需启动与资源回收 | Process Lifecycle | WP-036/WP-032/WP-009 | TODO | TODO | TODO | TODO |
 | SYS-044 | Planner 不因机器资源修改 Task Graph | Planning Boundary | WP-007/WP-036 | TODO | TODO | TODO | TODO |
 

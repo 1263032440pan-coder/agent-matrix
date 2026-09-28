@@ -28,6 +28,7 @@ from project_runtime.resource_governor.governor import (
     ResourceDecision,
     ResourceGovernor,
 )
+from project_runtime.resource_governor.profiles import ResourceProfile
 from project_runtime.worker.adapter import WorkerAdapter, WorkPackage
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,8 @@ class Scheduler:
         worker: WorkerAdapter | None = None,
         max_workers: int = 1,
         use_llm_worker: bool = False,
+        profile: "ResourceProfile | None" = None,
+        snapshot_provider=None,
     ):
         self._session = session
         if worker is not None:
@@ -59,7 +62,11 @@ class Scheduler:
             self._worker = LLMWorkerAdapter(session)
         else:
             self._worker = None
-        self._governor = ResourceGovernor(session, max_workers=max_workers)
+        # WP-036: profile-aware governor (None → D15 compat, max_workers only)
+        self._governor = ResourceGovernor(
+            session, max_workers, profile=profile,
+            snapshot_provider=snapshot_provider,
+        )
 
     async def dispatch_once(self, project_id: int) -> list[DispatchDecision]:
         """One scheduling pass over a project's READY tasks."""
@@ -72,17 +79,22 @@ class Scheduler:
 
         decisions: list[DispatchDecision] = []
 
-        # Ready candidates — snapshot ids (commit expires objects)
+        # Ready candidates — snapshot ids + names (commit expires objects)
         stmt = (
-            select(Task.id)
+            select(Task.id, Task.name)
             .where(Task.project_id == project_id, Task.status == TaskStatus.READY)
             .order_by(Task.id)
         )
-        ready_task_ids = list((await self._session.execute(stmt)).scalars().all())
+        ready_rows = list((await self._session.execute(stmt)).all())
 
-        for task_id in ready_task_ids:
+        for task_id, task_name_early in ready_rows:
+            # WP-036 heavy detection: V0.1 convention — task names carrying
+            # the [heavy] marker claim exclusive resources (browser pools,
+            # local LLM). Per-task resource claims are post-Demo.
+            heavy = "[heavy]" in (task_name_early or "")
+
             # D15: dispatch gated by ResourceGovernor decision
-            decision = await self._governor.evaluate(project_id)
+            decision = await self._governor.evaluate(project_id, heavy=heavy)
             if decision == ResourceDecision.DEFER_RESOURCE:
                 decisions.append(
                     DispatchDecision(
@@ -90,6 +102,9 @@ class Scheduler:
                     )
                 )
                 continue
+            # WP-036: RUN_EXCLUSIVE → dispatch THIS task through the normal
+            # path, then stop the pass (heavy task runs alone).
+            exclusive = decision == ResourceDecision.RUN_EXCLUSIVE
 
             if automation_mode == AutomationMode.MANUAL:
                 # MANUAL: create ManualAction, do not dispatch.
@@ -138,6 +153,9 @@ class Scheduler:
                 WorkPackage(task_id=task_id, task_name=task_name)
             )
             decisions.append(DispatchDecision(task_id, "DISPATCHED"))
+            if exclusive:
+                # heavy task dispatched → end the pass (runs alone)
+                break
 
         await self._session.flush()
         return decisions
