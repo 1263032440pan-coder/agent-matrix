@@ -341,9 +341,11 @@ async def test_gate_auto_review_and_downstream_unlock(rh_env, monkeypatch):
     # Gate ran automatically (Phase D, after terminal event): t1 ACCEPTED
     got = await _wait_task_status(rh_env, t1_id, TaskStatus.ACCEPTED.value)
     assert got == TaskStatus.ACCEPTED.value
-    # Downstream HARD dep satisfied → t2 unblocked to READY
-    got2 = await _wait_task_status(rh_env, t2_id, TaskStatus.READY.value)
-    assert got2 == TaskStatus.READY.value
+    # Downstream HARD dep satisfied → t2 unblocked; FULL_AUTO auto-advance
+    # then executes t2 through its own gate → ACCEPTED. Reaching ACCEPTED
+    # transitively proves the unblock (t2 could not run otherwise).
+    got2 = await _wait_task_status(rh_env, t2_id, TaskStatus.ACCEPTED.value)
+    assert got2 == TaskStatus.ACCEPTED.value
 
 
 @pytest.mark.asyncio
