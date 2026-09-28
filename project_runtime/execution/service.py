@@ -24,12 +24,16 @@ from project_runtime.execution.repository import ExecutionRepository
 
 logger = logging.getLogger(__name__)
 
-# WP-034: shared runtime hook executor — extensions register against this;
-# the runner fires stable points (worker.before/after_execute).
+# WP-034/WP-035-TD01: composition root — the hook executor is CONSTRUCTED
+# once here and INJECTED into the PipelineEngine (no hidden singleton inside
+# the executor/engine modules). Tests and future multi-registry setups
+# construct their own pair explicitly.
 from project_runtime.extension.registry import ExtensionRegistry  # noqa: E402
 from project_runtime.extension.runtime import RuntimeHookExecutor  # noqa: E402
+from project_runtime.pipeline.engine import get_shared_engine  # noqa: E402
 
 hook_executor = RuntimeHookExecutor(ExtensionRegistry())
+pipeline_engine = get_shared_engine(hook_executor)
 
 
 async def _emit(
