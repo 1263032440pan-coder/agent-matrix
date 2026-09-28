@@ -11,6 +11,7 @@ project_id isolation + SQL metadata filter (fixed tech, no vector).
 from __future__ import annotations
 
 import logging
+import re as _re
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
