@@ -25,8 +25,8 @@ Thumbs.db
 
 # Env
 .env
-.env.localtest-assets/
+.env.local
+test-assets/
 
 # Test assets (local only, not for git)
-test-assets/
 返修单-*.md
