@@ -57,6 +57,73 @@ async def create_project(
     return {"id": pid, "name": pname}
 
 
+@router.post("/{project_id}/understanding", status_code=201)
+async def analyze_understanding(project_id: int):
+    """WP-026: run Project Understanding → persisted snapshot.
+
+    Planning Context consumption point — downstream (WP-030 Playbook)
+    reads the snapshot via GET. Deterministic analyzer in V0.1; the
+    UnderstandingAnalyzer protocol is the WP-037 LLM swap point.
+    """
+    from project_runtime.understanding import UnderstandingService
+
+    async with AsyncSession(engine) as session:
+        project = await session.get(Project, project_id)
+        if project is None:
+            raise HTTPException(404, "Project not found")
+        goal = project.goal or ""
+        svc = UnderstandingService(session)
+        row = await svc.analyze_project(project_id)
+        # snapshot before commit (ORM expiry)
+        out = {
+            "id": row.id,
+            "project_id": row.project_id,
+            "domain_hypothesis": row.domain_hypothesis,
+            "project_type_hypothesis": row.project_type_hypothesis,
+            "goal": row.goal or goal,
+            "known_facts": row.known_facts_json,
+            "assumptions": row.assumptions_json,
+            "open_questions": row.open_questions_json,
+            "known_requirements": row.known_requirements_json,
+            "knowledge_gaps": row.knowledge_gaps_json,
+            "method_asset_hints": row.method_asset_hints_json,
+            "analyzer_version": row.analyzer_version,
+        }
+        await session.commit()
+    return out
+
+
+@router.get("/{project_id}/understanding", status_code=200)
+async def get_understanding(project_id: int):
+    """Latest understanding snapshot for a project (Planning Context read)."""
+    from project_runtime.understanding.models import ProjectUnderstanding
+
+    async with AsyncSession(engine) as session:
+        stmt = (
+            select(ProjectUnderstanding)
+            .where(ProjectUnderstanding.project_id == project_id)
+            .order_by(ProjectUnderstanding.id.desc())
+            .limit(1)
+        )
+        row = (await session.execute(stmt)).scalar_one_or_none()
+        if row is None:
+            raise HTTPException(404, "No understanding snapshot yet")
+        return {
+            "id": row.id,
+            "project_id": row.project_id,
+            "domain_hypothesis": row.domain_hypothesis,
+            "project_type_hypothesis": row.project_type_hypothesis,
+            "goal": row.goal,
+            "known_facts": row.known_facts_json,
+            "assumptions": row.assumptions_json,
+            "open_questions": row.open_questions_json,
+            "known_requirements": row.known_requirements_json,
+            "knowledge_gaps": row.knowledge_gaps_json,
+            "method_asset_hints": row.method_asset_hints_json,
+            "analyzer_version": row.analyzer_version,
+        }
+
+
 @router.patch("/{project_id}/mode", status_code=200)
 async def update_project_mode(
     project_id: int, req: ModeUpdateRequest, session: AsyncSession = Depends(get_session)

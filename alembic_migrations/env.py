@@ -32,6 +32,7 @@ import project_runtime.plugin.registry  # noqa: E402, F401 — register plugin t
 import project_runtime.project_state.models  # noqa: E402, F401 — register all tables
 import project_runtime.retrieval.models  # noqa: E402, F401 — register retrieval table
 import project_runtime.skills.models  # noqa: E402, F401 — register skill tables
+import project_runtime.understanding.models  # noqa: E402, F401 — register understanding table
 from project_runtime.project_state.base import Base  # noqa: E402
 
 target_metadata = Base.metadata

@@ -52,7 +52,7 @@ CHANGE_REQUIRED
 | SYS-030 | Research + Skill + Memory 生成 Project Playbook 与 Planning Context | Project Playbook | WP-030 | TODO | TODO | TODO | TODO |
 | SYS-031 | Work Package 支持无 Skill、Playbook 与 Research 引用 | Execution Binding | WP-031 | TODO | TODO | TODO | TODO |
 
-| SYS-032 | 核心不预置任何行业 Project Archetype | Generic Project Runtime | WP-026/WP-027 | TODO | TODO | TODO | TODO |
+| SYS-032 | 核心不预置任何行业 Project Archetype | Generic Project Runtime | WP-026/WP-027 | WP-026：域识别只产 HYPOTHESIS（UNKNOWN 诚实+assumption），结构性断言无行业预设模板；Archetype 全链零预置（WP-027 后续） | project_runtime/understanding/ | tests/test_project_understanding.py（zero_archetype + unknown_domain 用例） | DONE（WP-026 范围） |
 | SYS-033 | Skill=0 时必须通过 Web Research 构建项目方法 | Zero-Skill Bootstrap | WP-027/WP-029/WP-030/WP-019 | TODO | TODO | TODO | TODO |
 
 | SYS-034 | Plugin Package 安装、启停、健康与 Manifest 校验 | Plugin Manager | WP-032 | /api/plugins 六端点（04 规范）；JSON-RPC 2.0 over stdio | project_runtime/plugin/（manifest/registry/manager/rpc） | tests/test_plugin_manager.py（11 用例，含真实进程崩溃隔离） | DONE |
