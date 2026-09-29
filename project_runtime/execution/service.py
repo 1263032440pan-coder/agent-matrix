@@ -89,9 +89,6 @@ class ExecutionRunner:
         from project_runtime.artifact.manager import ArtifactManager
         from project_runtime.event import RuntimeEventType
         from project_runtime.project_state.enums import TaskStatus
-        from project_runtime.task_graph.manager import TaskGraphManager
-        from project_runtime.worker.adapter import WorkPackage
-        from project_runtime.worker.llm_worker import LLMWorkerAdapter
 
         # WP-036: production wiring — governor with REAL psutil snapshot
         # (memory pressure genuinely active; 返修单观察1 方案a).
@@ -100,6 +97,9 @@ class ExecutionRunner:
             ResourceGovernor,
         )
         from project_runtime.resource_governor.profiles import snapshot
+        from project_runtime.task_graph.manager import TaskGraphManager
+        from project_runtime.worker.adapter import WorkPackage
+        from project_runtime.worker.llm_worker import LLMWorkerAdapter
 
         # Phase A: QUEUED → RUNNING (short tx). Task FSM transitions are owned
         # by the Worker (READY→RUNNING→EXECUTION_DONE, red lines intact).
