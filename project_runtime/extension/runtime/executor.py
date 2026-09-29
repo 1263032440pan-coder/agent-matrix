@@ -49,6 +49,10 @@ STABLE_POINTS: frozenset[str] = frozenset({
     "delivery.validators",
     "policy.extensions",
     "event.observers",
+    # V1.9 Method Intelligence (14-规范, WP-037): registered via CR-METHOD-POINTS
+    "method.assets.providers",
+    "method.assets.processors",
+    "procedure.normalizers",
 })
 
 
