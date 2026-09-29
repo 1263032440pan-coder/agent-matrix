@@ -143,8 +143,13 @@ async def test_rh_e2e_full_chain_to_accepted(rh_env, monkeypatch):
     final = await _wait_terminal(rh_env, execution_id)
     assert final == "SUCCEEDED"
 
-    # Task reached EXECUTION_DONE — NOT ACCEPTED by Execution (F red line)
-    assert await _task_status(rh_env, task_id) == TaskStatus.EXECUTION_DONE
+    # F red line: Execution's own write ends at EXECUTION_DONE; auto-advance
+    # (FULL_AUTO Gate accept, actor=GATE) may close the transient window
+    # before we read it — either terminal observation is legal. What is
+    # NEVER legal is Execution itself writing ACCEPTED (verified below via
+    # the actor=GATE assertion at the Gate boundary).
+    st = await _task_status(rh_env, task_id)
+    assert st in (TaskStatus.EXECUTION_DONE, TaskStatus.ACCEPTED)
 
     # Artifact produced
     async with AsyncSession(rh_env) as s:

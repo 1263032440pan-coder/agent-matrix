@@ -61,6 +61,30 @@ async def _emit(
 class ExecutionRunner:
     """Background runner: executes one Execution end-to-end with short transactions."""
 
+    def _reschedule(self, execution_id: int, delay_s: float = 2.0) -> None:
+        """WP-036: DEFER_RESOURCE → re-queue after a delay.
+
+        The Execution stays QUEUED (never FAILED — core rule 3); a fresh
+        runner attempt fires once the delay elapses. Pressure conditions
+        are re-evaluated on every attempt.
+        """
+        import asyncio
+
+        async def _retry() -> None:
+            await asyncio.sleep(delay_s)
+            try:
+                await self.run(execution_id)
+            except Exception:  # noqa: BLE001 — runner retries are best-effort
+                logger.warning(
+                    "deferred retry of execution %s failed", execution_id,
+                    exc_info=True,
+                )
+
+        try:
+            asyncio.get_running_loop().create_task(_retry())
+        except RuntimeError:  # no running loop — nothing to schedule on
+            logger.debug("no loop to reschedule execution %s", execution_id)
+
     async def run(self, execution_id: int) -> None:
         from project_runtime.artifact.manager import ArtifactManager
         from project_runtime.event import RuntimeEventType
@@ -68,6 +92,14 @@ class ExecutionRunner:
         from project_runtime.task_graph.manager import TaskGraphManager
         from project_runtime.worker.adapter import WorkPackage
         from project_runtime.worker.llm_worker import LLMWorkerAdapter
+
+        # WP-036: production wiring — governor with REAL psutil snapshot
+        # (memory pressure genuinely active; 返修单观察1 方案a).
+        from project_runtime.resource_governor.governor import (
+            ResourceDecision,
+            ResourceGovernor,
+        )
+        from project_runtime.resource_governor.profiles import snapshot
 
         # Phase A: QUEUED → RUNNING (short tx). Task FSM transitions are owned
         # by the Worker (READY→RUNNING→EXECUTION_DONE, red lines intact).
@@ -77,6 +109,17 @@ class ExecutionRunner:
             if ex is None or ex.status != ExecutionStatus.QUEUED.value:
                 return
             task_id, project_id = ex.task_id, ex.project_id
+
+            # WP-036: admission gate — memory pressure / slot exhaustion →
+            # DEFER (task stays READY, execution re-queued; NEVER FAIL).
+            gov = ResourceGovernor(
+                session, profile=None, snapshot_provider=snapshot
+            )
+            decision = await gov.evaluate(project_id)
+            if decision is ResourceDecision.DEFER_RESOURCE:
+                await session.rollback()
+                self._reschedule(execution_id, delay_s=2.0)
+                return
             await repo.mark_running(ex)
 
             mgr = TaskGraphManager(session)

@@ -65,3 +65,13 @@ REDUCE_PARALLELISM
 - governor.py 原位升级（D15 并发槽内核保留）: 内存压力 DEFER → heavy RUN_EXCLUSIVE（独占期间其他 DEFER + 无 RUNNING 自愈释放=idle recycle）→ 内存吃紧 REDUCE_PARALLELISM（cap-1 收缩，在途不杀）→ 槽满 DEFER
 - Scheduler 接线: profile/snapshot_provider 透传 + [heavy] 任务名标记识别 → RUN_EXCLUSIVE 派发后本 pass 终止（独占）；老调用面（max_workers only）完全兼容
 - 规则 1/2/3 由 D15 延续（不改依赖、不改模式、不判 FAIL）；规则 4 LOW=1 并发；规则 6 browser_contexts 档位边界就位（Browser Pool 本体 post-Demo）
+
+---
+
+## 复验结论（2026-09-28 收官）
+
+**PASS — 六条复验项全达标（1 项部分）；阶段 3 五站全收官。**
+
+- 观察 1（psutil 未声明/生产未接线）→ **方案 a 已落地**：pyproject 声明 `psutil>=5.9`；ExecutionRunner 接线真实 snapshot_provider——内存压力 DEFER → 2s 延迟重排队（Execution 保持 QUEUED，不判 FAIL，核心规则 3）
+- 观察 2（插件资源声明未消费）→ 登记 **WP036-TD01**（Demo 后）
+- 附带：RH-E2E-TD01 **CLOSED**——根因同 gate_auto_review 语义滞后（FULL_AUTO Gate 异步接受关闭 EXECUTION_DONE 瞬态窗），断言改双态合法；5 轮模块 + 2 轮全量 488 全绿
