@@ -91,7 +91,6 @@ async def test_gate7_method_ready_without_skills(dbengine):
         assessment = await MethodReadinessAssessor(s).assess(pid, mid)
         method = json.loads(assessment.method_readiness)
         ecr = json.loads(assessment.execution_capability_readiness)
-        coverage = json.loads(assessment.coverage_summary)
         await s.commit()
 
     # method axis: the full method doc's substantive node is READY-grade
