@@ -146,11 +146,21 @@ async def test_many_docs_not_auto_ready(dbsession, project):
 
 
 @pytest.mark.asyncio
-async def test_execution_capability_is_null(dbsession, project):
+async def test_execution_capability_now_filled(dbsession, project):
+    """WP-038: the D08 placeholder None is REPLACED by the independent
+    execution-capability axis (dual-axis snapshot, same assessment)."""
+    import json as _json
+
     model = await _setup_with_text(dbsession, project, "# 测试\n输入: X\n活动: Y")
     assessor = MethodReadinessAssessor(dbsession)
     assessment = await assessor.assess(project.id, model.id)
-    assert assessment.execution_capability_readiness is None
+    ecr = _json.loads(assessment.execution_capability_readiness)
+    assert ecr["total_nodes"] >= 1
+    # node with no special requirements: only built-in worker → READY
+    # (Skill=0 must NOT make this MISSING — Gate 4)
+    assert ecr["overall"] == "READY"
+    gaps = _json.loads(assessment.gaps)
+    assert gaps["execution_gaps"] == []
 
 
 # ── Gap generation (Q1) ────────────────────────────────────────────────────

@@ -84,6 +84,33 @@ class MethodReadinessAssessor:
         summary = self._build_summary(results)
         assessment = await self._create_assessment(project_id, model_id, results, gaps, summary)
 
+        # WP-038: Execution Capability Readiness — independent axis, same
+        # snapshot (Method/Execution may be READY/MISSING independently).
+        from project_runtime.readiness.execution_capability import (
+            ExecutionCapabilityReadiness,
+        )
+
+        ecr = await ExecutionCapabilityReadiness(self._session).assess(
+            project_id, model_id
+        )
+        assessment.execution_capability_readiness = json.dumps(ecr)
+        # Execution gaps: missing capabilities per node (never triggered by
+        # Skill=0 alone — only by requirements a node actually declares).
+        exec_gaps = [
+            {
+                "node_id": r["node_id"],
+                "node_name": r["node_name"],
+                "gap_type": "CAPABILITY",
+                "reason": f"missing capabilities: {sorted(r['missing'].values())}",
+                "source_ref": f"procedure_node:{r['node_id']}",
+            }
+            for r in ecr["nodes"]
+            if r["missing"]
+        ]
+        assessment.gaps = json.dumps(
+            {"method_gaps": gaps or [], "execution_gaps": exec_gaps}
+        )
+
         # Store per-node coverage summary
         assessment.coverage_summary = json.dumps(summary)
         await self._session.flush()
@@ -154,14 +181,21 @@ class MethodReadinessAssessor:
 
     @staticmethod
     def _dimension_to_gap_type(dim_name: str) -> str:
-        """Simplified dimension → gap type mapping for V0.1."""
+        """Dimension → gap type mapping (WP-038 six types).
+
+        V0.1 deterministic: PRIVATE gaps are knowledge the org holds but
+        the material doesn't state (domain-specific fields unknown);
+        DOMAIN gaps are missing business-domain terms; TECHNICAL gaps are
+        missing technical constraints. The LLM classifier (WP-038 深化)
+        refines via the gap.classifiers extension point.
+        """
         return {
             "scope_coverage": "EXPLICITNESS",
             "action_explicitness": "EXPLICITNESS",
-            "artifact_definition": "EXPLICITNESS",
-            "acceptance_definition": "EXPLICITNESS",
+            "artifact_definition": "PRIVATE",
+            "acceptance_definition": "PRIVATE",
             "dependency_transition": "PROCESS",
-            "constraint_authority": "PROCESS",
+            "constraint_authority": "TECHNICAL",
         }.get(dim_name, "EXPLICITNESS")
 
     async def _create_assessment(

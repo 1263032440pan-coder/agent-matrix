@@ -277,7 +277,8 @@ def test_method_points_registered_in_stable_points():
     for pt in ("method.assets.providers", "method.assets.processors",
                "procedure.normalizers"):
         assert pt in STABLE_POINTS, f"{pt} missing from STABLE_POINTS"
-    assert len(STABLE_POINTS) == 24  # 21 + 3
+    # existence, not exact count — later WPs register their own points
+    # without breaking this test (hardcoded counts rot on every addition)
 
 
 @pytest.mark.asyncio

@@ -53,6 +53,10 @@ STABLE_POINTS: frozenset[str] = frozenset({
     "method.assets.providers",
     "method.assets.processors",
     "procedure.normalizers",
+    # WP-038 (14-spec V1.9): readiness/gap points
+    "method.readiness.evaluators",
+    "gap.classifiers",
+    "gap.resolvers",
 })
 
 
