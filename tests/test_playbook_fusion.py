@@ -175,15 +175,13 @@ async def test_research_enrichment_recommended(dbengine):
 # ── Gate 3: Model Inference 识别为 PROPOSED ─────────────────────────
 
 
-@pytest.mark.asyncio
-async def test_model_inference_proposed(dbengine):
+def test_model_inference_proposed():
     """无资产来源的 workstream（如 LLM 抽取的推断节点）标 PROPOSED。"""
-    pid, _ = await _full_chain(dbengine, USER_DOC)
-    async with AsyncSession(dbengine) as s:
-        # 直接检验 builder 的 source_type 语义: no-asset → MODEL_INFERENCE
-        from project_runtime.playbook.builder import PlaybookBuilder as B
+    # builder 的 source_type 语义: no-asset → MODEL_INFERENCE（纯静态语义，
+    # 无需 session/链路）
+    from project_runtime.playbook.builder import PlaybookBuilder as B
 
-        assert B._determine_source_type(None) == "MODEL_INFERENCE"
+    assert B._determine_source_type(None) == "MODEL_INFERENCE"
     # planner 层将 MODEL_INFERENCE 按 PROPOSED 权威处理（D09 既有链）
 
 
