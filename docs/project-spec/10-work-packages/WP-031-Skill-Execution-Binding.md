@@ -1,7 +1,7 @@
 # WP-031 Skill Execution Binding
 
-> 状态：TODO  
-> Gate：PASS / FAIL / BLOCKED  
+> 状态：DONE（批次 A 对账收口，2026-09-29——D17D + 试用增量已覆盖全部 Gate，本批补 WorkPackage 三字段）  
+> Gate：PASS（7 条 Gate 全过：既有 D17D 测试族 + test_skill_sites_reconciliation.py 补齐项）  
 > Demo 集成执行：WP-039 / D17D
 
 ## 目标
@@ -103,12 +103,18 @@ actual_skill_version
 actual_skill_content_hash
 ```
 
-## Gate
+## Gate（批次 A 对账 2026-09-29）
 
-- [ ] Task 可以没有 Skill。
-- [ ] Work Package 可携带 Resolved Skill Context。
-- [ ] Loader 只加载必要文件。
-- [ ] 实际 Skill Version/hash 可审计。
-- [ ] Worker 缺 Tool Capability 时返回 CAPABILITY_MISSING。
-- [ ] Loader 不修改 Project State。
-- [ ] 外部 Skill 不能绕过 Worker/Gate 生命周期。
+- [x] Task 可以没有 Skill（test_skill_loader::test_no_skill_task_executes + 批次 A 补 test_workpackage_none_skill_legal 字段层）
+- [x] Work Package 可携带 Resolved Skill Context（D17D skill_context 注入 + 试用增量 ExecutionRunner Phase B-0；批次 A 补三字段 skill_requirement/resolved_skill_ref/skill_execution_context_ref——Runner 注入结构性断言）
+- [x] Loader 只加载必要文件（test_e02_load_required_references_only + test_e03_no_full_registry_injection）
+- [x] 实际 Skill Version/hash 可审计（test_e05_worker_result_skill_audit——actual_skill_id/version/content_hash 三元组）
+- [x] Worker 缺 Tool Capability 时返回 CAPABILITY_MISSING（test_skill_resolver::test_d07）
+- [x] Loader 不修改 Project State（批次 A 结构性断言：loader 无 transition_task/StateTransitionService/add(Project/Task 路径）
+- [x] 外部 Skill 不能绕过 Worker/Gate 生命周期（test_e06_skill_output_not_accepted——Skill COMPLETED ≠ Task ACCEPTED）
+
+## 对账说明
+
+- Resolver/Loader/注入链: D17C/D17D + 试用增量（Runner Phase B-0 + 项目级通配绑定）
+- Work Package 三字段（skill_requirement/resolved_skill_ref/skill_execution_context_ref）: 批次 A 补齐（构造注入 + ExecutionRunner 装配）
+- Context Builder（前置 WP-010）: 阶段 5 交付——当前 Context 走 task contract 既有链

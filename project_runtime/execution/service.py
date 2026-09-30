@@ -255,7 +255,23 @@ class ExecutionRunner:
             )
             worker = LLMWorkerAdapter(worker_session, artifact_mgr=artifact_mgr)
             result = await worker.assign(
-                WorkPackage(task_id=task_id, task_name=task_name, skill_context=skill_ctx)
+                WorkPackage(
+                    task_id=task_id,
+                    task_name=task_name,
+                    skill_context=skill_ctx,
+                    # WP-031 binding trace
+                    skill_requirement=(
+                        "OPTIONAL" if skill_ctx is not None else "NONE"
+                    ),
+                    resolved_skill_ref=(
+                        f"{skill_ctx.skill_id}@{skill_ctx.skill_version}"
+                        if skill_ctx is not None else None
+                    ),
+                    skill_execution_context_ref=(
+                        f"skill-ctx:{skill_ctx.skill_id}:{skill_ctx.skill_content_hash[:12]}"
+                        if skill_ctx is not None else None
+                    ),
+                )
             )
             await worker_session.commit()
             success, message = result.success, result.output[:500]

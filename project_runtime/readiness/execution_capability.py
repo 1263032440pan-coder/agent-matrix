@@ -72,12 +72,35 @@ class ExecutionCapabilityReadiness:
                     missing[cap] = f"missing_{cap}"
 
             # Node execution readiness: nothing missing → READY
+            # WP-027 spec output shape: covered_by_* / missing_* separated
+            covered_by_worker = {
+                k: v for k, v in covered.items() if v == "covered_by_worker"
+            }
+            covered_by_tool = {
+                k: v for k, v in covered.items() if v.startswith("covered_by_")
+                and v != "covered_by_worker" and not v.startswith("covered_by_skill")
+            }
+            covered_by_skill = {
+                k: v for k, v in covered.items() if v.startswith("covered_by_skill")
+            }
+            missing_capabilities = {
+                k: v for k, v in missing.items() if not k.startswith("skill:")
+            }
+            missing_skill_dependencies = {
+                k: v for k, v in missing.items() if k.startswith("skill:")
+            }
             node_results.append({
                 "node_id": n.id,
                 "node_name": n.name,
                 "requirements": req,
                 "covered": covered,
                 "missing": missing,
+                # WP-027 named outputs
+                "covered_by_worker": covered_by_worker,
+                "covered_by_tool": covered_by_tool,
+                "covered_by_skill": covered_by_skill,
+                "missing_capabilities": missing_capabilities,
+                "missing_skill_dependencies": missing_skill_dependencies,
                 "execution_readiness": (
                     "READY" if not missing
                     else ("PARTIAL" if covered else "MISSING")

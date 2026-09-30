@@ -40,6 +40,10 @@ class WorkPackage:
     contract: str | None = None
     # D17D: optional skill context (resolved by SkillResolver, loaded by SkillLoader)
     skill_context: "SkillExecutionContext | None" = None
+    # WP-031: binding trace (spec Work Package 新增字段)
+    skill_requirement: str | None = None        # "NONE" | "REQUIRED" | "OPTIONAL"
+    resolved_skill_ref: str | None = None       # "skill_id@version" or None
+    skill_execution_context_ref: str | None = None  # loader audit ref
 
 
 @dataclass
