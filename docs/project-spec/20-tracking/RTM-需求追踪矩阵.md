@@ -17,43 +17,43 @@ CHANGE_REQUIRED
 
 | ID | 需求/能力 | 架构模块 | 开发 WP | API/协议 | 代码 | 测试 | 状态 |
 |---|---|---|---|---|---|---|---|
-| SYS-001 | 建立 Desktop、Project Runtime、数据库、配置、日志和基础测试骨架 | 基础工程 | WP-001 | TODO | TODO | TODO | TODO |
-| SYS-002 | 实现核心领域实体、数据库表、Repository 和迁移 | Project State | WP-002 | TODO | TODO | TODO | TODO |
-| SYS-003 | 实现 Create / Import / Resume 统一项目入口 | Project Bootstrap | WP-003 | TODO | TODO | TODO | TODO |
-| SYS-004 | 实现已有项目扫描、软件项目识别、文档/代码/Git 轻量发现 | State Discovery | WP-004 | TODO | TODO | TODO | TODO |
-| SYS-005 | 实现 Task CRUD、父子关系、Dependency 和图验证 | Task Graph | WP-005 | TODO | TODO | TODO | TODO |
-| SYS-006 | 根据 Task Graph 和状态计算当前执行边界 | Current Frontier | WP-006 | TODO | TODO | TODO | TODO |
-| SYS-007 | 实现 Planner 输入输出 Schema、LLM 调用、Plan Validator 和 Apply | Dynamic Planner | WP-007 | TODO | TODO | TODO | TODO |
-| SYS-008 | 实现调度循环、READY 判断、并行控制和 Worker Routing 入口 | Scheduler | WP-008 | TODO | TODO | TODO | TODO |
-| SYS-009 | 实现 WorkerRuntimeAdapter、ACP Adapter、goose Worker 生命周期和事件流 | Worker Adapter | WP-009 | TODO | TODO | TODO | TODO |
+| SYS-001 | 建立 Desktop、Project Runtime、数据库、配置、日志和基础测试骨架 | 基础工程 | WP-001 | Tauri2+FastAPI+SQLite 骨架 / /health | apps/runtime/ + apps/desktop/ + infrastructure/ | tests/test_health.py | DONE（Demo D01） |
+| SYS-002 | 实现核心领域实体、数据库表、Repository 和迁移 | Project State | WP-002 | Project/Task/TaskRun/Artifact 等 20+ 实体 + alembic 链 | project_runtime/project_state/ | tests/test_models.py + test_migration_integrity.py | DONE（Demo D02） |
+| SYS-003 | 实现 Create / Import / Resume 统一项目入口 | Project Bootstrap | WP-003 | POST /api/projects + method-assets/upload | apps/runtime/api/projects.py | tests/test_dashboard_api.py | DONE（Demo D03） |
+| SYS-004 | 实现已有项目扫描、软件项目识别、文档/代码/Git 轻量发现 | State Discovery | WP-004 | MethodAssetImporter（hash 去重/版本化） | project_runtime/method_asset/importer.py | tests/test_method_asset.py | DONE（Demo D04） |
+| SYS-005 | 实现 Task CRUD、父子关系、Dependency 和图验证 | Task Graph | WP-005 | TaskGraphManager（HARD 依赖 ACCEPTED 解锁 + 环检测） | project_runtime/task_graph/manager.py | tests/test_task_graph.py | DONE（Demo D05） |
+| SYS-006 | 根据 Task Graph 和状态计算当前执行边界 | Current Frontier | WP-006 | can_set_ready / promote_to_ready 边界判定 | project_runtime/task_graph/manager.py | tests/test_task_graph.py | DONE（Demo D05 批次） |
+| SYS-007 | 实现 Planner 输入输出 Schema、LLM 调用、Plan Validator 和 Apply | Dynamic Planner | WP-007 | Playbook→Task 集（authority 分层：MANDATORY 保真/PROPOSED 附注） | project_runtime/planner/planner.py | tests/test_planner.py | DONE（Demo D09） |
+| SYS-008 | 实现调度循环、READY 判断、并行控制和 Worker Routing 入口 | Scheduler | WP-008 | dispatch_once + Governor 决策门 + MANUAL→ManualAction | project_runtime/scheduler/scheduler.py | tests/test_scheduler.py | DONE（Demo D10/D15） |
+| SYS-009 | 实现 WorkerRuntimeAdapter、ACP Adapter、goose Worker 生命周期和事件流 | Worker Adapter | WP-009 | WorkerAdapter ABC + Mock/LLM 双实现（两段短事务）；ACP/goose 外部 Runtime 属 V1+（Demo 范围 LLM Worker） | project_runtime/worker/ | tests/test_worker.py + test_llm_worker.py | DONE（Demo 范围；ACP 归 V1+） |
 | SYS-010 | 为 Task 构建最小充分 Context Package | Context Builder | WP-010 | TODO | TODO | TODO | TODO |
-| SYS-011 | 实现 EventBus、SQLite 事件持久化和 WebSocket 推送 | Event Engine | WP-011 | TODO | TODO | TODO | TODO |
-| SYS-012 | 实现 Artifact 注册、版本、Hash、存储和 Task/Worker 关联 | Artifact Manager | WP-012 | TODO | TODO | TODO | TODO |
-| SYS-013 | 自动化模式只支持 FULL_AUTO / MANUAL，并由 Automation Mode Controller 控制推进 | Automation Mode | WP-013 | TODO | TODO | TODO | TODO |
-| SYS-014 | 实现 Hard Check、Semantic Review、Acceptance Criteria 和 Task 验收状态迁移 | Gate | WP-014 | TODO | TODO | TODO | TODO |
-| SYS-015 | 根据 Blocked/Gate Fail/User Change/New Evidence 触发重规划 | Replanner | WP-015 | TODO | TODO | TODO | TODO |
-| SYS-016 | 实现交付契约、Delivery Item、缺失项检查和 Final Gate 前置能力 | Delivery Contract | WP-016 | TODO | TODO | TODO | TODO |
-| SYS-017 | 实现项目快照、恢复和自动 Checkpoint | Checkpoint | WP-017 | TODO | TODO | TODO | TODO |
-| SYS-018 | 实现 Project Overview、Task Graph、Worker、Execution、Automation、Artifact、Delivery 页面 | Desktop UI | WP-018 | TODO | TODO | TODO | TODO |
-| SYS-019 | 完成从已有软件项目导入到最终交付的端到端闭环 | E2E | WP-019 | TODO | TODO | TODO | TODO |
+| SYS-011 | 实现 EventBus、SQLite 事件持久化和 WebSocket 推送 | Event Engine | WP-011 | RuntimeEvent 持久化 + SSE 流（after_id 断线恢复）；WebSocket 属 V1+（RH-03 交付 SSE） | project_runtime/event/ + apps/runtime/api/ | tests/test_event_engine.py | DONE（RH-03 范围；WS 归 V1+） |
+| SYS-012 | 实现 Artifact 注册、版本、Hash、存储和 Task/Worker 关联 | Artifact Manager | WP-012 | create_artifact（版本化 .vN 命名/文件名清洗）+ content API | project_runtime/artifact/manager.py | tests/test_artifact.py | DONE（Demo D12） |
+| SYS-013 | 自动化模式只支持 FULL_AUTO / MANUAL，并由 Automation Mode Controller 控制推进 | Automation Mode | WP-013 | PATCH /mode + auto-advance（Gate PASS 后提交下游，节流 ≤3） | project_runtime/execution/service.py | tests/test_execution.py + test_rh_e2e.py | DONE（Demo D13 + auto-advance） |
+| SYS-014 | 实现 Hard Check、Semantic Review、Acceptance Criteria 和 Task 验收状态迁移 | Gate | WP-014 | GateCore（actor="GATE" 红线 + auto Gate Phase D + 事件同事务直插） | project_runtime/reviewer/gate.py | tests/test_gate.py | DONE（Demo D13/D14） |
+| SYS-015 | 根据 Blocked/Gate Fail/User Change/New Evidence 触发重规划 | Replanner | WP-015 | Replanner（触发词路由四来源） | project_runtime/replanner/ | tests/test_e2e.py（重规划分支覆盖） | DONE（Demo D14 批次） |
+| SYS-016 | 实现交付契约、Delivery Item、缺失项检查和 Final Gate 前置能力 | Delivery Contract | WP-016 | DeliveryContractManager（版本化 contract + items + artifact 映射） | project_runtime/delivery_contract/manager.py | tests/test_delivery.py | DONE（Demo D16 批次） |
+| SYS-017 | 实现项目快照、恢复和自动 Checkpoint | Checkpoint | WP-017 | WP-020 已接 Execution Memory（Event Store）；完整 Checkpoint 快照/恢复归 V1+（WP 说明登记） | project_runtime/memory/ | tests/test_project_memory.py | DONE（Memory 接入；快照恢复归 V1+） |
+| SYS-018 | 实现 Project Overview、Task Graph、Worker、Execution、Automation、Artifact、Delivery 页面 | Desktop UI | WP-018 | Dashboard 重做（SVG 任务图/Skill 面板/LLM 设置/产物预览/Runtime Events） | apps/desktop/src/ | vitest（apps/desktop） | DONE（Demo D18 + UI 重做） |
+| SYS-019 | 完成从已有软件项目导入到最终交付的端到端闭环 | E2E | WP-019 | e2e_demo 单命令脚本 + RH-E2E 真实 API 层用例（202→ACCEPTED 全链） | scripts/e2e_demo.py | tests/test_e2e.py + test_rh_e2e.py | DONE（Demo D18 + RH-E2E） |
 
 | SYS-020 | 长期项目记忆统一管理 | Project Memory Manager | WP-020 | 五类 Memory 六接口统一入口（WP-020 核心接口清单） | project_runtime/memory/manager.py | tests/test_project_memory.py（4 用例） | DONE |
 | SYS-021 | 分层摘要与上下文压缩 | Hierarchical Summary | WP-021 | STALE 生命周期 + 四层 scope + 来源引用（WP-021 字段清单） | project_runtime/memory_summary/ | tests/test_hierarchical_summary.py（5 用例） | DONE |
-| SYS-022 | 需求到交付全链路追踪 | Traceability Graph | WP-022 | TODO | TODO | TODO | TODO |
-| SYS-023 | 项目完成证据链 | Completion Evidence | WP-023 | TODO | TODO | TODO | TODO |
+| SYS-022 | 需求到交付全链路追踪 | Traceability Graph | WP-022 | 部分基础已备（provenance 双层/事件链/gap source_ref）——Traceability Graph 本体未交付 | — | — | TODO（阶段 5+） |
+| SYS-023 | 项目完成证据链 | Completion Evidence | WP-023 | GateResult/Artifact hash 基础在——证据链聚合视图未交付 | — | — | TODO（阶段 5+） |
 
-| SYS-024 | 轻量项目全文/代码检索 | Retrieval Memory Foundation | WP-024 | TODO | TODO | TODO | TODO |
+| SYS-024 | 轻量项目全文/代码检索 | Retrieval Memory Foundation | WP-024 | FTS5+BM25+CJK bigram（查询侧词边界）+ ripgrep/Path 双 retriever | project_runtime/retrieval/ | tests/test_retrieval_memory.py（12 用例） | DONE |
 | SYS-025 | Retrieval Provider 通过 Capability Extension 接入 | Retrieval Capability Extension | WP-025 | D16 Provider Contract（retrieval.providers 点） | project_runtime/retrieval/providers.py | tests/test_retrieval_providers.py（7 用例） | DONE |
 
-| SYS-026 | LLM 识别项目领域/类型、事实、假设和知识缺口 | Project Understanding | WP-026 | TODO | TODO | TODO | TODO |
-| SYS-027 | Skill 可为空并评估 Capability Coverage | Skill Registry & Capability Coverage | WP-027 | TODO | TODO | TODO | TODO |
-| SYS-028 | Template 可为空并支持 Dynamic Artifact Contract | Artifact Template Registry | WP-028 | TODO | TODO | TODO | TODO |
-| SYS-029 | Project Method / Domain / Technical / User Research 路由 | Research Manager | WP-029 | TODO | TODO | TODO | TODO |
-| SYS-030 | Research + Skill + Memory 生成 Project Playbook 与 Planning Context | Project Playbook | WP-030 | TODO | TODO | TODO | TODO |
-| SYS-031 | Work Package 支持无 Skill、Playbook 与 Research 引用 | Execution Binding | WP-031 | TODO | TODO | TODO | TODO |
+| SYS-026 | LLM 识别项目领域/类型、假设和知识缺口 | Project Understanding | WP-026 | DeterministicAnalyzer V0.1（UnderstandingAnalyzer Protocol 为 LLM 版换入点）+ POST/GET /api/projects/{id}/understanding | project_runtime/understanding/ | tests/test_project_understanding.py（10 用例） | DONE |
+| SYS-027 | Skill 可为空并评估 Capability Coverage | Skill Registry & Capability Coverage | WP-027 | Registry 九能力（register/get/list/enable/disable/version lookup/binding/hash lookup）；Execution Capability 六字段输出 | project_runtime/skills/ + project_runtime/readiness/execution_capability.py | tests/test_skill_registry.py + test_skill_sites_reconciliation.py | DONE |
+| SYS-028 | Template 可为空并支持 Dynamic Artifact Contract | Artifact Template Registry | WP-028 | 模板缺席 → Dynamic Contract 永不 BLOCKED；三防导入（白名单/穿越/512KB）；(id,version) 唯一 | project_runtime/artifact_template/ | tests/test_artifact_template.py（7 用例） | DONE |
+| SYS-029 | Project Method / Domain / Technical / User Research 路由 | Research Manager | WP-029 | 六类型路由表 + 五查前置（命中即引用）+ (question,kind) 幂等 | project_runtime/research/ | tests/test_gap_resolution.py（9 用例） | DONE |
+| SYS-030 | Research + Skill + Memory 生成 Project Playbook 与 Planning Context | Project Playbook | WP-030 | Research 融合（RECOMMENDED 只增不改）+ skill refs 四字段 + 双 readiness 快照 + provenance_map | project_runtime/playbook/builder.py | tests/test_playbook_fusion.py（8 用例） | DONE |
+| SYS-031 | Work Package 支持无 Skill、Playbook 与 Research 引用 | Execution Binding | WP-031 | WorkPackage 三字段（skill_requirement/resolved_skill_ref/skill_execution_context_ref）+ Runner 注入 + NONE 合法 | project_runtime/worker/adapter.py + execution/service.py | tests/test_skill_loader.py + test_skill_sites_reconciliation.py | DONE |
 
 | SYS-032 | 核心不预置任何行业 Project Archetype | Generic Project Runtime | WP-026/WP-027 | WP-026：域识别只产 HYPOTHESIS（UNKNOWN 诚实+assumption），结构性断言无行业预设模板；Archetype 全链零预置（WP-027 后续） | project_runtime/understanding/ | tests/test_project_understanding.py（zero_archetype + unknown_domain 用例） | DONE（WP-026 范围） |
-| SYS-033 | Skill=0 时必须通过 Web Research 构建项目方法 | Zero-Skill Bootstrap | WP-027/WP-029/WP-030/WP-019 | TODO | TODO | TODO | TODO |
+| SYS-033 | Skill=0 时必须通过 Web Research 构建项目方法 | Zero-Skill Bootstrap | WP-027/WP-029/WP-030/WP-019 | WP-029 落地路由侧：方法足够时不联网（五查）；Web Research 执行体（research.providers 扩展）归后续 E2E 强化——Skill=0 不自动触发已实现 | project_runtime/research/router.py | tests/test_gap_resolution.py（test_zero_skill_no_auto_method_research 等） | DONE（路由侧；执行体后续） |
 
 | SYS-034 | Plugin Package 安装、启停、健康与 Manifest 校验 | Plugin Manager | WP-032 | /api/plugins 六端点（04 规范）；JSON-RPC 2.0 over stdio | project_runtime/plugin/（manifest/registry/manager/rpc） | tests/test_plugin_manager.py（11 用例，含真实进程崩溃隔离） | DONE |
 | SYS-035 | Capability Extension / Provider 统一注册调用 | Capability Extension Framework | WP-033 | D16 Provider Contract（register/invoke/health）+ point→CapabilityType 映射 | project_runtime/plugin/capability.py + bridge.py | tests/test_capability_extension.py（8 用例，真实插件进程经门面） | DONE |
@@ -66,19 +66,19 @@ CHANGE_REQUIRED
 
 | SYS-041 | 自动化程度与 Worker 并行度解耦 | Resource Governance | WP-036/WP-008 | Governor 与 Automation Mode 正交（档位只调并发，不碰 FULL_AUTO/MANUAL——结构性断言）；D15 max_workers 调用面兼容 | project_runtime/resource_governor/ | tests/test_resource_profiles.py（12 用例） | DONE |
 | SYS-042 | 8GB LOW Profile 支持核心系统和单 Worker 自动执行 | Low Resource Runtime | WP-036/WP-019 | ADR-026: auto_profile ≤8GB→LOW（concurrency 1/browser 1/heavy 独占）；FULL_AUTO+LOW 无需人工确认 | project_runtime/resource_governor/profiles.py | tests/test_resource_profiles.py（12 用例） | DONE |
-| SYS-043 | Worker / Plugin 支持按需启动与资源回收 | Process Lifecycle | WP-036/WP-032/WP-009 | TODO | TODO | TODO | TODO |
-| SYS-044 | Planner 不因机器资源修改 Task Graph | Planning Boundary | WP-007/WP-036 | TODO | TODO | TODO | TODO |
+| SYS-043 | Worker / Plugin 支持按需启动与资源回收 | Process Lifecycle | WP-036/WP-032/WP-009 | heavy 独占 + idle 自愈释放（WP-036）；插件进程生命周期（WP-032 stdio RPC start/stop） | project_runtime/resource_governor/ + plugin/ | tests/test_resource_profiles.py + test_plugin_manager.py | DONE |
+| SYS-044 | Planner 不因机器资源修改 Task Graph | Planning Boundary | WP-007/WP-036 | Governor 结构性断言无 TaskDependency/FSM 写路径；资源不足只 DEFER 不 FAIL | project_runtime/resource_governor/governor.py | tests/test_resource_profiles.py（结构性用例） | DONE |
 
 
-| SYS-045 | 优先识别用户 Project Method Assets，而非默认 Research-first | Method Intelligence | WP-037 | TODO | TODO | TODO | TODO |
-| SYS-046 | 用户方法资产必须经过 Procedure Normalization 后再用于规划 | Procedure Model | WP-037 | TODO | TODO | TODO | TODO |
-| SYS-047 | Method Readiness 与 Execution Capability Readiness 分离 | Readiness | WP-038/WP-027 | TODO | TODO | TODO | TODO |
-| SYS-048 | PRIVATE/EXPLICITNESS/DOMAIN/TECHNICAL/PROCESS Gap 分类与路由 | Gap Resolution | WP-038/WP-029 | TODO | TODO | TODO | TODO |
-| SYS-049 | Research 仅针对未解决 Gap，不能覆盖用户 Mandatory 流程 | Research-on-Gap | WP-029 | TODO | TODO | TODO | TODO |
-| SYS-050 | Playbook 节点必须记录 Provenance 与 Authority | Playbook | WP-030 | TODO | TODO | TODO | TODO |
-| SYS-051 | Method Intelligence 流程可演进但 Stable Kernel Contract 不变 | Architecture Evolution | WP-035/WP-037/WP-038 | TODO | TODO | TODO | TODO |
+| SYS-045 | 优先识别用户 Project Method Assets，而非默认 Research-first | Method Intelligence | WP-037 | Discovery 双路径（WP-026 hints 先验 + 内容复核）；method.assets 三扩展点 | project_runtime/procedure/discovery.py | tests/test_method_discovery.py（9 用例） | DONE |
+| SYS-046 | 用户方法资产必须经过 Procedure Normalization 后再用于规划 | Procedure Model | WP-037 | Normalizer 既有链（source_ref+provenance 双层追溯；UNKNOWN 保持；CONFLICTED） | project_runtime/procedure/normalizer.py | tests/test_method_discovery.py（Gate 5 条） | DONE |
+| SYS-047 | Method Readiness 与 Execution Capability Readiness 分离 | Readiness | WP-038/WP-027 | 双轴同快照（method_readiness / execution_capability_readiness 独立评估） | project_runtime/readiness/（assessor + execution_capability） | tests/test_readiness_dual_axis.py（11 用例） | DONE |
+| SYS-048 | PRIVATE/EXPLICITNESS/DOMAIN/TECHNICAL/PROCESS Gap 分类与路由 | Gap Resolution | WP-038/WP-029 | WP-038 六类型分类（PRIVATE/TECHNICAL 深化）→ WP-029 六路由表 | project_runtime/readiness/assessor.py + research/router.py | test_readiness_dual_axis + test_gap_resolution | DONE |
+| SYS-049 | Research 仅针对未解决 Gap，不能覆盖用户 Mandatory 流程 | Research-on-Gap | WP-029 | 五查前置 + MANDATORY 覆盖路由改澄清 + PRIVATE 永不联网 | project_runtime/research/router.py | tests/test_gap_resolution.py（MANDATORY/PRIVATE 双红线用例） | DONE |
+| SYS-050 | Playbook 节点必须记录 Provenance 与 Authority | Playbook | WP-030 | 每 workstream source 三元组（asset_id/procedure_node_id/authority）+ provenance_map | project_runtime/playbook/builder.py | tests/test_playbook_fusion.py（test_workstream_why_and_source） | DONE |
+| SYS-051 | Method Intelligence 流程可演进但 Stable Kernel Contract 不变 | Architecture Evolution | WP-035/WP-037/WP-038 | method 六扩展点登记（STABLE_POINTS 21→27）；策略可换（extractor/analyzer/evaluator Protocol 化）内核零改动 | project_runtime/extension/runtime/executor.py | test_method_discovery + test_readiness_dual_axis（扩展点用例） | DONE |
 
-| SYS-052 | Project / Task 状态必须使用显式 FSM；非法转移被确定性拒绝；EXECUTION_DONE 不等于 ACCEPTED；HARD Dependency 仅 ACCEPTED 解锁 | Stable Kernel State Machine | WP-002/WP-005/WP-014 | TaskTransitionCommand / ProjectTransitionCommand / TASK_STATUS_CHANGED / PROJECT_STATUS_CHANGED | TODO | 40-testing/D03-状态机测试矩阵.md | TODO |
+| SYS-052 | Project / Task 状态必须使用显式 FSM；非法转移被确定性拒绝；EXECUTION_DONE 不等于 ACCEPTED；HARD Dependency 仅 ACCEPTED 解锁 | Stable Kernel State Machine | WP-002/WP-005/WP-014 | TaskTransitionCommand / ProjectTransitionCommand / TASK_STATUS_CHANGED / PROJECT_STATUS_CHANGED | project_runtime/project_state/fsm.py（actor 防护 EXECUTION_DONE→ACCEPTED 仅 GATE） | 40-testing/D03-状态机测试矩阵.md + tests/test_fsm.py | DONE |
 
 ## 更新规则
 
@@ -137,15 +137,15 @@ DOING
 
 | ID | 需求/能力 | 架构模块 | 开发 WP | 协议 | 测试 | 状态 |
 |---|---|---|---|---|---|---|
-| SYS-053 | Skill 内容作为外部资产，Runtime 不预装固定领域 Skill | Skill Boundary | WP-027/WP-039 | ADR-037 | D17.5 | TODO |
-| SYS-054 | Skill 分 PROJECT_METHOD / TASK_EXECUTION / CAPABILITY | Skill Model | WP-027/WP-039 | ADR-034 | D17.5 | TODO |
-| SYS-055 | 支持外部 Skill 目录/ZIP 安全导入和校验 | Importer/Validator | WP-039 | 19-Skill包导入与执行契约 | D17.5 | TODO |
-| SYS-056 | Registry 支持 ID/Version/Status/Hash | Skill Registry | WP-027/WP-039 | SkillDefinition | D17.5 | TODO |
-| SYS-057 | Project Skill Binding 可固定版本 | Skill Binding | WP-027/WP-039 | SkillBinding | D17.5 | TODO |
-| SYS-058 | Resolver Rule-first，LLM 仅等价候选 tie-break | Skill Resolver | WP-039 | ADR-035 | D17.5 | TODO |
-| SYS-059 | Planner 只声明 SkillRequirement，不直接加载 Skill | Planner Boundary | WP-007 | SkillRequirement | D17.5 | TODO |
-| SYS-060 | Scheduler 在 Dispatch 前完成 Skill/Capability Check | Scheduler | WP-008/WP-039 | SkillResolutionResult | D17.5 | TODO |
-| SYS-061 | Loader 生成最小 SkillExecutionContext | Skill Loader | WP-031/WP-039 | SkillLoader Contract | D17.5 | TODO |
-| SYS-062 | Worker 可追踪实际 Skill ID/Version/Hash | Worker Binding | WP-009/WP-031 | SkillExecutionResult | D17.5 | TODO |
-| SYS-063 | Skill 不拥有 Project/Task State | Kernel Boundary | WP-039 | ADR-036 | D17.5 | TODO |
-| SYS-064 | Skill Result 不能绕过 Gate 直接 ACCEPTED | Gate Boundary | WP-014/WP-039 | SkillExecutionResult | D17.5 | TODO |
+| SYS-053 | Skill 内容作为外部资产，Runtime 不预装固定领域 Skill | Skill Boundary | WP-027/WP-039 | ADR-037 | D17.5（Skill Registry=EMPTY 合法启动，test_a01） | DONE |
+| SYS-054 | Skill 分 PROJECT_METHOD / TASK_EXECUTION / CAPABILITY | Skill Model | WP-027/WP-039 | ADR-034 | D17.5（test_c01 三类型） | DONE |
+| SYS-055 | 支持外部 Skill 目录/ZIP 安全导入和校验 | Importer/Validator | WP-039 | 19-Skill包导入与执行契约 | D17.5（四层防御 + B 组对抗用例 + 篡改双向检测） | DONE |
+| SYS-056 | Registry 支持 ID/Version/Status/Hash | Skill Registry | WP-027/WP-039 | SkillDefinition | D17.5（test_skill_registry 9 用例 + hash 复算） | DONE |
+| SYS-057 | Project Skill Binding 可固定版本 | Skill Binding | WP-027/WP-039 | SkillBinding | D17.5（pinned 默认 + test_d04 无漂移） | DONE |
+| SYS-058 | Resolver Rule-first，LLM 仅等价候选 tie-break | Skill Resolver | WP-039 | ADR-035 | D17.5（四规则链 + DISABLED 全路径过滤） | DONE |
+| SYS-059 | Planner 只声明 SkillRequirement，不直接加载 Skill | Planner Boundary | WP-007 | SkillRequirement | D17.5（结构断言：planning 链无 Loader/Resolver） | DONE |
+| SYS-060 | Scheduler 在 Dispatch 前完成 Skill/Capability Check | Scheduler | WP-008/WP-039 | SkillResolutionResult | D17.5（Runner Phase B-0 dispatch 前解析，CAPABILITY_MISSING 拒绝路径） | DONE |
+| SYS-061 | Loader 生成最小 SkillExecutionContext | Skill Loader | WP-031/WP-039 | SkillLoader Contract | D17.5（按需 references + 全量注入禁止 + 篡改检测） | DONE |
+| SYS-062 | Worker 可追踪实际 Skill ID/Version/Hash | Worker Binding | WP-009/WP-031 | SkillExecutionResult | D17.5（actual_skill 三元组审计 test_e05） | DONE |
+| SYS-063 | Skill 不拥有 Project/Task State | Kernel Boundary | WP-039 | ADR-036 | D17.5（结构性断言 loader/declarative 无状态写路径） | DONE |
+| SYS-064 | Skill Result 不能绕过 Gate 直接 ACCEPTED | Gate Boundary | WP-014/WP-039 | SkillExecutionResult | D17.5（test_e06 + FSM actor 防护双保险） | DONE |
