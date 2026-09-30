@@ -5,6 +5,7 @@ import json
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
+import project_runtime.research.models  # noqa: F401 — register research table
 from project_runtime.gap.classifier import GapClassifier
 from project_runtime.method_asset.importer import MethodAssetImporter
 from project_runtime.playbook.builder import PlaybookBuilder

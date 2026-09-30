@@ -604,6 +604,9 @@ class ProjectPlaybook(Base):
     resolved_gap_refs: Mapped[str | None] = mapped_column(Text, nullable=True)
     unresolved_gaps: Mapped[str | None] = mapped_column(Text, nullable=True)
     workstreams: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # WP-030 V1.12: external optional inputs (references only, never loaded)
+    project_method_skill_refs: Mapped[str | None] = mapped_column(Text, nullable=True)
+    task_skill_preferences: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )

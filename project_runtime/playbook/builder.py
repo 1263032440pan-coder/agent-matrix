@@ -24,8 +24,10 @@ from project_runtime.project_state.models import (
 class PlaybookBuilder:
     """Build a ProjectPlaybook from existing project artifacts."""
 
-    def __init__(self, session: AsyncSession):
+    def __init__(self, session: AsyncSession, *, executor=None):
         self._session = session
+        # WP-030: playbook.build.before/after extension points (advisory)
+        self._executor = executor
 
     async def build(self, project_id: int) -> ProjectPlaybook:
         """Synthesise D05–D08 outputs into a Project Playbook.
@@ -47,9 +49,31 @@ class PlaybookBuilder:
 
         gaps = await self._get_gaps(assessment)
 
+        # WP-030: extension fire (advisory, never blocks)
+        if self._executor is not None:
+            try:
+                await self._executor.fire_hook(
+                    "playbook.build.before",
+                    {"project_id": project_id, "assets": len(assets)},
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+        # WP-030: Research fusion - ANSWERED research enriches workstreams
+        # as RECOMMENDED (research NEVER overrides user method; it only ADDS)
+        research_refs = await self._get_answered_research(project_id)
+
+        # WP-030: Installed PROJECT_METHOD skills - external optional
+        # inputs; recorded as references ONLY, never loaded here
+        skill_refs = await self._get_skill_refs(project_id)
+
         # ── workstreams ──────────────────────────────────────────────────
         nodes = await self._get_nodes(procedure_model)
         workstreams = self._build_workstreams(nodes, assets, gaps)
+        for ws in workstreams:
+            related = [r for r in research_refs if self._research_relates(r, ws)]
+            if related:
+                ws["research_enrichments"] = related
 
         # ── provenance_map ───────────────────────────────────────────────
         provenance_map = self._build_provenance_map(assets, nodes)
@@ -74,17 +98,40 @@ class PlaybookBuilder:
                 else None
             ),
             method_readiness_snapshot=assessment.coverage_summary if assessment else None,
-            execution_readiness_snapshot=None,  # D11
+            execution_readiness_snapshot=(
+                assessment.execution_capability_readiness
+                if assessment and assessment.execution_capability_readiness
+                else None
+            ),  # WP-038 dual-axis snapshot wired (D11 placeholder closed)
             provenance_map=json.dumps(provenance_map),
             gap_refs=json.dumps(gap_refs),
-            resolved_gap_refs=json.dumps([]),
+            resolved_gap_refs=json.dumps(
+                [
+                    {"gap_id": g.id, "gap_type": g.gap_type.value}
+                    for g in gaps
+                    if g.status != "OPEN"
+                ]
+            ),
             unresolved_gaps=json.dumps(
                 [{"gap_id": g.id, "gap_type": g.gap_type.value} for g in unresolved]
             ),
             workstreams=json.dumps(workstreams),
+            # WP-030 V1.12: external optional inputs - references only
+            project_method_skill_refs=json.dumps(skill_refs) if skill_refs else None,
+            task_skill_preferences=json.dumps([]),  # per-task prefs, post-Demo
         )
         self._session.add(playbook)
         await self._session.flush()
+
+        # WP-030: extension fire after
+        if self._executor is not None:
+            try:
+                await self._executor.fire_hook(
+                    "playbook.build.after",
+                    {"project_id": project_id, "playbook_id": playbook.id},
+                )
+            except Exception:  # noqa: BLE001
+                pass
         return playbook
 
     # ── workstream construction ──────────────────────────────────────────
@@ -134,7 +181,8 @@ class PlaybookBuilder:
 
         return workstreams
 
-    def _determine_source_type(self, asset: MethodAsset | None) -> str:
+    @staticmethod
+    def _determine_source_type(asset: MethodAsset | None) -> str:
         """Determine source type based on asset origin, not authority level.
 
         V0.1: all imported assets are USER_METHOD. Authority is tracked
@@ -163,6 +211,82 @@ class PlaybookBuilder:
             "procedure_nodes": len(nodes),
             "model_inference": "V0.1 KeywordExtractor — LLM extraction not applied",
         }
+
+    # ── WP-030 helpers ─────────────────────────────────────────────────
+
+    async def _get_answered_research(self, project_id: int) -> list[dict]:
+        """ANSWERED research records -> RECOMMENDED enrichment refs.
+
+        Research content is NEVER blended into the user method - it lands
+        in workstream.research_enrichments with authority=RECOMMENDED
+        (question/summary only), for the Planner and humans to inspect.
+        """
+        from project_runtime.research.models import ResearchRecord
+
+        stmt = select(ResearchRecord).where(
+            ResearchRecord.project_id == project_id,
+            ResearchRecord.status == "ANSWERED",
+        )
+        records = (await self._session.execute(stmt)).scalars().all()
+        return [
+            {
+                "research_id": r.id,
+                "kind": r.research_kind,
+                "question": r.question,
+                "summary": r.summary,
+                "authority": "RECOMMENDED",
+                "source": "research",
+            }
+            for r in records
+        ]
+
+    async def _get_skill_refs(self, project_id: int) -> list[dict]:
+        """ENABLED PROJECT_METHOD skill bindings -> reference records.
+
+        Records only (skill_id/version/hash/source) - the playbook NEVER
+        loads skill content (task-skill loading belongs to the execution
+        chain's resolver, not the planning chain).
+        """
+        try:
+            from project_runtime.skills.enums import SkillStatus, SkillType
+            from project_runtime.skills.models import (
+                SkillBinding,
+                SkillDefinition,
+            )
+
+            stmt = (
+                select(SkillDefinition)
+                .join(
+                    SkillBinding,
+                    SkillBinding.skill_id == SkillDefinition.skill_id,
+                )
+                .where(
+                    SkillBinding.project_id == project_id,
+                    SkillDefinition.status == SkillStatus.ENABLED,
+                    SkillDefinition.skill_type == SkillType.PROJECT_METHOD,
+                )
+            )
+            skills = (await self._session.execute(stmt)).scalars().all()
+            return [
+                {
+                    "skill_id": sk.skill_id,
+                    "version": sk.version,
+                    "content_hash": sk.content_hash,
+                    "source": "installed-skill",
+                    "authority": "OPTIONAL",
+                }
+                for sk in skills
+            ]
+        except Exception:  # noqa: BLE001 - skills optional, never blocks
+            return []
+
+    @staticmethod
+    def _research_relates(r: dict, ws: dict) -> bool:
+        """V0.1 relevance: research question mentions the workstream name
+        (or vice versa). LLM relevance matching is post-Demo."""
+        q = (r.get("question") or "").lower()
+        name = (ws.get("name") or "").lower()
+        return bool(name) and name in q
 
     # ── data access helpers ──────────────────────────────────────────────
 
