@@ -1,7 +1,7 @@
 # WP-010 Context Builder
 
-> 状态：TODO  
-> Gate：PASS / FAIL / BLOCKED
+> 状态：DONE（2026-09-29，阶段 5 首站——全项目最后一个大站）  
+> Gate：PASS（依据 tests/test_context_builder.py 12 用例）
 
 ## 任务目标
 
@@ -51,11 +51,11 @@ Task
 
 ## 验收
 
-- [ ] 支持 Token Budget。
-- [ ] P0 不被裁剪。
-- [ ] 内容去重。
-- [ ] 保留 source reference。
-- [ ] 可使用 Project Memory Manager.retrieve()。
+- [x] 支持 Token Budget（budget_tokens 硬约束；超限丢序 P3→P2→P1 非方法段（history→summary→artifact）；truncated + dropped_kinds 可审计——P1 超预算也截断实测）
+- [x] P0 不被裁剪（极小预算 40 token 实测：任务/验收/约束/依赖四段全保；relaxed 预算下 P0 恒等不变）
+- [x] 内容去重（seen_content 集合——同内容跨来源只进一次，专项断言）
+- [x] 保留 source reference（每段 source_ref：task:/procedure_node:/artifact:/summary:/retrieval:/event: 全可溯）
+- [x] 可使用 Project Memory Manager.retrieve()（P2 检索经统一门面——结构性断言禁 FTS5Retriever/Ripgrep/Path 直连）
 
 
 ## Context Extension
@@ -76,3 +76,11 @@ Token Compression
 ```
 
 Middleware 必须返回新 ContextPackage，不得直接修改 Project State。
+
+## 实现说明（2026-09-29）
+
+- `project_runtime/context/`（package: ContextPackage/ContextSection frozen dataclass——middleware 原地改在类型层不可能；builder: ContextBuilder 四优先级构造 + 预算实施 + 去重）
+- 构造链: State Memory → Dependency → Procedure 节点方法上下文（验收/约束/活动）→ Summary → 直接上游 Artifact → Retrieval（非事实标注）→ Execution Evidence → History（limit 截断）
+- extension: context.providers / context.middleware 双点 fire（middleware 归一：非 ContextPackage 返回一律忽略保 fallback）
+- Worker 接线: ExecutionRunner Worker 前构建 ContextPackage → to_json() 注入 WorkPackage.contract（planning→execution 桥——WP-028 复验预告③ 绑定方式落地）
+- 检索结果恒带 [检索参考·非事实] 标注（禁止当事实红线）

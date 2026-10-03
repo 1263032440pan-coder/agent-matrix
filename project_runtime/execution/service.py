@@ -248,6 +248,20 @@ class ExecutionRunner:
         except Exception as e:  # noqa: BLE001 — skill is optional guidance
             logger.debug("skill resolution failed for %s: %s", execution_id, e)
 
+        # WP-010: build the minimal-sufficient context package and bind it
+        # into the WorkPackage contract slot (planning → execution bridge).
+        context_json = None
+        try:
+            from project_runtime.context import ContextBuilder
+
+            async with AsyncSession(engine) as s:
+                builder = ContextBuilder(s, budget_tokens=8000)
+                pkg = await builder.build(project_id, task_id)
+                context_json = pkg.to_json()
+        except Exception:  # noqa: BLE001 — context is best-effort enrichment
+            logger.debug("context build failed for %s", execution_id,
+                         exc_info=True)
+
         worker_session = AsyncSession(engine)
         try:
             artifact_mgr = ArtifactManager(
@@ -260,6 +274,7 @@ class ExecutionRunner:
                     task_name=task_name,
                     skill_context=skill_ctx,
                     # WP-031 binding trace
+                    contract=context_json,
                     skill_requirement=(
                         "OPTIONAL" if skill_ctx is not None else "NONE"
                     ),
