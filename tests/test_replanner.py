@@ -291,7 +291,7 @@ async def test_mandatory_not_tampered(dbengine):
         task = (await s.execute(
             select(Task).where(Task.project_id == pid))).scalars().first()
         task.status = TaskStatus.ACCEPTED  # fixture bypass (FSM for logic)
-        acc_name, acc_id = task.name, task.id
+        acc_id = task.id
         await s.commit()
 
     # 触发重规划（新资产）
@@ -307,7 +307,7 @@ async def test_mandatory_not_tampered(dbengine):
 
     async with AsyncSession(dbengine) as s:
         rp = Replanner(s)
-        outcome = await rp.replan(pid, baseline=baseline)
+        await rp.replan(pid, baseline=baseline)  # side-effect assertions below
         await s.commit()
 
     # ACCEPTED task untouched
