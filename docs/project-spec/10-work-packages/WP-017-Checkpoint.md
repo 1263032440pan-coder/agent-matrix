@@ -1,8 +1,7 @@
 # WP-017 Checkpoint
 
-> 状态：TODO  
-> 开发方式：单 Work Package 独立开发  
-> Gate：PASS / FAIL / BLOCKED
+> 状态：DONE（2026-09-30，阶段 6 第 2 站）  
+> Gate：PASS（依据 tests/test_checkpoint.py 7 用例）
 
 ## 必读全局文档
 
@@ -81,10 +80,16 @@ Worker References
 
 ## 7. 验收条件
 
-- [ ] 可保存 Project/Graph/Frontier/Artifact/Issue/ManualAction / HumanDecision/Delivery
-- [ ] 可恢复
-- [ ] Worker 不存在时项目状态仍可恢复
-- [ ] 关键事件自动创建
+- [x] 可保存 Project/Graph/Frontier/Artifact/Issue/ManualAction / HumanDecision/Delivery（八段快照 JSON 落盘 + content_hash + 元数据行——含 Research 决策段/Gaps Issue 段/ManualAction 段/Delivery 段，全段实测）
+- [x] 可恢复（恢复到**新项目副本** restored- 前缀——Task 状态按快照原样重建、依赖边保留、原项目逐字不动实测）
+- [x] Worker 不存在时项目状态仍可恢复（零 TaskRun/零 Execution 场景实测——快照自包含，worker_references 仅计数参考）
+- [x] 关键事件自动创建（AUTO_GATE_FAIL / AUTO_MILESTONE 双触发实测——advisory best-effort 绝不打断主链）
+
+## 实现说明
+
+- `project_runtime/checkpoint/`（models: CheckpointRecord 元数据行 / manager: 快照八段收集 + JSON 落盘 + 恢复到新副本 + 篡改检测（content_hash 校验）+ schema 版本对齐 + 文件缺失拒绝）
+- 安全恢复语义: 原项目永不覆盖（restored- 副本）；状态重建走 fixture 直建（恢复的是已验证历史状态，不走 FSM 重放）
+- migration f7a3c5e9b2d8
 
 ## 8. Gate
 

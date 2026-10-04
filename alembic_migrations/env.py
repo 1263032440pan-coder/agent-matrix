@@ -26,6 +26,7 @@ if config.config_file_name is not None:
 # add your model's MetaData object here
 # for 'autogenerate' support
 import project_runtime.artifact_template.models  # noqa: E402, F401 — register artifact template tables
+import project_runtime.checkpoint.models  # noqa: E402, F401 — register checkpoint table
 import project_runtime.event.models  # noqa: E402, F401 — register runtime_event table
 import project_runtime.execution.models  # noqa: E402, F401 — register execution table
 import project_runtime.memory_summary.models  # noqa: E402, F401 — register summary table

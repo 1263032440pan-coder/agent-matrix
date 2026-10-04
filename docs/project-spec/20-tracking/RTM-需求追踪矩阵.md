@@ -33,7 +33,7 @@ CHANGE_REQUIRED
 | SYS-014 | 实现 Hard Check、Semantic Review、Acceptance Criteria 和 Task 验收状态迁移 | Gate | WP-014 | GateCore（actor="GATE" 红线 + auto Gate Phase D + 事件同事务直插） | project_runtime/reviewer/gate.py | tests/test_gate.py | DONE（Demo D13/D14） |
 | SYS-015 | 根据 Blocked/Gate Fail/User Change/New Evidence 触发重规划 | Replanner | WP-015 | 四触发源（Gate FAIL/资产指纹/Research ANSWERED/understanding diff）+ baseline 协议 + 主链到幂等 replan | project_runtime/replanner/ | tests/test_replanner.py（7 用例） | DONE（2026-09-30 真交付——批次 2 误标已纠正） |
 | SYS-016 | 实现交付契约、Delivery Item、缺失项检查和 Final Gate 前置能力 | Delivery Contract | WP-016 | DeliveryContractManager（版本化 contract + items + artifact 映射） | project_runtime/delivery_contract/manager.py | tests/test_delivery.py | DONE（Demo D16 批次） |
-| SYS-017 | 实现项目快照、恢复和自动 Checkpoint | Checkpoint | WP-017 | WP-020 已接 Execution Memory（Event Store）；完整 Checkpoint 快照/恢复归 V1+（WP 说明登记） | project_runtime/memory/ | tests/test_project_memory.py | DONE（Memory 接入；快照恢复归 V1+） |
+| SYS-017 | 实现项目快照、恢复和自动 Checkpoint | Checkpoint | WP-017 | 八段快照（JSON+content_hash）+ 恢复到新副本 + Worker 无关 + AUTO_GATE_FAIL/MILESTONE 双触发 + 篡改检测 | project_runtime/checkpoint/ | tests/test_checkpoint.py（7 用例） | DONE（2026-09-30 真交付） |
 | SYS-018 | 实现 Project Overview、Task Graph、Worker、Execution、Automation、Artifact、Delivery 页面 | Desktop UI | WP-018 | Dashboard 重做（SVG 任务图/Skill 面板/LLM 设置/产物预览/Runtime Events） | apps/desktop/src/ | vitest（apps/desktop） | DONE（Demo D18 + UI 重做） |
 | SYS-019 | 完成从已有软件项目导入到最终交付的端到端闭环 | E2E | WP-019 | e2e_demo 单命令脚本 + RH-E2E 真实 API 层用例（202→ACCEPTED 全链） | scripts/e2e_demo.py | tests/test_e2e.py + test_rh_e2e.py | DONE（Demo D18 + RH-E2E） |
 
