@@ -52,6 +52,7 @@ class Scheduler:
         use_llm_worker: bool = False,
         profile: "ResourceProfile | None" = None,
         snapshot_provider=None,
+        executor=None,
     ):
         self._session = session
         if worker is not None:
@@ -67,6 +68,8 @@ class Scheduler:
             session, max_workers, profile=profile,
             snapshot_provider=snapshot_provider,
         )
+        # WP-008: scheduler.before_dispatch extension point
+        self._executor = executor
 
     async def dispatch_once(self, project_id: int) -> list[DispatchDecision]:
         """One scheduling pass over a project's READY tasks."""
@@ -86,6 +89,17 @@ class Scheduler:
             .order_by(Task.id)
         )
         ready_rows = list((await self._session.execute(stmt)).all())
+
+        # WP-008: scheduler.before_dispatch hook (advisory — Core decides)
+        if self._executor is not None:
+            try:
+                await self._executor.fire_hook(
+                    "scheduler.before_dispatch",
+                    {"project_id": project_id,
+                     "ready": [tid for tid, _ in ready_rows]},
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug("before_dispatch hook failed", exc_info=True)
 
         for task_id, task_name_early in ready_rows:
             # WP-036 heavy detection: V0.1 convention — task names carrying

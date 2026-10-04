@@ -1,7 +1,7 @@
 # WP-007 Dynamic Planner
 
-> 状态：TODO  
-> Gate：PASS / FAIL / BLOCKED
+> 状态：DONE（阶段 5 对账批 2026-09-30——D09 交付主体 + 本批补知识缺口信号/research 透传）  
+> Gate：PASS（四 Gate + 增补三条全过：test_planning_sites_reconciliation.py 8 专项 + test_planner 既有）
 
 ## 目标
 
@@ -51,12 +51,12 @@ Candidate Plan
 → Apply
 ```
 
-## 验收
+## 验收（阶段 5 对账批 2026-09-30）
 
-- [ ] 无 Skill 的 Planning Context 可正常规划。
-- [ ] Task 可引用 Playbook / Research。
-- [ ] 不硬编码任何行业阶段。
-- [ ] Planner 需要更多知识时会返回 Research Request。
+- [x] 无 Skill 的 Planning Context 可正常规划（零 skill 全链规划实测）
+- [x] Task 可引用 Playbook / Research（playbook_ref 带 workstream/authority/research_enrichments——ANSWERED 研究透传实测）
+- [x] 不硬编码任何行业阶段（结构性断言：无 waterfall/agile/行业阶段词）
+- [x] Planner 需要更多知识时会返回 Research Request（本批补 pending_requests：UNKNOWN 验收→REQUEST_RESEARCH、未解析依赖→REQUEST_USER_INPUT；结构性断言 Planner 无网络/Research 执行路径——只发请求不自己联网）
 
 ## V1.9 Provenance / Authority 规则
 
@@ -103,6 +103,6 @@ Planner 负责描述需求，不负责：
 
 ### Gate 增补
 
-- [ ] 无 Skill Requirement 的 Task 仍可规划。
-- [ ] `required=false` 可生成无 Skill Task。
-- [ ] Planner 不依赖任何固定 Skill ID。
+- [x] 无 Skill Requirement 的 Task 仍可规划（task.playbook_ref 无 skill_id——Planner 从不绑定）
+- [x] `required=false` 可生成无 Skill Task（Runner Phase B-0 required=False 解析链 + test_no_skill_task_executes 既有）
+- [x] Planner 不依赖任何固定 Skill ID（结构性断言：无 preferred_skill_id 赋值/SkillResolver/SkillLoader）

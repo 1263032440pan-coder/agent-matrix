@@ -57,8 +57,37 @@ class DynamicPlanner:
         # Phase 2: Establish dependencies
         await self._create_dependencies(workstreams, task_map)
 
+        # WP-007: knowledge-gap signals — the Planner NEVER researches on
+        # its own; workstreams whose methods carry UNKNOWN essential fields
+        # emit REQUEST_RESEARCH / REQUEST_USER_INPUT signals for the
+        # Research Manager (WP-029) to consume.
+        self.pending_requests = self._knowledge_gap_requests(workstreams)
+
         # Phase 3: Validate (cycle check implicit via add_dependency)
         return list(task_map.values())
+
+    def _knowledge_gap_requests(self, workstreams: list[dict]) -> list[dict]:
+        """UNKNOWN 方法字段 → 结构化知识请求（非 Planner 自己联网）。"""
+        requests: list[dict] = []
+        for ws in workstreams:
+            req = {
+                "workstream": ws["name"],
+                "request_type": None,
+                "reason": "",
+            }
+            acc = ws.get("acceptance_criteria")
+            if acc is None or acc == "UNKNOWN":
+                req["request_type"] = "REQUEST_RESEARCH"
+                req["reason"] = "acceptance criteria UNKNOWN — method gap"
+                requests.append(req)
+                continue
+            deps = ws.get("dependencies")
+            if deps and deps != "UNKNOWN":
+                # unresolved cross-references → user knows, runtime doesn't
+                req["request_type"] = "REQUEST_USER_INPUT"
+                req["reason"] = f"dependency reference unresolved: {deps[:80]}"
+                requests.append(req)
+        return requests
 
     async def _get_or_create_task(self, project_id: int, ws: dict) -> Task:
         from sqlalchemy import select
@@ -91,6 +120,8 @@ class DynamicPlanner:
                 "authority": authority,
                 "source_type": (ws.get("source") or {}).get("type", "UNKNOWN"),
                 "acceptance_criteria": ws.get("acceptance_criteria"),
+                # WP-007: Task 可引用 Playbook / Research（有则带上）
+                "research_enrichments": ws.get("research_enrichments") or [],
             }
         )
 

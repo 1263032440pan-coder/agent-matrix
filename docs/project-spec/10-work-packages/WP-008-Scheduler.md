@@ -1,8 +1,7 @@
 # WP-008 Scheduler
 
-> 状态：TODO  
-> 开发方式：单 Work Package 独立开发  
-> Gate：PASS / FAIL / BLOCKED
+> 状态：DONE（阶段 5 对账批 2026-09-30——D10 交付主体 + D15/WP-036 Governor + 本批补 before_dispatch 扩展点）  
+> Gate：PASS（dispatch 循环/READY 判断/并行控制/Worker Routing + Governor 四决策 + MANUAL→ManualAction + V1.12 Resolution 前置链全过）
 
 ## 必读全局文档
 
@@ -98,6 +97,14 @@ Automation Mode Controller 允许推进
 ### BLOCKED
 
 依赖设计、外部能力、前置 WP 或架构问题导致无法继续。
+
+## 对账说明（阶段 5 对账批 2026-09-30）
+
+- 调度主链: D10 交付（dispatch_once + SKIP_NO_CAPACITY/SKIP_NO_WORKER 决策语义）
+- Resource Governor: D15 Lite → WP-036 完整版（四决策 + profile 档位 + 生产 psutil 接线）
+- Automation Mode: D10 + mode 切换 API（MANUAL→ManualAction 幂等）
+- V1.12 Resolution 前置: ExecutionRunner Phase B-0（READY→Skill Resolution→Capability Check→Worker Routing→Governor→Dispatch）；SKILL_NOT_FOUND 不 Dispatch 成 Gap、不标 FAILED
+- 本批补: scheduler.before_dispatch 扩展点 fire（V1.9 清单 scheduler 侧点全消费）
 
 ## 9. 完成后 RTM 更新
 

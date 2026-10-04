@@ -1,8 +1,7 @@
 # WP-009 Worker Adapter
 
-> 状态：TODO  
-> 开发方式：单 Work Package 独立开发  
-> Gate：PASS / FAIL / BLOCKED
+> 状态：DONE（阶段 5 对账批 2026-09-30——Mock/LLM Worker 交付；goose/ACP 外部 Runtime 属 V1+）  
+> Gate：PASS（Demo 范围：统一 Adapter ABC + 双实现 + 生命周期 + 事件流 + TaskRun 审计）
 
 ## 必读全局文档
 
@@ -86,13 +85,13 @@ ACP Adapter
 测试结果
 ```
 
-## 7. 验收条件
+## 7. 验收条件（阶段 5 对账 2026-09-30）
 
-- [ ] 统一 Adapter 接口可用
-- [ ] 可创建 goose Worker Session
-- [ ] 可下发 Work Package
-- [ ] 可取消/恢复
-- [ ] 可接收实时事件
+- [x] 统一 Adapter 接口可用（WorkerAdapter ABC：assign/cancel/health；spec 五能力映射——createWorker/initialize=构造、assignWorkPackage/sendContext=assign（context 走 contract 槽 WP-010）、resumeTask=retry 链）
+- [ ] 可创建 goose Worker Session——**V1+ 范围**（外部 Worker Runtime；RTM SYS-009 已如实标注，Demo 范围 LLM Worker）
+- [x] 可下发 Work Package（WorkPackage 数据类 + Runner 装配 + contract/skill_context/skill_requirement 全槽）
+- [x] 可取消/恢复（cancel 并发安全 + FAILED→READY retry 端点）
+- [x] 可接收实时事件（WORKER_STARTED/COMPLETED 事件链 + SSE 流 + TaskRun 每执行必建）
 
 ## 8. Gate
 
