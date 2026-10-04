@@ -19,6 +19,7 @@ Extension: context.providers（构建后补充）/ context.middleware（最终
 
 from __future__ import annotations
 
+import json
 import logging
 
 from sqlalchemy import select
@@ -53,12 +54,22 @@ class ContextBuilder:
         retrieval_limit: int = 3,
         history_limit: int = 5,
         executor=None,
+        memory_manager: ProjectMemoryManager | None = None,
     ):
         self._session = session
         self._budget = budget_tokens
         self._retrieval_limit = retrieval_limit
         self._history_limit = history_limit
         self._executor = executor
+        self._injected_mgr = memory_manager
+
+    @property
+    def _memory_manager(self) -> ProjectMemoryManager:
+        """统一门面：注入优先（测试可 Mock），否则按 session engine 自建
+        （Manager 自带调用级独立短 session——不受本 session 生命周期影响）。"""
+        if self._injected_mgr is not None:
+            return self._injected_mgr
+        return ProjectMemoryManager(engine=self._session.bind)
 
     async def build(self, project_id: int, task_id: int) -> ContextPackage:
         """为单个 Task 构建 Context Package（最小充分，非全量）。"""
@@ -125,8 +136,29 @@ class ContextBuilder:
                 f"上游依赖（须 ACCEPTED 才解锁）：{'；'.join(dep_names)}",
                 f"task:{task_id}:deps")
 
+        # ── P1: understanding 快照（项目背景——goal/facts/hypotheses）──
+        und = await self._latest_understanding(project_id)
+        if und is not None:
+            head = []
+            if und.get("domain_hypothesis") and und["domain_hypothesis"] != "UNKNOWN":
+                head.append(f"领域：{und['domain_hypothesis']}")
+            if und.get("project_type_hypothesis") and und["project_type_hypothesis"] != "UNKNOWN":
+                head.append(f"类型：{und['project_type_hypothesis']}")
+            if und.get("goal"):
+                head.append(f"项目目标：{und['goal'][:200]}")
+            for fact in (und.get("known_facts") or [])[:5]:
+                if fact and fact != "UNKNOWN":
+                    head.append(f"已知事实：{fact[:120]}")
+            for hyp in (und.get("assumptions") or [])[:3]:
+                if hyp and hyp != "UNKNOWN":
+                    head.append(f"假设（未验证）：{hyp[:120]}")
+            if head:
+                add(P1, "understanding",
+                    "项目背景：\n" + "\n".join(head),
+                    f"understanding:{und['id']}")
+
         # ── P1: 摘要 + 直接上游产物 + 决策 ──
-        mgr = ProjectMemoryManager(engine=self._session.bind)
+        mgr = self._memory_manager
 
         summaries = await mgr.get_summary_memory(project_id)
         for smp in summaries[:3]:
@@ -242,6 +274,37 @@ class ContextBuilder:
         )
 
     # ── helpers ─────────────────────────────────────────────────────
+
+    async def _latest_understanding(self, project_id: int) -> dict | None:
+        """最新 ProjectUnderstanding 快照 → 背景字段视图（UNKNOWN 全跳过）。"""
+        from project_runtime.understanding.models import ProjectUnderstanding
+
+        stmt = (
+            select(ProjectUnderstanding)
+            .where(ProjectUnderstanding.project_id == project_id)
+            .order_by(ProjectUnderstanding.id.desc())
+            .limit(1)
+        )
+        row = (await self._session.execute(stmt)).scalar_one_or_none()
+        if row is None:
+            return None
+
+        def _load(v: str | None) -> list:
+            if not v:
+                return []
+            try:
+                return json.loads(v)
+            except ValueError:
+                return []
+
+        return {
+            "id": row.id,
+            "domain_hypothesis": row.domain_hypothesis,
+            "project_type_hypothesis": row.project_type_hypothesis,
+            "goal": row.goal,
+            "known_facts": _load(row.known_facts_json),
+            "assumptions": _load(row.assumptions_json),
+        }
 
     async def _procedure_node_of(self, task):
         """Task 名 → 最新 ProcedureModel 里的同名节点（V0.1 名称匹配）。"""

@@ -1,6 +1,6 @@
 # WP-010 Context Builder
 
-> 状态：DONE（2026-09-29，阶段 5 首站——全项目最后一个大站）  
+> 状态：DONE（2026-09-29 交付，2026-09-30 返修复认——P1 understanding 消费 + P2 render 序/注入化）  
 > Gate：PASS（依据 tests/test_context_builder.py 12 用例）
 
 ## 任务目标
@@ -83,4 +83,6 @@ Middleware 必须返回新 ContextPackage，不得直接修改 Project State。
 - 构造链: State Memory → Dependency → Procedure 节点方法上下文（验收/约束/活动）→ Summary → 直接上游 Artifact → Retrieval（非事实标注）→ Execution Evidence → History（limit 截断）
 - extension: context.providers / context.middleware 双点 fire（middleware 归一：非 ContextPackage 返回一律忽略保 fallback）
 - Worker 接线: ExecutionRunner Worker 前构建 ContextPackage → to_json() 注入 WorkPackage.contract（planning→execution 桥——WP-028 复验预告③ 绑定方式落地）
+- 返修 P1: understanding 快照进 P1（项目背景段——goal/facts/hypotheses，UNKNOWN 跳过，source_ref=understanding:{id}）——WP-030 收口预告④ 的消费闭环
+- 返修 P2-1: render P0 内部构造序（当前任务恒为首行）；P2-2: memory_manager 构造注入化（测试可 Mock）
 - 检索结果恒带 [检索参考·非事实] 标注（禁止当事实红线）

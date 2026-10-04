@@ -285,3 +285,91 @@ def test_context_points_in_stable_points():
 
     assert "context.providers" in STABLE_POINTS
     assert "context.middleware" in STABLE_POINTS
+
+
+# ── 返修单 P1: understanding 快照进上下文 ────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_understanding_snapshot_consumed(dbengine):
+    """有快照项目：sections 含项目背景段（goal/facts 至少可见，
+    source_ref=understanding:{id}）。"""
+    pid, t2_id, _ = await _seed_project(dbengine)
+    from project_runtime.understanding import UnderstandingService
+
+    async with AsyncSession(dbengine) as s:
+        await UnderstandingService(s).analyze_project(pid)
+        await s.commit()
+
+    async with AsyncSession(dbengine) as s:
+        pkg = await ContextBuilder(s, budget_tokens=8000).build(pid, t2_id)
+
+    und_secs = [x for x in pkg.sections if x.kind == "understanding"]
+    assert und_secs, "understanding section missing"
+    body = und_secs[0].content
+    assert "项目目标" in body
+    assert und_secs[0].source_ref.startswith("understanding:")
+    # UNKNOWN 字段跳过——不出现 UNKNOWN 字面量
+    assert "UNKNOWN" not in body
+
+
+@pytest.mark.asyncio
+async def test_no_snapshot_no_section_no_error(dbengine):
+    """无快照项目：构建正常，不含 understanding 段，不报错。"""
+    pid, t2_id, _ = await _seed_project(dbengine)  # no understanding run
+    async with AsyncSession(dbengine) as s:
+        pkg = await ContextBuilder(s).build(pid, t2_id)
+    assert not [x for x in pkg.sections if x.kind == "understanding"]
+
+
+# ── 返修单 P2-1: render 首行 = 当前任务 ──────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_render_first_line_is_current_task(dbengine):
+    pid, t2_id, _ = await _seed_project(dbengine)
+    async with AsyncSession(dbengine) as s:
+        pkg = await ContextBuilder(s).build(pid, t2_id)
+    first_line = pkg.render().splitlines()[0]
+    assert first_line.startswith("当前任务："), (
+        f"render must open with current task, got: {first_line!r}"
+    )
+
+
+# ── 返修单 P2-2: memory_manager 注入化 ───────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_memory_manager_injectable(dbengine):
+    """Builder 接受注入的 Manager（测试可 Mock——依赖抽象不依赖构造细节）。"""
+    pid, t2_id, _ = await _seed_project(dbengine)
+
+    class MockMgr:
+        def __init__(self):
+            self.calls = []
+
+        async def get_summary_memory(self, project_id):
+            self.calls.append("summary")
+            return []
+
+        async def get_artifact_memory(self, project_id):
+            self.calls.append("artifact")
+            return []
+
+        async def retrieve(self, query, *, project_id=None, limit=10):
+            self.calls.append("retrieve")
+            return {"results": [], "total": 0, "providers": [], "errors": []}
+
+        async def get_execution_memory(self, project_id, *, limit=50):
+            self.calls.append("execution")
+            return {"events": [], "runs": []}
+
+        async def get_state_memory(self, project_id):
+            self.calls.append("state")
+            return {"project": {"id": project_id}, "tasks": []}
+
+    mock = MockMgr()
+    async with AsyncSession(dbengine) as s:
+        pkg = await ContextBuilder(s, memory_manager=mock).build(pid, t2_id)
+    assert pkg is not None
+    assert "retrieve" in mock.calls  # 统一门面被使用

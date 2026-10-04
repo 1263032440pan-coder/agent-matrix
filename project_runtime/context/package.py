@@ -66,10 +66,18 @@ class ContextPackage:
             ensure_ascii=False,
         )
 
+    # P0 内部构造序：当前任务最先，验收/约束随后，依赖收尾
+    _KIND_ORDER = {"task": 0, "acceptance": 1, "constraint": 2,
+                   "dependency": 3}
+
     def render(self) -> str:
-        """按优先级渲染为给 Worker 的上下文正文。"""
+        """按优先级渲染为给 Worker 的上下文正文（P0 内部按构造序——
+        「当前任务」恒为第一行）。"""
         lines: list[str] = []
-        for s in sorted(self.sections, key=lambda x: (x.priority, x.kind)):
+        for s in sorted(
+            self.sections,
+            key=lambda x: (x.priority, self._KIND_ORDER.get(x.kind, 99), x.kind),
+        ):
             lines.append(s.content)
         return "\n\n".join(lines)
 
