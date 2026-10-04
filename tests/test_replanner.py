@@ -229,15 +229,6 @@ async def test_replan_triggers_new_research(dbengine):
         created = await rp._route_new_gaps(pid)
         await s.commit()
 
-    # DOMAIN gap 五查 miss（thin 场景不适用——rich 节点会命中；此处节点
-    # 字段丰富，改用五查语义验证: procedure_model 命中则不建——两分支
-    # 都合法，断言路由链执行且结果可审计）
-    from project_runtime.research.models import ResearchRecord
-
-    async with AsyncSession(dbengine) as s:
-        records = (await s.execute(
-            select(ResearchRecord).where(
-                ResearchRecord.project_id == pid))).scalars().all()
     # rich 节点 → 五查命中 → 引用不建新（RESOLVED_LOCALLY）；
     # 或 miss → 建新。两种结果都是正确路由，这里断言无异常 + 幂等。
     assert isinstance(created, list)
