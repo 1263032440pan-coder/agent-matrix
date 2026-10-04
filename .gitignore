@@ -30,3 +30,7 @@ test-assets/
 
 # Test assets (local only, not for git)
 返修单-*.md
+# hooks
+
+# Local git hooks (dev machine config, not shared)
+.githooks/
