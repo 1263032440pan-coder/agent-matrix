@@ -40,3 +40,15 @@ Existing-Method-First → Research-on-Gap
 - `30-decisions/` — 32 个 ADR
 - `40-testing/` — E2E 测试场景
 - `90-reference/` — 变更历史、可选插件/Skill 参考
+## 开发环境钩子
+
+pre-commit 钩子（ruff --fix + final check，F841 拦截）是本地机器配置，不随仓库分发。换机器后执行：
+
+```bash
+mkdir -p .githooks && cat > .githooks/pre-commit <<'EOF'
+#!/bin/sh
+uv run ruff check --fix . || exit 1
+uv run ruff check . || exit 1
+EOF
+chmod +x .githooks/pre-commit && git config core.hooksPath .githooks
+```
