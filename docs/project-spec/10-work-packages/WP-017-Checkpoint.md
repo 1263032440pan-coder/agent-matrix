@@ -88,8 +88,8 @@ Worker References
 ## 实现说明
 
 - `project_runtime/checkpoint/`（models: CheckpointRecord 元数据行 / manager: 快照八段收集 + JSON 落盘 + 恢复到新副本 + 篡改检测（content_hash 校验）+ schema 版本对齐 + 文件缺失拒绝）
-- 安全恢复语义: 原项目永不覆盖（restored- 副本）；状态重建走 fixture 直建（恢复的是已验证历史状态，不走 FSM 重放）
-- migration f7a3c5e9b2d8
+- 安全恢复语义: 原项目永不覆盖（restored- 副本）；状态重建走 fixture 直建（恢复的是已验证历史状态，不走 FSM 重放——正规化登记 WP017-TD01）
+- 接线收尾批（返修单 P2-1/P2-2）: CHECKPOINT_CREATED/CHECKPOINT_RESTORED 事件入审计轨迹（调用方 session 同事务直插，payload 含 trigger/new_project_id）；API 三端点（POST create / POST restore / GET list）实测；migration f7a3c5e9b2d8
 
 ## 8. Gate
 

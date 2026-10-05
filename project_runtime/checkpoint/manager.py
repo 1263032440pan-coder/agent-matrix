@@ -100,6 +100,21 @@ class CheckpointManager:
             "Checkpoint created: project=%d trigger=%s path=%s",
             project_id, trigger, path,
         )
+        # P2-1: checkpoint 关键动作入审计轨迹（调用方 session 同事务直插——
+        # 独立 session 撞 SQLite 单写者锁的 RH-03 教训）
+        from project_runtime.event.models import RuntimeEvent, RuntimeEventType
+
+        self._session.add(RuntimeEvent(
+            event_type=RuntimeEventType.CHECKPOINT_CREATED.value,
+            project_id=project_id,
+            phase="CHECKPOINT",
+            message=f"checkpoint created ({trigger})",
+            actor="RUNTIME",
+            payload=json.dumps({
+                "trigger": trigger, "checkpoint_id": record.id,
+                "path": str(path),
+            }, ensure_ascii=False),
+        ))
         return record
 
     # ── restore ─────────────────────────────────────────────────────
@@ -161,6 +176,20 @@ class CheckpointManager:
             "Checkpoint restored: cp=%d → new project %d (%d tasks)",
             checkpoint_id, new_pid, len(id_map),
         )
+        # P2-1: restore 入审计轨迹
+        from project_runtime.event.models import RuntimeEvent, RuntimeEventType
+
+        self._session.add(RuntimeEvent(
+            event_type=RuntimeEventType.CHECKPOINT_RESTORED.value,
+            project_id=new_pid,
+            phase="CHECKPOINT",
+            message=f"restored from checkpoint {checkpoint_id}",
+            actor="RUNTIME",
+            payload=json.dumps({
+                "checkpoint_id": checkpoint_id, "new_project_id": new_pid,
+                "tasks_restored": len(id_map),
+            }, ensure_ascii=False),
+        ))
         return new_pid
 
     # ── auto triggers (advisory, best-effort) ───────────────────────

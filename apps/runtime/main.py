@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from apps.runtime.api import executions_router, projects_router, settings_router
 from apps.runtime.api.artifacts import router as artifacts_router
+from apps.runtime.api.checkpoints import router as checkpoints_router
 from apps.runtime.api.pipelines import router as pipelines_router
 from apps.runtime.api.plugins import router as plugins_router
 from apps.runtime.api.skills import router as skills_router
@@ -87,6 +88,7 @@ app.add_middleware(
 app.include_router(projects_router)
 app.include_router(executions_router)
 app.include_router(skills_router)
+app.include_router(checkpoints_router)
 app.include_router(plugins_router)
 app.include_router(pipelines_router)
 app.include_router(artifacts_router)

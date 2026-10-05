@@ -272,3 +272,93 @@ async def test_decisions_and_issues_captured(dbengine, tmp_path):
         body = json.loads(Path(rpath).read_text(encoding="utf-8"))
         assert len(body["decisions"]) == 1
         assert body["decisions"][0]["summary"] == "要点"
+
+
+# ── 接线收尾批: 事件埋点（P2-1）+ API 三端点（P2-2）──────────────────
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_events_emitted(dbengine, tmp_path):
+    """P2-1: CHECKPOINT_CREATED / CHECKPOINT_RESTORED 真实落库，
+    payload 含 trigger / new_project_id。"""
+    from project_runtime.event.models import RuntimeEvent, RuntimeEventType
+
+    pid, _, _ = await _seed(dbengine, tmp_path)
+    async with AsyncSession(dbengine) as s:
+        mgr = CheckpointManager(s, root=tmp_path / "cps")
+        record = await mgr.create(pid)
+        cp_id = record.id
+        await s.commit()
+
+    async with AsyncSession(dbengine) as s:
+        mgr = CheckpointManager(s, root=tmp_path / "cps")
+        new_pid = await mgr.restore(cp_id)
+        await s.commit()
+
+    async with AsyncSession(dbengine) as s:
+        events = (await s.execute(
+            select(RuntimeEvent).where(
+                RuntimeEvent.event_type.in_([
+                    RuntimeEventType.CHECKPOINT_CREATED.value,
+                    RuntimeEventType.CHECKPOINT_RESTORED.value,
+                ])))).scalars().all()
+        by_type = {e.event_type: e for e in events}
+        assert RuntimeEventType.CHECKPOINT_CREATED.value in by_type
+        assert RuntimeEventType.CHECKPOINT_RESTORED.value in by_type
+
+        created = by_type[RuntimeEventType.CHECKPOINT_CREATED.value]
+        payload = json.loads(created.payload)
+        assert payload["trigger"] == "MANUAL"
+        assert payload["checkpoint_id"] == cp_id
+
+        restored = by_type[RuntimeEventType.CHECKPOINT_RESTORED.value]
+        rpayload = json.loads(restored.payload)
+        assert rpayload["new_project_id"] == new_pid
+        assert rpayload["tasks_restored"] == 2
+
+
+@pytest.mark.asyncio
+async def test_checkpoint_api_endpoints(dbengine, tmp_path, monkeypatch):
+    """P2-2: create/restore/list 三端点（隔离库实测）。"""
+    import apps.runtime.api.checkpoints as cp_mod
+
+    monkeypatch.setattr(cp_mod, "engine", dbengine)
+    monkeypatch.setattr(
+        "project_runtime.checkpoint.manager.CHECKPOINT_ROOT",
+        tmp_path / "cps",
+    )
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    from apps.runtime.api.checkpoints import router
+
+    app = FastAPI()
+    app.include_router(router)
+
+    pid, _, _ = await _seed(dbengine, tmp_path)
+
+    async with AsyncClient(transport=ASGITransport(app=app),
+                           base_url="http://test") as client:
+        # create
+        resp = await client.post(f"/api/projects/{pid}/checkpoints")
+        assert resp.status_code == 201, resp.text
+        cp_id = resp.json()["checkpoint_id"]
+        assert resp.json()["trigger"] == "MANUAL"
+
+        # list
+        resp2 = await client.get(f"/api/projects/{pid}/checkpoints")
+        assert resp2.status_code == 200
+        assert len(resp2.json()) == 1
+        assert resp2.json()[0]["id"] == cp_id
+
+        # restore
+        resp3 = await client.post(f"/api/checkpoints/{cp_id}/restore")
+        assert resp3.status_code == 201, resp3.text
+        new_pid = resp3.json()["restored_project_id"]
+        assert new_pid != pid
+
+        # 404s
+        assert (await client.post(
+            "/api/projects/999/checkpoints")).status_code == 404
+        assert (await client.post(
+            "/api/checkpoints/999/restore")).status_code == 404
