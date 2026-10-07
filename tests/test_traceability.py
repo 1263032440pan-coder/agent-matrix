@@ -311,3 +311,59 @@ async def test_rebuild_idempotent(dbengine):
         await s.commit()
     assert s1["nodes"] == s2["nodes"]
     assert s1["edges"] == s2["edges"]
+
+
+# ── 返修 P2: DELIVERY 跨项目隔离 ────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_delivery_isolated_between_projects(dbengine):
+    """B 项目的 DeliveryItem 不得出现在 A 项目的图。"""
+
+    # A 项目（含可匹配 delivery）
+    pid_a, _, _ = await _seed(
+        dbengine, with_req=True, with_delivery=True,
+    )
+    # B 项目：同名 delivery item（名字高撞车——若泄漏必现形）
+    async with AsyncSession(dbengine) as s:
+        p = Project(name="tr-b", goal="B",
+                    automation_mode=AutomationMode.FULL_AUTO)
+        s.add(p)
+        await s.flush()
+        pid_b = p.id
+        t = Task(project_id=pid_b, name="B任务", status=TaskStatus.ACCEPTED)
+        s.add(t)
+        await s.flush()
+        contract = DeliveryContract(project_id=pid_b, version=1, items=json.dumps(["x"]))
+        s.add(contract)
+        await s.flush()
+        s.add(DeliveryItem(
+            contract_id=contract.id, requirement_ref="搜索功能交付物",
+            status=DeliveryItemStatus.SATISFIED,
+        ))
+        await s.commit()
+
+    async with AsyncSession(dbengine) as s:
+        g = TraceabilityGraph(s)
+        await g.rebuild_scope(pid_a)
+        await s.commit()
+
+        from project_runtime.traceability.models import TraceNode
+
+        a_deliveries = (await s.execute(
+            select(TraceNode).where(
+                TraceNode.project_id == pid_a,
+                TraceNode.kind == "DELIVERY")
+        )).scalars().all()
+        # A 项目恰好 1 个 DELIVERY 节点（自己的），B 的不在
+        assert len(a_deliveries) == 1
+
+        # 反向: B 项目 rebuild 也不含 A 的 delivery ref
+        await g.rebuild_scope(pid_b)
+        await s.commit()
+        b_deliveries = (await s.execute(
+            select(TraceNode).where(
+                TraceNode.project_id == pid_b,
+                TraceNode.kind == "DELIVERY")
+        )).scalars().all()
+        assert len(b_deliveries) == 1

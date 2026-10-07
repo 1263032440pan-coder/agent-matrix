@@ -384,12 +384,20 @@ class TraceabilityGraph:
                     break
 
         # DELIVERY ← DeliveryItem；artifact → delivery 名称匹配
+        # P2 修复（返修单）: join contract 过滤 project——多项目库防跨项目泄漏
         from project_runtime.project_state.enums import DeliveryItemStatus
+        from project_runtime.project_state.models import DeliveryContract
 
         ditems = (
             (
                 await self._session.execute(
-                    select(DeliveryItem).where(
+                    select(DeliveryItem)
+                    .join(
+                        DeliveryContract,
+                        DeliveryItem.contract_id == DeliveryContract.id,
+                    )
+                    .where(
+                        DeliveryContract.project_id == project_id,
                         DeliveryItem.status != DeliveryItemStatus.PENDING,
                         DeliveryItem.requirement_ref.isnot(None),
                     )
