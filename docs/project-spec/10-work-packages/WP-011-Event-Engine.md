@@ -1,6 +1,6 @@
 # WP-011 Event Engine
 
-> 状态：TODO  
+> 状态：DONE（阶段 6 对账批 2026-10-04——RH-03 最小实现 + checkpoint 双事件增量；WebSocket 推送归 V1+）  
 > 开发方式：单 Work Package 独立开发  
 > Gate：PASS / FAIL / BLOCKED
 
@@ -130,3 +130,9 @@ Observer 不允许：
 ```
 
 Plugin Observer 失败默认 fail_open，并生成 EXTENSION_INVOCATION_FAILED。
+
+---
+
+## 对账说明（阶段 6 对账批 2026-10-04）
+
+代码实证: 对应模块 Demo/RH 期交付，测试族全绿（见状态表行）。状态表 TODO→PASS 落账；无新功能增量，纯账实对齐。

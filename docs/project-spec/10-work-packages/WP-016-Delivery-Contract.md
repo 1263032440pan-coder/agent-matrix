@@ -1,6 +1,6 @@
 # WP-016 Delivery Contract
 
-> 状态：TODO  
+> 状态：DONE（阶段 6 对账批 2026-10-04——Demo D16 批次交付 + WP-023 硬门联动）  
 > 开发方式：单 Work Package 独立开发  
 > Gate：PASS / FAIL / BLOCKED
 
@@ -134,3 +134,9 @@ Gate
 共同支持。
 
 Delivery Contract 不允许仅依据 Planner 或 Reviewer 的自然语言结论标记完成。
+
+---
+
+## 对账说明（阶段 6 对账批 2026-10-04）
+
+代码实证: 对应模块 Demo/RH 期交付，测试族全绿（见状态表行）。状态表 TODO→PASS 落账；无新功能增量，纯账实对齐。

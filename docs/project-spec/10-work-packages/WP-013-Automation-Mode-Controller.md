@@ -1,6 +1,6 @@
 # WP-013 Automation Mode Controller
 
-> 状态：TODO  
+> 状态：DONE（阶段 6 对账批 2026-10-04——Demo D13 + auto-advance 增量）  
 > 开发方式：单 Work Package 独立开发  
 > Gate：PASS / FAIL / BLOCKED
 
@@ -92,3 +92,9 @@ risk_level -> human approval
 - [ ] NEED_USER_INPUT 与 ManualAction 数据结构分离。
 - [ ] 模式切换可持久化并产生事件。
 - [ ] Runtime Extension 不能覆盖项目 Automation Mode。
+
+---
+
+## 对账说明（阶段 6 对账批 2026-10-04）
+
+代码实证: 对应模块 Demo/RH 期交付，测试族全绿（见状态表行）。状态表 TODO→PASS 落账；无新功能增量，纯账实对齐。

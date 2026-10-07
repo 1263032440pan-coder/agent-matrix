@@ -1,6 +1,6 @@
 # WP-014 Gate
 
-> 状态：TODO  
+> 状态：DONE（阶段 6 对账批 2026-10-04——Demo D13/D14 交付主体 + RH-E2E 增强）  
 > 开发方式：单 Work Package 独立开发  
 > Gate：PASS / FAIL / BLOCKED
 
@@ -159,3 +159,9 @@ Task ACCEPTED
 任何 Skill 都不能通过输出某个自定义字段绕过 Gate Core。
 
 Gate 仍然按 Task Acceptance Criteria、Artifact、Validator 和 Evidence 做最终判断。
+
+---
+
+## 对账说明（阶段 6 对账批 2026-10-04）
+
+代码实证: 对应模块 Demo/RH 期交付，测试族全绿（见状态表行）。状态表 TODO→PASS 落账；无新功能增量，纯账实对齐。
