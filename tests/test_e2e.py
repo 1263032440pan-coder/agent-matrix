@@ -13,6 +13,17 @@ from pathlib import Path
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
+import project_runtime.artifact_template.models  # noqa: F401 — register artifact template tables
+import project_runtime.checkpoint.models  # noqa: F401 — register checkpoint table
+import project_runtime.event.models  # noqa: F401 — register runtime_event table
+import project_runtime.evidence.models  # noqa: F401 — register evidence table
+import project_runtime.execution.models  # noqa: F401 — register execution table
+import project_runtime.memory_summary.models  # noqa: F401 — register summary table
+import project_runtime.research.models  # noqa: F401 — register research table
+import project_runtime.retrieval.models  # noqa: F401 — register retrieval table
+import project_runtime.skills.models  # noqa: F401 — register skill tables
+import project_runtime.traceability.models  # noqa: F401 — register traceability tables
+import project_runtime.understanding.models  # noqa: F401 — register understanding table
 from project_runtime.artifact.manager import ArtifactManager
 from project_runtime.gap.classifier import GapClassifier
 from project_runtime.method_asset.importer import MethodAssetImporter
