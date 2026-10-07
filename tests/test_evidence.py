@@ -286,3 +286,94 @@ def test_no_llm_in_completion_path():
         assert forbidden not in src, (
             f"completion must not depend on LLM: {forbidden}"
         )
+
+
+# ── 返修 P2: MethodGap 跨项目隔离 ───────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_critical_issue_isolated_between_projects(dbengine):
+    """B 项目的 HIGH OPEN gap 不得影响 A 项目的完成判定。"""
+    from project_runtime.project_state.models import (
+        MethodGap,
+        ProjectReadinessAssessment,
+    )
+
+    pid_a, t_id, item_id = await _seed(dbengine)
+
+    # B 项目: 一个 HIGH OPEN gap（若泄漏必阻断 A 判定）
+    async with AsyncSession(dbengine) as s:
+        p = Project(name="ev-b", goal="B",
+                    automation_mode=AutomationMode.FULL_AUTO)
+        s.add(p)
+        await s.flush()
+        pid_b = p.id
+        tb = Task(project_id=pid_b, name="B任务",
+                  status=TaskStatus.ACCEPTED)
+        s.add(tb)
+        await s.flush()
+        assessment_b = ProjectReadinessAssessment(
+            project_id=pid_b, model_id=1,
+            method_readiness="[]", gaps="{}",
+        )
+        s.add(assessment_b)
+        await s.flush()
+        s.add(MethodGap(
+            assessment_id=assessment_b.id, gap_type="DOMAIN",
+            description="B 项目高危缺口", severity="HIGH", status="OPEN",
+        ))
+        await s.commit()
+
+    # A 项目走完整闭环（补齐七条件）——B 的 HIGH gap 不应出现在 A 判定
+    async with AsyncSession(dbengine) as s:
+        from project_runtime.traceability import TraceabilityGraph
+
+        await TraceabilityGraph(s).rebuild_scope(pid_a)
+        await s.commit()
+
+    async with AsyncSession(dbengine) as s:
+        svc = EvidenceService(s)
+        gate_id = (await s.execute(
+            select(GateResult.id))).scalar_one()
+        await svc.create_evidence(
+            pid_a, EvidenceType.CONTRACT_ITEM_SATISFIED,
+            scope=EvidenceScope.DELIVERY_ITEM,
+            ref=f"delivery_item:{item_id}",
+        )
+        await svc.create_evidence(
+            pid_a, EvidenceType.GATE_PASSED,
+            scope=EvidenceScope.TASK, ref=f"gate:{gate_id}",
+        )
+        await svc.mark_item_satisfied(item_id)
+        await s.commit()
+
+    async with AsyncSession(dbengine) as s:
+        svc = EvidenceService(s)
+        check = await svc.check_project_completion(pid_a)
+        await s.commit()
+
+    # B 的 HIGH gap 未阻断 A（隔离生效——否则 critical_issues_zero=False）
+    assert check.critical_issues_zero is True
+    assert check.complete, f"A should complete, failures={check.failures}"
+
+    # 反向对照: A 自己有 HIGH gap 时确实阻断（验证判定本身没坏）
+    async with AsyncSession(dbengine) as s:
+        assessment_a = ProjectReadinessAssessment(
+            project_id=pid_a, model_id=1,
+            method_readiness="[]", gaps="{}",
+        )
+        s.add(assessment_a)
+        await s.flush()
+        s.add(MethodGap(
+            assessment_id=assessment_a.id, gap_type="DOMAIN",
+            description="A 项目自己的高危缺口", severity="HIGH",
+            status="OPEN",
+        ))
+        await s.commit()
+
+    async with AsyncSession(dbengine) as s:
+        svc = EvidenceService(s)
+        check2 = await svc.check_project_completion(pid_a)
+        await s.commit()
+    assert check2.critical_issues_zero is False
+    assert not check2.complete

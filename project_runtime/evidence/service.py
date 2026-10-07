@@ -227,10 +227,19 @@ class EvidenceService:
             f.append(f"tasks not ACCEPTED: {[t.name[:30] for t in not_accepted]}")
 
         # ⑤ Critical Issue = 0（OPEN 的非低危 gap）
+        # P2 修复（返修单）: join assessment 过滤 project——跨项目防泄漏
+        # （同模式第三连：WP-022 DELIVERY → 本站 MethodGap）
         try:
-            from project_runtime.project_state.models import MethodGap
+            from project_runtime.project_state.models import (
+                MethodGap,
+                ProjectReadinessAssessment,
+            )
 
-            stmt = select(MethodGap).where(
+            stmt = select(MethodGap).join(
+                ProjectReadinessAssessment,
+                MethodGap.assessment_id == ProjectReadinessAssessment.id,
+            ).where(
+                ProjectReadinessAssessment.project_id == project_id,
                 MethodGap.status == "OPEN",
                 MethodGap.severity.in_(("HIGH", "CRITICAL")),
             )
