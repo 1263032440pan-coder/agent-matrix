@@ -35,6 +35,7 @@ import project_runtime.project_state.models  # noqa: E402, F401 — register all
 import project_runtime.research.models  # noqa: E402, F401 — register research table
 import project_runtime.retrieval.models  # noqa: E402, F401 — register retrieval table
 import project_runtime.skills.models  # noqa: E402, F401 — register skill tables
+import project_runtime.traceability.models  # noqa: E402, F401 — register traceability tables
 import project_runtime.understanding.models  # noqa: E402, F401 — register understanding table
 from project_runtime.project_state.base import Base  # noqa: E402
 
