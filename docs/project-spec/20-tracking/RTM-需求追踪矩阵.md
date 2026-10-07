@@ -40,7 +40,7 @@ CHANGE_REQUIRED
 | SYS-020 | 长期项目记忆统一管理 | Project Memory Manager | WP-020 | 五类 Memory 六接口统一入口（WP-020 核心接口清单） | project_runtime/memory/manager.py | tests/test_project_memory.py（4 用例） | DONE |
 | SYS-021 | 分层摘要与上下文压缩 | Hierarchical Summary | WP-021 | STALE 生命周期 + 四层 scope + 来源引用（WP-021 字段清单） | project_runtime/memory_summary/ | tests/test_hierarchical_summary.py（5 用例） | DONE |
 | SYS-022 | 需求到交付全链路追踪 | Traceability Graph | WP-022 | 七类节点（REQUIREMENT→DELIVERY）+ 六关系边 + rebuild_scope 活数据重建 + find_gaps 三查 + coverage 报告 | project_runtime/traceability/ | tests/test_traceability.py（7 用例） | DONE（2026-10-04 真交付） |
-| SYS-023 | 项目完成证据链 | Completion Evidence | WP-023 | GateResult/Artifact hash 基础在——证据链聚合视图未交付 | — | — | TODO（阶段 5+） |
+| SYS-023 | 项目完成证据链 | Completion Evidence | WP-023 | 八类型证据 + 失效复检 + Delivery 硬门 + 七条件结构化完成判定（ADR-010 零 LLM） | project_runtime/evidence/ | tests/test_evidence.py（5 用例） | DONE（2026-10-04 真交付） |
 
 | SYS-024 | 轻量项目全文/代码检索 | Retrieval Memory Foundation | WP-024 | FTS5+BM25+CJK bigram（查询侧词边界）+ ripgrep/Path 双 retriever | project_runtime/retrieval/ | tests/test_retrieval_memory.py（12 用例） | DONE |
 | SYS-025 | Retrieval Provider 通过 Capability Extension 接入 | Retrieval Capability Extension | WP-025 | D16 Provider Contract（retrieval.providers 点） | project_runtime/retrieval/providers.py | tests/test_retrieval_providers.py（7 用例） | DONE |

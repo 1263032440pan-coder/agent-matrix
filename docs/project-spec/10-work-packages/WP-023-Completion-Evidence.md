@@ -1,7 +1,7 @@
 # WP-023 Completion Evidence
 
-> 状态：TODO  
-> Gate：PASS / FAIL / BLOCKED
+> 状态：DONE（2026-10-04，阶段 6 第 4 站——RTM 最后一个 TODO 行）  
+> Gate：PASS（依据 tests/test_evidence.py 5 用例）
 
 ## 必读
 
