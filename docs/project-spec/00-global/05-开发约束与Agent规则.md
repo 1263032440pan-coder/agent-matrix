@@ -144,3 +144,9 @@ Method Asset → Normalize → Readiness → Gap → Resolve
 ```
 
 所有外部补充必须保存 Provenance / Authority。
+
+## 跨项目过滤自查（V1.14，2026-10-04）
+
+**凡跨实体查询必须显式落到 project_id**（实体无 project 直连字段时经关联实体 join 过滤）。新增 select 非本域实体时自查：先查它有没有 project_id 直连字段，没有就找 join 路径，并配双项目隔离专项测试（B 的数据不入 A 的结果 + 反向对照）。
+
+（教训来源：WP-022 DELIVERY / WP-023 MethodGap 两连跨项目泄漏返修。）
