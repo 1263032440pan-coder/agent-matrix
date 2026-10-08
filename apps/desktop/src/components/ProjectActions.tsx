@@ -41,7 +41,11 @@ export function ProjectActions({
   };
 
   const doUpload = async (f: File | null) => {
-    if (!f || projectId === null) return;
+    if (!f) return;
+    if (projectId === null) {
+      setMessage('请先创建项目，再导入方法资料（资料归属于项目）');
+      return;
+    }
     setBusy(true);
     try {
       const r = await uploadMethodAsset(projectId, f);
@@ -156,8 +160,17 @@ export function ProjectActions({
       >
         创建项目
       </button>
-      <label style={{ padding: '6px 14px', border: '1px solid #ccc', borderRadius: 4, cursor: 'pointer' }}>
-        导入方法资料 (.md/.txt)
+      <label
+        style={{
+          padding: '6px 14px',
+          border: `1px solid ${projectId === null ? '#ddd' : '#ccc'}`,
+          borderRadius: 4,
+          cursor: projectId === null ? 'not-allowed' : 'pointer',
+          color: projectId === null ? '#bbb' : undefined,
+        }}
+        title={projectId === null ? '请先创建项目' : undefined}
+      >
+        导入方法资料 (.md/.txt){projectId === null ? '（需先建项目）' : ''}
         <input
           type="file"
           accept=".md,.txt"
