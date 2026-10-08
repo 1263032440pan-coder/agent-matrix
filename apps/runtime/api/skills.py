@@ -72,10 +72,17 @@ async def import_skill_package(file: UploadFile):
                 return result
             except SkillImportError as e:
                 await session.rollback()
+                Path(tmp_path).unlink(missing_ok=True)  # rejected: drop file
                 raise HTTPException(422, f"Skill package rejected: {e}") from e
             except SkillRegistryError as e:
                 await session.rollback()
                 raise HTTPException(409, str(e)) from e
+            except Exception as e:  # noqa: BLE001 — never a raw 500
+                await session.rollback()
+                Path(tmp_path).unlink(missing_ok=True)
+                raise HTTPException(
+                    422, f"Skill 包处理失败: {type(e).__name__}: {e}"
+                ) from e
     finally:
         # Keep the persisted package (data/skills/) — it IS the load source.
         pass

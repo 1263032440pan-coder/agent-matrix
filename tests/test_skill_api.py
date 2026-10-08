@@ -121,3 +121,27 @@ async def test_import_rejects_non_zip(client):
         files={"file": ("notes.md", b"# not a zip", "text/markdown")},
     )
     assert resp.status_code == 400
+
+
+# ── 损坏 zip 导入：不裸 500（UI 实测暴露的 bug）───────────────────────
+
+
+@pytest.mark.asyncio
+async def test_import_corrupted_zip_422_not_500(client, tmp_path):
+    """非 zip 内容改名 .zip 上传 → 422 带明确原因（曾裸 500——
+    BadZipFile 未被 importer 包装）。"""
+    import io
+
+    # 构造损坏 zip（md 内容）
+    fake = tmp_path / "broken.zip"
+    fake.write_text("# 这不是 zip\n", encoding="utf-8")
+
+    with fake.open("rb") as f:
+        resp = await client.post(
+            "/api/skills/import",
+            files={"file": ("broken.zip", f, "application/zip")},
+        )
+    assert resp.status_code == 422, (
+        f"corrupted zip must be 422 with reason, got {resp.status_code}"
+    )
+    assert "ZIP" in resp.json()["detail"]

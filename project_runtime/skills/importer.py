@@ -126,7 +126,13 @@ class SkillPackageImporter:
     ) -> SkillDefinition:
         files: dict[str, bytes] = {}
         total = 0
-        with zipfile.ZipFile(path) as zf:
+        try:
+            zf_ctx = zipfile.ZipFile(path)
+        except (zipfile.BadZipFile, OSError, ValueError) as e:
+            raise SkillImportError(
+                f"不是有效的 ZIP 文件（无法解包）: {e}"
+            ) from e
+        with zf_ctx as zf:
             infos = zf.infolist()
             if len(infos) > MAX_FILES:
                 raise SkillImportError(f"Package exceeds {MAX_FILES} files")
