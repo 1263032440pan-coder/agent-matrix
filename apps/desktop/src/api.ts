@@ -335,3 +335,28 @@ export async function listProjectSummaries(): Promise<ProjectSummary[]> {
   );
   return detailed;
 }
+
+export async function deleteProject(projectId: number): Promise<{
+  project_id: number;
+  name: string;
+  tables: Record<string, number>;
+  disk_removed: string[];
+}> {
+  const res = await fetch(`${API_BASE}/api/projects/${projectId}`, {
+    method: 'DELETE',
+  });
+  if (!res.ok) throw new Error(`删除失败: ${res.status}`);
+  return res.json();
+}
+
+export async function batchDeleteProjects(
+  projectIds: number[],
+): Promise<{ deleted: unknown[] }> {
+  const res = await fetch(`${API_BASE}/api/projects/batch-delete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ project_ids: projectIds }),
+  });
+  if (!res.ok) throw new Error(`批量删除失败: ${res.status}`);
+  return res.json();
+}

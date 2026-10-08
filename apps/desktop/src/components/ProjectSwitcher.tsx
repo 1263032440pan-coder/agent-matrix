@@ -1,5 +1,10 @@
 import { useEffect, useState } from 'react';
-import { listProjectSummaries, type ProjectSummary } from '../api';
+import {
+  batchDeleteProjects,
+  deleteProject,
+  listProjectSummaries,
+  type ProjectSummary,
+} from '../api';
 
 const card: React.CSSProperties = {
   background: '#fff',
@@ -19,6 +24,9 @@ export function ProjectSwitcher({
 }) {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
   const [open, setOpen] = useState(false);
+  const [selected, setSelected] = useState<Set<number>>(new Set());
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
 
   useEffect(() => {
     listProjectSummaries()
@@ -28,6 +36,69 @@ export function ProjectSwitcher({
 
   const current = projects.find((p) => p.id === currentId);
   const sorted = [...projects].sort((a, b) => b.id - a.id);
+
+  const reload = () => {
+    listProjectSummaries()
+      .then(setProjects)
+      .catch(() => undefined);
+  };
+
+  const onDelete = async (id: number, name: string) => {
+    if (!window.confirm(
+      `确定删除项目 #${id}「${name}」吗？
+将级联删除其全部任务、产物、执行记录、事件等所有数据，不可恢复。`,
+    )) {
+      return;
+    }
+    setBusy(true);
+    try {
+      const r = await deleteProject(id);
+      setMessage(
+        `已删除 #${id}「${name}」— ${Object.entries(r.tables)
+          .filter(([t]) => t !== 'project')
+          .map(([t, n]) => `${t}:${n}`)
+          .join(' ')}`,
+      );
+      if (id === currentId) onSelect(-1); // 当前项目被删 → 清空选择
+      reload();
+    } catch (e) {
+      setMessage(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const onBatchDelete = async () => {
+    const ids = [...selected];
+    if (ids.length === 0) return;
+    if (!window.confirm(
+      `确定批量删除 ${ids.length} 个项目吗？
+所选项目的全部数据（任务/产物/执行/事件）将级联删除，不可恢复。`,
+    )) {
+      return;
+    }
+    setBusy(true);
+    try {
+      const r = await batchDeleteProjects(ids);
+      setMessage(`批量删除完成：${r.deleted.length} 个项目`);
+      setSelected(new Set());
+      if (ids.includes(currentId ?? -1)) onSelect(-1);
+      reload();
+    } catch (e) {
+      setMessage(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggle = (id: number) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   return (
     <section data-testid="project-switcher" style={card}>
@@ -50,6 +121,15 @@ export function ProjectSwitcher({
         <button onClick={() => setOpen((v) => !v)}>
           {open ? '收起历史' : `历史项目（${sorted.length}）`}
         </button>
+        {open && selected.size > 0 && (
+          <button
+            onClick={onBatchDelete}
+            disabled={busy}
+            style={{ color: '#f5222d', borderColor: '#f5222d' }}
+          >
+            删除所选（{selected.size}）
+          </button>
+        )}
         {current && (
           <span style={{ color: '#888', fontSize: 13 }}>
             {current.automation_mode} · {current.status}
@@ -57,6 +137,11 @@ export function ProjectSwitcher({
           </span>
         )}
       </div>
+      {message && (
+        <div data-testid="delete-message" style={{ marginTop: 8, fontSize: 13, color: '#52c41a' }}>
+          {message}
+        </div>
+      )}
 
       {open && (
         <div data-testid="project-history" style={{ marginTop: 12 }}>
@@ -89,6 +174,14 @@ export function ProjectSwitcher({
             <tbody>
               {sorted.map((p) => (
                 <tr key={p.id} data-testid={`history-row-${p.id}`}>
+                  <td style={{ padding: 6 }}>
+                    <input
+                      type="checkbox"
+                      checked={selected.has(p.id)}
+                      onChange={() => toggle(p.id)}
+                      data-testid={`select-${p.id}`}
+                    />
+                  </td>
                   <td style={{ padding: 6 }}>#{p.id}</td>
                   <td style={{ padding: 6 }}>{p.name}</td>
                   <td style={{ padding: 6 }}>{p.automation_mode}</td>
@@ -103,6 +196,14 @@ export function ProjectSwitcher({
                       onClick={() => onSelect(p.id)}
                     >
                       {p.id === currentId ? '当前' : '切换'}
+                    </button>
+                    <button
+                      disabled={busy}
+                      onClick={() => onDelete(p.id, p.name)}
+                      style={{ marginLeft: 6, color: '#f5222d' }}
+                      data-testid={`delete-${p.id}`}
+                    >
+                      删除
                     </button>
                   </td>
                 </tr>

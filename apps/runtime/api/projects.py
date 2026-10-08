@@ -347,6 +347,49 @@ async def reject_manual_action(action_id: int):
     return {"status": "REJECTED"}
 
 
+@router.delete("/{project_id}", status_code=200)
+async def delete_project(project_id: int):
+    """级联删除项目全部数据（26 直连表 + 7 间接表 + 磁盘产物/快照）。"""
+    from project_runtime.project_state.deletion import (
+        ProjectDeletionError,
+        ProjectDeletionService,
+    )
+
+    async with AsyncSession(engine) as session:
+        svc = ProjectDeletionService(session)
+        try:
+            result = await svc.delete(project_id)
+        except ProjectDeletionError as e:
+            raise HTTPException(404, str(e)) from e
+    return result
+
+
+@router.post("/batch-delete", status_code=200)
+async def batch_delete_projects(req: dict):
+    """批量级联删除。body: {"project_ids": [1,2,3]}"""
+    from project_runtime.project_state.deletion import (
+        ProjectDeletionError,
+        ProjectDeletionService,
+    )
+
+    ids = req.get("project_ids") or []
+    if not isinstance(ids, list) or not all(isinstance(i, int) for i in ids):
+        raise HTTPException(400, "project_ids must be a list of integers")
+    if not ids:
+        raise HTTPException(400, "project_ids is empty")
+
+    results = []
+    async with AsyncSession(engine) as session:
+        svc = ProjectDeletionService(session)
+        for pid in ids:
+            try:
+                r = await svc.delete(pid)
+                results.append(r)
+            except ProjectDeletionError as e:
+                results.append({"project_id": pid, "error": str(e)})
+    return {"deleted": results}
+
+
 @router.get("/{project_id}/summary")
 async def project_summary(project_id: int):
     """WP-018: 轻量项目摘要（历史列表用——不拉 dashboard 全量）。"""

@@ -41,7 +41,7 @@ function App() {
       <ProjectSwitcher
         currentId={projectId}
         onSelect={(id) => {
-          setProjectId(id);
+          setProjectId(id === -1 ? null : id);
           setRefreshKey((k) => k + 1);
         }}
       />
