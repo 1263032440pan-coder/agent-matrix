@@ -13,8 +13,8 @@ Hard rules (WP-037 red lines):
 from __future__ import annotations
 
 import json
-import re
 import logging
+import re
 
 from project_runtime.procedure.normalizer import AMBIGUOUS, UNKNOWN, KeywordExtractor
 
