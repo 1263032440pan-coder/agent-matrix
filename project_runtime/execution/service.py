@@ -248,6 +248,21 @@ class ExecutionRunner:
         except Exception as e:  # noqa: BLE001 — skill is optional guidance
             logger.debug("skill resolution failed for %s: %s", execution_id, e)
 
+        # 偏离③ 兑现: 执行前清理 pending 研究（联网搜索 + LLM 综合
+        # → ANSWERED——下游 Playbook/replanner 可消费）
+        try:
+            from project_runtime.research.executor import WebResearchExecutor
+
+            async with AsyncSession(engine) as s:
+                ex = WebResearchExecutor(s)
+                answered = await ex.execute_pending(limit=3)
+            if answered:
+                logger.info(
+                    "pre-execution research answered: %s", answered
+                )
+        except Exception:  # noqa: BLE001 — 研究绝不阻断执行
+            logger.debug("pre-execution research sweep failed", exc_info=True)
+
         # WP-010: build the minimal-sufficient context package and bind it
         # into the WorkPackage contract slot (planning → execution bridge).
         context_json = None

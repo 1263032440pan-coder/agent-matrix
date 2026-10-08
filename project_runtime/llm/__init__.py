@@ -23,6 +23,20 @@ class LLMSettings(BaseModel):
     model: str = ""
 
 
+def normalize_model_for_gateway(model: str, base_url: str | None) -> str:
+    """OpenAI-compatible 网关需要显式 provider 前缀。
+
+    LiteLLM 无法从 "qwen/xxx" 之类的自定义模型名推断 provider；
+    带 base_url 且模型名含 "/" 且前缀非已知 provider → 补 openai/。
+    """
+    if base_url and "/" in model and not model.startswith("openai/"):
+        known_prefixes = ("openai/", "azure/", "anthropic/", "huggingface/",
+                          "ollama/", "gemini/", "deepseek/", "mistral/")
+        if not model.startswith(known_prefixes):
+            return f"openai/{model}"
+    return model
+
+
 def load_llm_settings() -> LLMSettings:
     if _CONFIG_PATH.exists():
         try:
@@ -54,12 +68,7 @@ async def test_llm_connection(cfg: LLMSettings) -> dict:
 
     # OpenAI-compatible gateways (e.g. custom relays like MoMA) need an
     # explicit provider prefix — LiteLLM cannot infer it from the model name.
-    model = cfg.model
-    if cfg.base_url and "/" in model and not model.startswith("openai/"):
-        known_prefixes = ("openai/", "azure/", "anthropic/", "huggingface/",
-                          "ollama/", "gemini/", "deepseek/", "mistral/")
-        if not model.startswith(known_prefixes):
-            model = f"openai/{model}"
+    model = normalize_model_for_gateway(cfg.model, cfg.base_url)
 
     def _blocking_call() -> dict:
         # Synchronous litellm call inside its own thread

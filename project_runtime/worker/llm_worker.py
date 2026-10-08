@@ -160,17 +160,16 @@ class LLMWorkerAdapter(WorkerAdapter):
     async def _execute_llm(self, wp: WorkPackage) -> str:
         import litellm
 
-        from project_runtime.llm import load_llm_settings
+        from project_runtime.llm import (
+            load_llm_settings,
+            normalize_model_for_gateway,
+        )
 
         cfg = load_llm_settings()
         if not (cfg.base_url and cfg.api_key and cfg.model):
             raise RuntimeError("LLM not configured")
 
-        model = cfg.model
-        known = ("openai/", "azure/", "anthropic/", "huggingface/", "ollama/",
-                 "gemini/", "deepseek/", "mistral/")
-        if "/" in model and not model.startswith(known):
-            model = f"openai/{model}"
+        model = normalize_model_for_gateway(cfg.model, cfg.base_url)
 
         # Build prompt from task contract + optional skill
         prompt_parts = [f"任务：{wp.task_name}"]

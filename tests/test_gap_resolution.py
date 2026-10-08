@@ -223,7 +223,7 @@ async def test_research_created_when_all_checks_miss(dbengine):
         authority=MethodAssetAuthority.OPTIONAL, gap_type=GapType.DOMAIN,
     )
     async with AsyncSession(dbengine) as s:
-        resolver = GapResolver(s)
+        resolver = GapResolver(s, research_executor=False)  # 隔离: 不联网
         res1 = await resolver.resolve_gap(gid)
         await s.commit()
 
@@ -243,7 +243,9 @@ async def test_research_created_when_all_checks_miss(dbengine):
         gid2 = g2.id
         await s.commit()
 
-        res2 = await GapResolver(s).resolve_gap(gid2)
+        res2 = await GapResolver(
+            s, research_executor=False
+        ).resolve_gap(gid2)
         await s.commit()
 
     # five-check "existing_research" now hits → reused, not re-created
@@ -311,3 +313,51 @@ def test_router_routes_but_never_executes():
     for forbidden in ("httpx", "aiohttp", "requests.get", "litellm",
                       "web_search"):
         assert forbidden not in src, f"router must not execute research: {forbidden}"
+
+
+# ── 偏离②③: 路由后立即执行研究（stub executor 验证流转）───────────
+
+
+@pytest.mark.asyncio
+async def test_research_executed_inline_to_answered(dbengine):
+    """新建研究 → 注入的 executor 立即执行 → RESEARCH_ANSWERED +
+    ResearchRecord.status=ANSWERED（真实链路用 WebResearchExecutor 联网）。"""
+
+    class StubExecutor:
+        def __init__(self, session):
+            self._session = session
+
+        async def execute_research(self, research_id):
+            from project_runtime.research.models import ResearchRecord
+
+            rec = await self._session.get(ResearchRecord, research_id)
+            rec.status = "ANSWERED"
+            rec.summary = "stub 研究结论"
+            await self._session.flush()
+            return rec
+
+    thin_doc = "# 薄流程\n\n## 阶段：评审\n- 活动: 组织评审\n"
+    await _project_with_gaps(
+        dbengine, thin_doc,
+        authority=MethodAssetAuthority.OPTIONAL, gap_type=GapType.DOMAIN,
+    )
+    async with AsyncSession(dbengine) as s:
+        resolver = GapResolver(s, research_executor=StubExecutor)
+        res = await resolver.resolve_gap(await _last_gap_id(s))
+        await s.commit()
+
+    assert res.action == "RESEARCH_ANSWERED"
+    assert res.research_id is not None
+    from project_runtime.research.models import ResearchRecord
+
+    async with AsyncSession(dbengine) as s:
+        rec = await s.get(ResearchRecord, res.research_id)
+        assert rec.status == "ANSWERED"
+        assert rec.summary == "stub 研究结论"
+
+
+async def _last_gap_id(session):
+    from project_runtime.project_state.models import MethodGap
+
+    stmt = select(MethodGap).order_by(MethodGap.id.desc()).limit(1)
+    return (await session.execute(stmt)).scalar_one().id

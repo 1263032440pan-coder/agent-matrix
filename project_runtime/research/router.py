@@ -94,8 +94,11 @@ class CheckReport:
 class GapResolver:
     """Routes classified gaps; creates research ONLY when五查 all miss."""
 
-    def __init__(self, session: AsyncSession):
+    def __init__(self, session: AsyncSession, *, research_executor=None):
         self._session = session
+        # research_executor: None=真联网 / False=禁用（测试隔离） /
+        # callable=注入 stub（session → executor）
+        self._research_executor = research_executor
 
     async def resolve_gap(self, gap_id: int) -> Resolution:
         gap = await self._session.get(MethodGap, gap_id)
@@ -173,12 +176,35 @@ class GapResolver:
         action = (
             "RESEARCH_REUSED" if rec.status == "ANSWERED" else "RESEARCH_CREATED"
         )
+        # 偏离②③ 兑现: 新建研究立即联网执行（搜索 + LLM 综合 → ANSWERED）
+        # execute_research 可注入（测试 stub；默认真联网）
+        research_status = rec.status
+        if rec.status == "OPEN" and self._research_executor is not False:
+            try:
+                if self._research_executor is None:
+                    from project_runtime.research.executor import (
+                        WebResearchExecutor,
+                    )
+
+                    executor = WebResearchExecutor(self._session)
+                else:
+                    executor = self._research_executor(self._session)
+                done = await executor.execute_research(rec.id)
+                if done is not None and done.status == "ANSWERED":
+                    research_status = "ANSWERED"
+                    action = "RESEARCH_ANSWERED"
+            except Exception:  # noqa: BLE001 — 研究失败不阻断路由
+                logger.debug(
+                    "web research execute failed for %d", rec.id, exc_info=True
+                )
         return Resolution(
             gap_id=gap_id, gap_type=gtype, route=route,
             action=action,
             source="five-checks-missed",
             research_id=rec.id,
-            detail="五查未命中——创建/复用 Research 记录",
+            detail=(
+                f"五查未命中——研究记录 #{rec.id}（{research_status}）"
+            ),
         )
 
     # ── 五查实现 ─────────────────────────────────────────────────────
