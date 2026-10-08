@@ -187,3 +187,35 @@ async def test_batch_delete_validation(client):
     assert (await c.post(
         "/api/projects/batch-delete",
         json={"project_ids": ["a"]})).status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_delete_with_cross_project_event_refs(client):
+    """跨项目 FK 引用（事件 project_id 归属写错指向别项目的 execution）
+    不再炸 FOREIGN KEY——删项目 B 时清掉 A 名下指向 B execution 的事件。"""
+    c, eng, tmp = client
+    pid = await _seed_full_project(eng)
+
+    # 注入脏数据: 事件 project_id=999（别的项目）但 task_id 指向本项目的
+    # task（模拟历史 bug 的跨项目事件归属错误）
+    async with AsyncSession(eng) as s:
+        from sqlalchemy import select as _sel
+
+        from project_runtime.event.models import RuntimeEvent
+        from project_runtime.project_state.models import Task
+
+        t_id = (await s.execute(
+            _sel(Task.id).where(Task.project_id == pid))).scalars().first()
+        s.add(RuntimeEvent(
+            event_type="WORKER_COMPLETED", project_id=999,
+            task_id=t_id, message="跨项目脏引用", actor="RUNTIME",
+        ))
+        await s.commit()
+    resp = await c.delete(f"/api/projects/{pid}")
+    assert resp.status_code == 200, resp.text  # 曾 500 崩 runtime
+    # 脏事件也被清
+    async with AsyncSession(eng) as s:
+        n = (await s.execute(text(
+            'SELECT COUNT(*) FROM runtime_event WHERE project_id=999'
+        ))).scalar_one()
+        assert n == 0

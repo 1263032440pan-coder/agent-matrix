@@ -113,6 +113,26 @@ class ProjectDeletionService:
         pname = project.name
 
         deleted: dict[str, int] = {}
+        # 0. FK 断链防护: 任意事件行若 execution_id 指向本项目的
+        # execution（可能因历史 bug 挂在别的 project_id 下），先清掉
+        # ——否则删 execution 时 FOREIGN KEY constraint 崩事务
+        n = await self._session.execute(
+            text(
+                'DELETE FROM "runtime_event" WHERE execution_id IN '
+                '(SELECT id FROM "execution" WHERE project_id = :pid)'
+            ).bindparams(pid=project_id)
+        )
+        if n.rowcount:
+            deleted["runtime_event(dangling_refs)"] = n.rowcount
+        # 0b. 同理: 事件 task_id 指向本项目 task 的跨项目事件
+        n2 = await self._session.execute(
+            text(
+                'DELETE FROM "runtime_event" WHERE task_id IN '
+                '(SELECT id FROM "task" WHERE project_id = :pid)'
+            ).bindparams(pid=project_id)
+        )
+        if n2.rowcount:
+            deleted["runtime_event(dangling_task_refs)"] = n2.rowcount
         # 1. 间接表先删（父表还在，子查询有效）
         for t, cond in _INDIRECT.items():
             n = await self._session.execute(
