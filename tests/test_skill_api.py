@@ -130,7 +130,6 @@ async def test_import_rejects_non_zip(client):
 async def test_import_corrupted_zip_422_not_500(client, tmp_path):
     """非 zip 内容改名 .zip 上传 → 422 带明确原因（曾裸 500——
     BadZipFile 未被 importer 包装）。"""
-    import io
 
     # 构造损坏 zip（md 内容）
     fake = tmp_path / "broken.zip"
