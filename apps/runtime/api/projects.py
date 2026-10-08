@@ -18,6 +18,8 @@ from project_runtime.project_state.models import (
     GateResult,
     MethodGap,
     Project,
+    ProjectPlaybook,
+    ProjectProcedureModel,
     ProjectReadinessAssessment,
     Task,
     TaskRun,
@@ -243,6 +245,41 @@ async def execute_project(project_id: int):
     }
 
 
+async def _stage_last_model(session: AsyncSession, project_id: int) -> int:
+    """最近一次 procedure model id（阶段间接力）。"""
+    stmt = (
+        select(ProjectProcedureModel.id)
+        .where(ProjectProcedureModel.project_id == project_id)
+        .order_by(ProjectProcedureModel.id.desc())
+        .limit(1)
+    )
+    return (await session.execute(stmt)).scalar_one()
+
+
+async def _stage_last_assessment(
+    session: AsyncSession, project_id: int, model_id: int
+) -> int:
+    """最近一次 readiness assessment id。"""
+    stmt = (
+        select(ProjectReadinessAssessment.id)
+        .where(ProjectReadinessAssessment.project_id == project_id)
+        .order_by(ProjectReadinessAssessment.id.desc())
+        .limit(1)
+    )
+    return (await session.execute(stmt)).scalar_one()
+
+
+async def _stage_last_playbook(session: AsyncSession, project_id: int):
+    """最近一次 playbook（planner 阶段接力）。"""
+    stmt = (
+        select(ProjectPlaybook)
+        .where(ProjectPlaybook.project_id == project_id)
+        .order_by(ProjectPlaybook.id.desc())
+        .limit(1)
+    )
+    return (await session.execute(stmt)).scalar_one()
+
+
 @router.post("/{project_id}/plan", status_code=200)
 async def run_planning(project_id: int):
     """Run D06→D10 chain: normalize → assess → classify → build → plan.
@@ -256,42 +293,61 @@ async def run_planning(project_id: int):
     from project_runtime.procedure.normalizer import ProcedureNormalizer
     from project_runtime.readiness.assessor import MethodReadinessAssessor
 
-    async def _run(session: AsyncSession):
+    # 两段短事务（RH-02 同款范式）: 每阶段独立 session/commit——
+    # LLM 流式期间（可达 5-10 分钟）不持有 SQLite 写锁，
+    # 否则 LLM_THINKING_CHUNK 事件（独立短事务）全部 database is locked。
+    async def _stage(fn):
+        async with AsyncSession(engine) as session:
+            result = await fn(session)
+            await session.commit()
+            return result
+
+    async def _normalize(session: AsyncSession):
         project = await session.get(Project, project_id)
         if project is None:
             raise HTTPException(404, "Project not found")
         normalizer = ProcedureNormalizer.with_llm(session, project_id=project_id)
         model = await normalizer.normalize(project_id)
-        assessment = await MethodReadinessAssessor(session).assess(project_id, model.id)
-        gaps = await GapClassifier.with_llm(session).classify(assessment.id)
-        playbook = await PlaybookBuilder(session).build(project_id)
-        tasks = await DynamicPlanner(session).plan(playbook)
-        return {
-            "model_id": model.id,
-            "assessment_id": assessment.id,
-            "gaps": len(gaps),
-            "playbook_id": playbook.id,
-            "tasks": len(tasks),
-        }
+        return {"model_id": model.id}
 
-    for attempt in range(2):
-        async with AsyncSession(engine) as session:
-            try:
-                result = await _run(session)
-                await session.commit()
-                return result
-            except HTTPException:
-                raise
-            except Exception as e:
-                await session.rollback()
-                if attempt == 1:
-                    # LLM-configured extraction failure must surface clearly,
-                    # never silently degrade (user decision 2026-09-25).
-                    raise HTTPException(
-                        502,
-                        f"规划失败：LLM 抽取未成功（已配置大模型，禁止降级）。"
-                        f"请检查 LLM 配置/网关后重试。原因：{str(e)[:200]}",
-                    ) from e
+    async def _assess(session: AsyncSession):
+        model = await _stage_last_model(session, project_id)
+        assessment = await MethodReadinessAssessor(session).assess(project_id, model)
+        return {"assessment_id": assessment.id}
+
+    async def _classify(session: AsyncSession):
+        model = await _stage_last_model(session, project_id)
+        assessment = await _stage_last_assessment(session, project_id, model)
+        gaps = await GapClassifier.with_llm(session).classify(assessment)
+        return {"gaps": len(gaps), "assessment_id": assessment}
+
+    async def _build(session: AsyncSession):
+        playbook = await PlaybookBuilder(session).build(project_id)
+        return {"playbook_id": playbook.id}
+
+    async def _plan(session: AsyncSession):
+        playbook = await _stage_last_playbook(session, project_id)
+        tasks = await DynamicPlanner(session).plan(playbook)
+        return {"tasks": len(tasks)}
+
+    result: dict = {}
+    try:
+        result.update(await _stage(_normalize))
+        result.update(await _stage(_assess))
+        result.update(await _stage(_classify))
+        result.update(await _stage(_build))
+        result.update(await _stage(_plan))
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        # LLM-configured extraction failure must surface clearly,
+        # never silently degrade (user decision 2026-09-25).
+        raise HTTPException(
+            502,
+            f"规划失败：LLM 抽取未成功（已配置大模型，禁止降级）。"
+            f"请检查 LLM 配置/网关后重试。原因：{str(e)[:200]}",
+        ) from e
 
 
 @router.get("")

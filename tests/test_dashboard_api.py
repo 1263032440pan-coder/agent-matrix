@@ -4,36 +4,61 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession
 
+import apps.runtime.api.projects as prj_mod
 from apps.runtime.main import app
-from infrastructure.database import engine
 from project_runtime.project_state.enums import TaskStatus
 from project_runtime.project_state.models import Project, Task
 
 
 @pytest.fixture(scope="function")
-async def client():
+async def client(tmp_path, monkeypatch):
+    # 隔离: tmp 库 + app engine 注入（此前直连开发库——测试污染真数据）
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    import project_runtime.artifact_template.models  # noqa: F401
+    import project_runtime.checkpoint.models  # noqa: F401
+    import project_runtime.event.models  # noqa: F401
+    import project_runtime.evidence.models  # noqa: F401
+    import project_runtime.execution.models  # noqa: F401
+    import project_runtime.memory_summary.models  # noqa: F401
+    import project_runtime.project_state.models  # noqa: F401
+    import project_runtime.research.models  # noqa: F401
+    import project_runtime.retrieval.models  # noqa: F401
+    import project_runtime.skills.models  # noqa: F401
+    import project_runtime.traceability.models  # noqa: F401
+    import project_runtime.understanding.models  # noqa: F401
+    from project_runtime.project_state.base import Base
+
+    eng = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/dash.db")
+    async with eng.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    monkeypatch.setattr(prj_mod, "engine", eng)
     transport = ASGITransport(app=app)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
-        yield c
+        yield c, eng
+    await eng.dispose()
 
 
 @pytest.mark.asyncio
 async def test_list_projects_empty(client):
-    resp = await client.get("/api/projects")
+    c, _ = client
+    resp = await c.get("/api/projects")
     assert resp.status_code == 200
     assert isinstance(resp.json(), list)
 
 
 @pytest.mark.asyncio
 async def test_dashboard_404(client):
-    resp = await client.get("/api/projects/99999/dashboard")
+    c, _ = client
+    resp = await c.get("/api/projects/99999/dashboard")
     assert resp.status_code == 404
 
 
 @pytest.mark.asyncio
 async def test_dashboard_shape(client):
-    # Seed a project with a task directly via DB
-    async with AsyncSession(engine) as session:
+    c, eng = client
+    # Seed a project with a task directly via DB (injected test engine)
+    async with AsyncSession(eng) as session:
         p = Project(name="dashboard-test")
         session.add(p)
         await session.flush()
@@ -42,7 +67,7 @@ async def test_dashboard_shape(client):
         pid = p.id
         await session.commit()
 
-    resp = await client.get(f"/api/projects/{pid}/dashboard")
+    resp = await c.get(f"/api/projects/{pid}/dashboard")
     assert resp.status_code == 200
     data = resp.json()
 
@@ -67,7 +92,6 @@ async def test_dashboard_wp018_fields(client):
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
-    from infrastructure.database import engine
     from project_runtime.project_state.enums import (
         DeliveryItemStatus,
         ManualActionStatus,
@@ -81,7 +105,8 @@ async def test_dashboard_wp018_fields(client):
         Task,
     )
 
-    async with AsyncSession(engine) as s:
+    c, eng = client
+    async with AsyncSession(eng) as s:
         p = Project(name="wp018-test")
         s.add(p)
         await s.flush()
@@ -109,7 +134,7 @@ async def test_dashboard_wp018_fields(client):
         ))
         await s.commit()
 
-    resp = await client.get(f"/api/projects/{pid}/dashboard")
+    resp = await c.get(f"/api/projects/{pid}/dashboard")
     assert resp.status_code == 200
     body = resp.json()
     assert any(m["id"] == action_id for m in body["manual_actions"])
@@ -117,10 +142,10 @@ async def test_dashboard_wp018_fields(client):
     assert t_id in body["frontier"]
 
     # 拒绝端点
-    resp2 = await client.post(f"/api/projects/manual-actions/{action_id}/reject")
+    resp2 = await c.post(f"/api/projects/manual-actions/{action_id}/reject")
     assert resp2.status_code == 200
     assert resp2.json()["status"] == "REJECTED"
 
     # 非 PENDING 再操作 → 409
-    resp3 = await client.post(f"/api/projects/manual-actions/{action_id}/confirm")
+    resp3 = await c.post(f"/api/projects/manual-actions/{action_id}/confirm")
     assert resp3.status_code == 409
