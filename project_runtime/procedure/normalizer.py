@@ -57,26 +57,35 @@ class KeywordExtractor:
 
     async def extract(self, text: str, source_name: str) -> list[dict]:
         # Split text by markdown headings
-        heading_positions: list[tuple[int, int, str]] = []
+        heading_positions: list[tuple[int, int, int, str]] = []
         for m in self._SECTION_PATTERN.finditer(text):
-            heading_positions.append((m.start(), m.end(), m.group(2).strip()))
+            heading_positions.append(
+                (len(m.group(1)), m.start(), m.end(), m.group(2).strip())
+            )
 
         if not heading_positions:
             # No markdown headings — treat entire text as one node
-            return [self._parse_node(source_name, text, source_name)]
+            return [self._parse_node(source_name, text, source_name, None)]
+
+        # WP022-TD02: 一级标题 = workstream 归属（文档主标题定义归属流；
+        # 无一级标题时回退 source 名）
+        h1 = next((h for lvl, _, _, h in heading_positions if lvl == 1), None)
 
         nodes: list[dict] = []
-        for i, (start, end, heading) in enumerate(heading_positions):
+        for i, (lvl, start, end, heading) in enumerate(heading_positions):
             body_start = end
-            body_end = heading_positions[i + 1][0] if i + 1 < len(heading_positions) else len(text)
+            body_end = heading_positions[i + 1][1] if i + 1 < len(heading_positions) else len(text)
             body = text[body_start:body_end].strip()
-            nodes.append(self._parse_node(heading, body, source_name))
+            nodes.append(self._parse_node(heading, body, source_name, h1))
         return nodes
 
-    def _parse_node(self, heading: str, body: str, source_name: str) -> dict:
+    def _parse_node(
+        self, heading: str, body: str, source_name: str,
+        workstream: str | None,
+    ) -> dict:
         node: dict = {
             "name": heading,
-            "workstream": None,
+            "workstream": workstream,
             "inputs": UNKNOWN,
             "activities": UNKNOWN,
             "outputs": UNKNOWN,

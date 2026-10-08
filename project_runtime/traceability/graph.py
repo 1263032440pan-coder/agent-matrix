@@ -265,7 +265,8 @@ class TraceabilityGraph:
                 req_nodes.append((node, req))
                 stats["nodes"] += 1
 
-        # ARCHITECTURE ← ProcedureNode workstream（playbook 来源）
+        # ARCHITECTURE ← workstream 集（ProcedureNode.workstream ∪
+        # task.playbook_ref.workstream_name——两条来源并集，缺一不漏）
         arch_nodes: dict[str, TraceNode] = {}
         from project_runtime.project_state.models import ProcedureNode
 
@@ -284,15 +285,6 @@ class TraceabilityGraph:
                 )
             )
         )
-        for pn in (await self._session.execute(pn_stmt)).scalars().all():
-            if pn.workstream and pn.workstream not in arch_nodes:
-                arch_nodes[pn.workstream] = await self.add_node(
-                    project_id, TraceKind.ARCHITECTURE,
-                    f"workstream:{pn.workstream}", pn.workstream,
-                )
-                stats["nodes"] += 1
-
-        # TASK + ARTIFACT/TEST + GATE
         tasks = (
             (
                 await self._session.execute(
@@ -302,6 +294,33 @@ class TraceabilityGraph:
             .scalars()
             .all()
         )
+        ws_names: set[str] = set()
+        # 1) task.playbook_ref.workstream_name——真实 workstream 归属
+        #    （语义源头；Planner 写入）
+        for t in tasks:
+            try:
+                ref_ws = json.loads(t.playbook_ref or "{}").get(
+                    "workstream_name"
+                )
+            except ValueError:
+                ref_ws = None
+            if ref_ws:
+                ws_names.add(ref_ws)
+        # 2) ProcedureNode.workstream 兜底——仅当无任何 playbook_ref
+        #    来源时（KeywordExtractor 把文档标题归组到全节点同名
+        #    workstream，非真实多流——有 ref 来源时不用它）
+        if not ws_names:
+            for pn in (await self._session.execute(pn_stmt)).scalars().all():
+                if pn.workstream and pn.name != pn.workstream:
+                    ws_names.add(pn.workstream)
+        for ws in sorted(ws_names):
+            arch_nodes[ws] = await self.add_node(
+                project_id, TraceKind.ARCHITECTURE,
+                f"workstream:{ws}", ws,
+            )
+            stats["nodes"] += 1
+
+        # TASK + ARTIFACT/TEST + GATE
         artifacts = (
             (
                 await self._session.execute(

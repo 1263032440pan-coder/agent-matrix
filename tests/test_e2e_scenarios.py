@@ -390,3 +390,85 @@ async def test_demo_final_full_chain_with_checkpoint(dbengine, tmp_path):
     async with AsyncSession(dbengine) as s:
         t = await s.get(Task, task_ids[0])
         assert t.status == TaskStatus.ACCEPTED
+
+
+# ── P3-2: 多 workstream traceability（WP022-TD02 兑付）─────────────
+
+
+@pytest.mark.asyncio
+async def test_multi_workstream_traceability(dbengine):
+    """双 workstream: ARCHITECTURE 节点产出 + task→workstream DERIVES 边。"""
+    from project_runtime.planner.planner import DynamicPlanner
+    from project_runtime.playbook.builder import PlaybookBuilder
+    from project_runtime.procedure import ProcedureNormalizer
+    from project_runtime.readiness.assessor import MethodReadinessAssessor
+    from project_runtime.traceability import TraceabilityGraph
+    from project_runtime.traceability.models import TraceNode
+
+    # 真双流: 两份文档各一个一级标题（各自归属流）
+    doc_a = """# 需求流
+
+## 阶段：需求分析
+- 输入: A
+- 活动: B
+- 输出: C
+- 验收: D
+"""
+    doc_b = """# 开发流
+
+## 阶段：编码实现
+- 输入: C
+- 活动: E
+- 输出: F
+- 验收: G
+"""
+    pid = await _seed_project(dbengine, doc=doc_a)
+    async with AsyncSession(dbengine) as s:
+        s.add(MethodAsset(
+            project_id=pid, asset_type=AssetType.PROCESS,
+            source_path="m2.md", content=doc_b,
+            content_hash=hashlib.sha256(doc_b.encode()).hexdigest(),
+            authority=MethodAssetAuthority.MANDATORY,
+        ))
+        await s.commit()
+    async with AsyncSession(dbengine) as s:
+        model = await ProcedureNormalizer(s).normalize(pid)
+        mid = model.id
+        await s.commit()
+    async with AsyncSession(dbengine) as s:
+        await MethodReadinessAssessor(s).assess(pid, mid)
+        await s.commit()
+    async with AsyncSession(dbengine) as s:
+        pb = await PlaybookBuilder(s).build(pid)
+        pb_id = pb.id
+        await s.commit()
+    async with AsyncSession(dbengine) as s:
+        pb = await s.get(
+            __import__("project_runtime.project_state.models",
+                       fromlist=["ProjectPlaybook"]).ProjectPlaybook, pb_id)
+        await DynamicPlanner(s).plan(pb)
+        await s.commit()
+
+    async with AsyncSession(dbengine) as s:
+        tg = TraceabilityGraph(s)
+        await tg.rebuild_scope(pid)
+        await s.commit()
+
+        arch = (await s.execute(
+            select(TraceNode).where(
+                TraceNode.project_id == pid,
+                TraceNode.kind == "ARCHITECTURE"))).scalars().all()
+        assert len(arch) >= 2, (
+            f"two workstreams expected, got {len(arch)}"
+        )
+        # 每个任务有 workstream 上游（DERIVES 边）
+        tasks = (await s.execute(
+            select(TraceNode).where(
+                TraceNode.project_id == pid,
+                TraceNode.kind == "TASK"))).scalars().all()
+        assert len(tasks) >= 2
+        for t in tasks:
+            upstream = await tg.get_upstream(t.id)
+            assert any(n.kind == "ARCHITECTURE" for n in upstream), (
+                f"task {t.ref_id} missing workstream upstream"
+            )

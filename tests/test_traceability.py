@@ -367,3 +367,87 @@ async def test_delivery_isolated_between_projects(dbengine):
                 TraceNode.kind == "DELIVERY")
         )).scalars().all()
         assert len(b_deliveries) == 1
+
+
+# ── WP022-TD02 兑付: 多 workstream 场景 ARCHITECTURE 关联 ───────────
+
+
+@pytest.mark.asyncio
+async def test_multi_workstream_architecture_nodes(dbengine):
+    """双 workstream fixture: rebuild 后 ARCHITECTURE 节点产出 +
+    workstream→task DERIVES 边存在（WP022-TD02——阶段 7 E2E 兑付）。"""
+    import hashlib as _h
+
+    from project_runtime.procedure import ProcedureNormalizer
+    from project_runtime.project_state.enums import (
+        AssetType,
+        MethodAssetAuthority,
+    )
+    from project_runtime.project_state.models import MethodAsset
+
+    doc = """# 双流程序
+
+## 阶段：设计
+- 输入: 需求
+- 活动: 方案设计
+- 输出: 设计文档
+- 验收: 评审通过
+
+## 阶段：测试
+- 输入: 代码
+- 活动: 集成测试
+- 输出: 测试报告
+- 验收: 用例通过
+"""
+    async with AsyncSession(dbengine) as s:
+        p = Project(name="multi-ws", goal="建设系统",
+                    automation_mode=AutomationMode.FULL_AUTO)
+        s.add(p)
+        await s.flush()
+        pid = p.id
+        s.add(MethodAsset(
+            project_id=pid, asset_type=AssetType.PROCESS,
+            source_path="m.md", content=doc,
+            content_hash=_h.sha256(doc.encode()).hexdigest(),
+            authority=MethodAssetAuthority.MANDATORY,
+        ))
+        # 两个 Task 分别带不同 workstream 的 playbook_ref
+        t1 = Task(project_id=pid, name="阶段：设计",
+                  status=TaskStatus.ACCEPTED)
+        t2 = Task(project_id=pid, name="阶段：测试",
+                  status=TaskStatus.READY)
+        s.add_all([t1, t2])
+        await s.flush()
+        t1.playbook_ref = json.dumps({"workstream_name": "设计"})
+        t2.playbook_ref = json.dumps({"workstream_name": "测试"})
+        await s.commit()
+
+    async with AsyncSession(dbengine) as s:
+        await ProcedureNormalizer(s).normalize(pid)
+        await s.commit()
+
+    async with AsyncSession(dbengine) as s:
+        g = TraceabilityGraph(s)
+        await g.rebuild_scope(pid)
+        await s.commit()
+
+        from project_runtime.traceability.models import (
+            TraceEdge,
+            TraceNode,
+        )
+
+        arch = (await s.execute(
+            select(TraceNode).where(
+                TraceNode.project_id == pid,
+                TraceNode.kind == "ARCHITECTURE"))).scalars().all()
+        # 两个 workstream → 两个 ARCHITECTURE 节点
+        assert len(arch) == 2, f"expected 2 ARCHITECTURE nodes, got {len(arch)}"
+        arch_labels = {a.label for a in arch}
+        assert {"设计", "测试"} <= arch_labels
+
+        # workstream → task DERIVES 边存在
+        derives = (await s.execute(
+            select(TraceEdge).where(
+                TraceEdge.project_id == pid,
+                TraceEdge.rel == "DERIVES"))).scalars().all()
+        assert len(derives) >= 2

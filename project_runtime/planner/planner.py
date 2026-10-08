@@ -116,7 +116,11 @@ class DynamicPlanner:
 
         playbook_ref = json.dumps(
             {
-                "workstream_name": ws["name"],
+                # WP022-TD02: workstream_name = 归属流（builder 的
+                # ws["workstream"]，V0.1 来自文档 h1）——traceability
+                # ARCHITECTURE 关联靠它；task 名另存 task_name
+                "workstream_name": ws.get("workstream") or ws["name"],
+                "task_name": ws["name"],
                 "authority": authority,
                 "source_type": (ws.get("source") or {}).get("type", "UNKNOWN"),
                 "acceptance_criteria": ws.get("acceptance_criteria"),
