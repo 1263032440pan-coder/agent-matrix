@@ -62,9 +62,11 @@ _PROMPT = """你是项目流程分析器。从下面的方法资料中抽取流�
 class LLMExtractor:
     """LiteLLM-backed extractor. Conforms to NormalizerExtractor protocol."""
 
-    def __init__(self, llm_config, fallback: KeywordExtractor | None = None):
+    def __init__(self, llm_config, fallback: KeywordExtractor | None = None,
+                 project_id: int | None = None):
         self._cfg = llm_config
         self._fallback = fallback or KeywordExtractor()
+        self._project_id = project_id  # CoT 事件归属（None=全局）
 
     async def extract(self, text: str, source_name: str) -> list[dict]:
         from project_runtime.llm import test_llm_connection  # noqa: F401 — config guard
@@ -89,25 +91,43 @@ class LLMExtractor:
             model = f"openai/{model}"
 
         prompt = _PROMPT.format(text=text[:12000], source_name=source_name)
-        # 推理型模型（kimi-k3 等）默认把 max_tokens 花在 reasoning 上，
-        # content 为 0 且 finish_reason=length——reasoning_effort=none 实测
-        # 该网关完全生效（content 有答案 + reasoning 0 字符）
-        resp = await litellm.acompletion(
+        # 流式调用（CoT UI）：reasoning/content 分通道增量收集，
+        # 思考过程边收边发 LLM_THINKING_CHUNK 事件供界面实时显示
+        stream = await litellm.acompletion(
             model=model,
             api_base=self._cfg.base_url,
             api_key=self._cfg.api_key,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=16000,
             timeout=600,  # 推理型模型思考+生成长文档抽取——实测 104s+，600s 上限
+            stream=True,
         )
-        msg = resp.choices[0].message
+        reasoning_parts: list[str] = []
+        content_parts: list[str] = []
+        think_buf = ""
+        async for chunk in stream:
+            delta = chunk.choices[0].delta if chunk.choices else None
+            if delta is None:
+                continue
+            rc = getattr(delta, "reasoning_content", None) or ""
+            cc = delta.content or ""
+            if rc:
+                reasoning_parts.append(rc)
+                think_buf += rc
+                if len(think_buf) >= 120 or "\n" in think_buf:
+                    await _emit_cot(self._project_id, "thinking", think_buf)
+                    think_buf = ""
+            if cc:
+                content_parts.append(cc)
+        if think_buf:
+            await _emit_cot(self._project_id, "thinking", think_buf)
+        raw = "".join(content_parts)
         # 推理型模型：content 可能为空而 reasoning_content 有内容（token 耗尽在思考）。
         # 优先 content；空则从 reasoning_content 尾部捞 JSON（思考里常已产出结构）
-        raw = msg.content or ""
         if not raw.strip():
-            rc = getattr(msg, "reasoning_content", None) or ""
+            rc_all = "".join(reasoning_parts)
             # 找思考里的 json 块
-            m = re.search(r"\[[\s\S]*\]", rc)
+            m = re.search(r"\[[\s\S]*\]", rc_all)
             if m:
                 raw = m.group(0)
         nodes = self._parse(raw)
@@ -176,3 +196,25 @@ def detect_conflicts(nodes: list[dict]) -> list[dict]:
                     g["readiness_status"] = "CONFLICTED"
                 break
     return conflicted
+
+
+async def _emit_cot(project_id: int | None, phase: str, text: str) -> None:
+    """思维链增量 → 事件（best-effort，绝不打断抽取主链）。"""
+    try:
+        from project_runtime.event import EventEngine, RuntimeEventType
+
+        evt = (
+            RuntimeEventType.LLM_THINKING_CHUNK
+            if phase == "thinking"
+            else RuntimeEventType.LLM_ANSWER_CHUNK
+        )
+        await EventEngine().record(
+            evt,
+            project_id=project_id,
+            phase=f"LLM_{phase.upper()}",
+            message=text[-128:],
+            actor="LLM",
+            payload={"text": text},
+        )
+    except Exception:  # noqa: BLE001 — 显示链路绝不影响执行
+        pass

@@ -260,7 +260,8 @@ async def run_planning(project_id: int):
         project = await session.get(Project, project_id)
         if project is None:
             raise HTTPException(404, "Project not found")
-        model = await ProcedureNormalizer.with_llm(session).normalize(project_id)
+        normalizer = ProcedureNormalizer.with_llm(session, project_id=project_id)
+        model = await normalizer.normalize(project_id)
         assessment = await MethodReadinessAssessor(session).assess(project_id, model.id)
         gaps = await GapClassifier.with_llm(session).classify(assessment.id)
         playbook = await PlaybookBuilder(session).build(project_id)

@@ -160,13 +160,19 @@ class ProcedureNormalizer:
         self._extractor = extractor or KeywordExtractor()
 
     @classmethod
-    def with_llm(cls, session: AsyncSession) -> "ProcedureNormalizer":
+    def with_llm(
+        cls, session: AsyncSession, project_id: int | None = None
+    ) -> "ProcedureNormalizer":
         """LLM-first normalizer: uses configured LLM, keyword fallback."""
         from project_runtime.llm import load_llm_settings
         from project_runtime.procedure.llm_extractor import LLMExtractor
 
         cfg = load_llm_settings()
-        extractor = LLMExtractor(cfg) if (cfg.base_url and cfg.api_key and cfg.model) else None
+        extractor = (
+            LLMExtractor(cfg, project_id=project_id)
+            if (cfg.base_url and cfg.api_key and cfg.model)
+            else None
+        )
         return cls(session, extractor=extractor)
 
     async def normalize(self, project_id: int) -> ProjectProcedureModel:
