@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   batchDeleteProjects,
   deleteProject,
@@ -14,7 +14,9 @@ const card: React.CSSProperties = {
   marginBottom: 16,
 };
 
-/** WP-018 补：项目切换器 + 历史项目列表（含任务统计）。 */
+const PAGE_SIZE_OPTIONS = [10, 20, 50, 100];
+
+/** 项目切换器 + 历史项目（分页 / 搜索 / 全选全不选 / 单删批量删）。 */
 export function ProjectSwitcher({
   currentId,
   onSelect,
@@ -27,6 +29,10 @@ export function ProjectSwitcher({
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  // 分页状态
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [query, setQuery] = useState('');
 
   useEffect(() => {
     listProjectSummaries()
@@ -34,8 +40,32 @@ export function ProjectSwitcher({
       .catch(() => undefined);
   }, [currentId]);
 
-  const current = projects.find((p) => p.id === currentId);
-  const sorted = [...projects].sort((a, b) => b.id - a.id);
+  const sorted = useMemo(
+    () => [...projects].sort((a, b) => b.id - a.id),
+    [projects],
+  );
+  // 搜索过滤（前端过滤——项目量级足够）
+  const filtered = useMemo(
+    () =>
+      query.trim()
+        ? sorted.filter((p) =>
+            `${p.id} ${p.name}`.toLowerCase().includes(query.trim().toLowerCase()),
+          )
+        : sorted,
+    [sorted, query],
+  );
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const safePage = Math.min(page, totalPages);
+  const pageItems = useMemo(
+    () => filtered.slice((safePage - 1) * pageSize, safePage * pageSize),
+    [filtered, safePage, pageSize],
+  );
+
+  // 当前页全选状态
+  const pageIds = pageItems.map((p) => p.id);
+  const allPageSelected =
+    pageIds.length > 0 && pageIds.every((id) => selected.has(id));
+  const somePageSelected = pageIds.some((id) => selected.has(id));
 
   const reload = () => {
     listProjectSummaries()
@@ -44,10 +74,11 @@ export function ProjectSwitcher({
   };
 
   const onDelete = async (id: number, name: string) => {
-    if (!window.confirm(
-      `确定删除项目 #${id}「${name}」吗？
-将级联删除其全部任务、产物、执行记录、事件等所有数据，不可恢复。`,
-    )) {
+    if (
+      !window.confirm(
+        `确定删除项目 #${id}「${name}」吗？\n将级联删除其全部任务、产物、执行记录、事件等所有数据，不可恢复。`,
+      )
+    ) {
       return;
     }
     setBusy(true);
@@ -59,7 +90,7 @@ export function ProjectSwitcher({
           .map(([t, n]) => `${t}:${n}`)
           .join(' ')}`,
       );
-      if (id === currentId) onSelect(-1); // 当前项目被删 → 清空选择
+      if (id === currentId) onSelect(-1);
       reload();
     } catch (e) {
       setMessage(String(e));
@@ -71,16 +102,19 @@ export function ProjectSwitcher({
   const onBatchDelete = async () => {
     const ids = [...selected];
     if (ids.length === 0) return;
-    if (!window.confirm(
-      `确定批量删除 ${ids.length} 个项目吗？
-所选项目的全部数据（任务/产物/执行/事件）将级联删除，不可恢复。`,
-    )) {
+    if (
+      !window.confirm(
+        `确定批量删除 ${ids.length} 个项目吗？\n所选项目的全部数据（任务/产物/执行/事件）将级联删除，不可恢复。`,
+      )
+    ) {
       return;
     }
     setBusy(true);
     try {
       const r = await batchDeleteProjects(ids);
-      setMessage(`批量删除完成：${r.deleted.length} 个项目`);
+      const okCount = r.deleted.filter((d) => !(d as { error?: string }).error)
+        .length;
+      setMessage(`批量删除完成：${okCount}/${ids.length} 个项目`);
       setSelected(new Set());
       if (ids.includes(currentId ?? -1)) onSelect(-1);
       reload();
@@ -99,6 +133,29 @@ export function ProjectSwitcher({
       return next;
     });
   };
+
+  // 全选/全不选：作用于当前页可见项（跨页累计选择保留）
+  const togglePageAll = () => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (allPageSelected) {
+        pageIds.forEach((id) => next.delete(id));
+      } else {
+        pageIds.forEach((id) => next.add(id));
+      }
+      return next;
+    });
+  };
+
+  const selectAllFiltered = () => {
+    setSelected(new Set(filtered.map((p) => p.id)));
+  };
+
+  const clearSelection = () => {
+    setSelected(new Set());
+  };
+
+  const current = projects.find((p) => p.id === currentId);
 
   return (
     <section data-testid="project-switcher" style={card}>
@@ -126,6 +183,7 @@ export function ProjectSwitcher({
             onClick={onBatchDelete}
             disabled={busy}
             style={{ color: '#f5222d', borderColor: '#f5222d' }}
+            data-testid="batch-delete-btn"
           >
             删除所选（{selected.size}）
           </button>
@@ -145,23 +203,64 @@ export function ProjectSwitcher({
 
       {open && (
         <div data-testid="project-history" style={{ marginTop: 12 }}>
-          <input
-            placeholder="按名称搜索历史项目…"
-            style={{ padding: '6px 10px', width: 280, marginBottom: 8 }}
-            onChange={(e) => {
-              const q = e.target.value.trim();
-              const rows = document.querySelectorAll<HTMLTableRowElement>(
-                '[data-testid^="history-row-"]',
-              );
-              rows.forEach((r) => {
-                r.style.display =
-                  !q || r.textContent?.includes(q) ? '' : 'none';
-              });
-            }}
-          />
+          {/* 工具栏：搜索 + 全部选择/清空 + 每页条数 */}
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 8 }}>
+            <input
+              placeholder="按名称/ID搜索…"
+              value={query}
+              data-testid="history-search"
+              style={{ padding: '6px 10px', width: 220 }}
+              onChange={(e) => {
+                setQuery(e.target.value);
+                setPage(1);
+              }}
+            />
+            <button onClick={selectAllFiltered} data-testid="select-all-filtered">
+              选择全部（{filtered.length}）
+            </button>
+            <button onClick={clearSelection} disabled={selected.size === 0}>
+              全不选
+            </button>
+            <span style={{ color: '#888', fontSize: 13 }}>已选 {selected.size}</span>
+            <label style={{ fontSize: 13, color: '#666' }}>
+              每页
+              <select
+                data-testid="page-size"
+                value={pageSize}
+                onChange={(e) => {
+                  setPageSize(Number(e.target.value));
+                  setPage(1);
+                }}
+                style={{ marginLeft: 6, padding: '4px 8px' }}
+              >
+                {PAGE_SIZE_OPTIONS.map((n) => (
+                  <option key={n} value={n}>
+                    {n}
+                  </option>
+                ))}
+              </select>
+              条
+            </label>
+            <span style={{ color: '#888', fontSize: 13, marginLeft: 'auto' }}>
+              共 {filtered.length} 个项目
+            </span>
+          </div>
+
           <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
             <thead>
               <tr style={{ textAlign: 'left', borderBottom: '1px solid #eee' }}>
+                <th style={{ padding: 6 }}>
+                  <input
+                    type="checkbox"
+                    data-testid="select-page-all"
+                    checked={allPageSelected}
+                    ref={(el) => {
+                      if (el) el.indeterminate = somePageSelected && !allPageSelected;
+                    }}
+                    onChange={togglePageAll}
+                    title="全选/全不选本页"
+                  />
+                </th>
                 <th style={{ padding: 6 }}>ID</th>
                 <th style={{ padding: 6 }}>名称</th>
                 <th style={{ padding: 6 }}>模式</th>
@@ -172,7 +271,14 @@ export function ProjectSwitcher({
               </tr>
             </thead>
             <tbody>
-              {sorted.map((p) => (
+              {pageItems.length === 0 && (
+                <tr>
+                  <td colSpan={8} style={{ padding: 12, color: '#999' }}>
+                    无匹配项目
+                  </td>
+                </tr>
+              )}
+              {pageItems.map((p) => (
                 <tr key={p.id} data-testid={`history-row-${p.id}`}>
                   <td style={{ padding: 6 }}>
                     <input
@@ -210,6 +316,28 @@ export function ProjectSwitcher({
               ))}
             </tbody>
           </table>
+
+          {/* 分页条 */}
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 10 }}>
+            <button disabled={safePage <= 1} onClick={() => setPage(1)}>
+              « 首页
+            </button>
+            <button disabled={safePage <= 1} onClick={() => setPage(safePage - 1)}>
+              ‹ 上一页
+            </button>
+            <span data-testid="page-info" style={{ fontSize: 13 }}>
+              第 {safePage} / {totalPages} 页
+            </span>
+            <button disabled={safePage >= totalPages} onClick={() => setPage(safePage + 1)}>
+              下一页 ›
+            </button>
+            <button disabled={safePage >= totalPages} onClick={() => setPage(totalPages)}>
+              末页 »
+            </button>
+            <span style={{ fontSize: 12, color: '#888' }}>
+              （本页 {pageItems.length} 条）
+            </span>
+          </div>
         </div>
       )}
     </section>
