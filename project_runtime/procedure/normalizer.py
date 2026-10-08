@@ -189,16 +189,11 @@ class ProcedureNormalizer:
         if existing is not None:
             return existing
 
-        model = ProjectProcedureModel(
-            project_id=project_id,
-            source_map=json.dumps([]),
-            asset_fingerprint=fingerprint,  # idempotency key (ADR-038)
-        )
-        self._session.add(model)
-        await self._session.flush()
-
+        # LLM 抽取先行（纯读 + 网络流式，可达 5-10 分钟）——期间不持
+        # SQLite 写锁，否则 LLM_THINKING_CHUNK 事件（独立短事务）全部
+        # "database is locked"。model INSERT 延后到抽取完成后（V1.13
+        # 两段短事务范式的 normalize 内部版）。
         source_entries: list[dict] = []
-
         all_node_dicts: list[dict] = []
         for asset in assets:
             source_name = asset.source_path or f"asset-{asset.id}"
@@ -207,6 +202,14 @@ class ProcedureNormalizer:
             source_entries.append(
                 {"asset_id": asset.id, "nodes": len(node_dicts)}
             )
+
+        model = ProjectProcedureModel(
+            project_id=project_id,
+            source_map=json.dumps([]),
+            asset_fingerprint=fingerprint,  # idempotency key (ADR-038)
+        )
+        self._session.add(model)
+        await self._session.flush()
 
         # Batch 3 (D06-TD01): CONFLICTED detection across the whole asset set
         from project_runtime.procedure.llm_extractor import detect_conflicts
