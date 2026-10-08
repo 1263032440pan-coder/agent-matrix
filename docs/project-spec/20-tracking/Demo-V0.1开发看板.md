@@ -1,3 +1,5 @@
+<!-- 全项目收官 2026-10-07：Demo V0.1 七阶段 58 WP 全 PASS，本看板为 Demo 主阶段记录（后续阶段见 项目开发状态.md 收官总账） -->
+
 # Demo V0.1 开发看板
 
 > 当前实际进度：D01～D17 已完成。V1.12 在 D17 与 D18 之间增加 Skill Runtime Infrastructure。
