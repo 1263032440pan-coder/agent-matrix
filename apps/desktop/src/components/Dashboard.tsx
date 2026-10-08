@@ -35,6 +35,11 @@ interface TaskNode {
   status: string;
 }
 
+/** WP-018: Current Frontier——READY 任务（可推进边界）。 */
+export function frontierIds(tasks: TaskNode[]): number[] {
+  return tasks.filter((t) => t.status === 'READY').map((t) => t.id);
+}
+
 /** Layered layout: depth = longest upstream chain. Nodes on the left, deps flow right. */
 function layoutTasks(tasks: TaskNode[], deps: Array<[number, number]>) {
   const depMap = new Map<number, number[]>();
@@ -136,6 +141,21 @@ export function TaskGraphView({
                 stroke={selected ? '#1890ff' : (STATUS_COLORS[t.status] ?? '#888')}
                 strokeWidth={selected ? 3 : 2}
               />
+              {/* WP-018: Current Frontier——READY 节点金色虚线外框高亮 */}
+              {t.status === 'READY' && (
+                <rect
+                  width={NODE_W + 8}
+                  height={NODE_H + 8}
+                  x={-4}
+                  y={-4}
+                  rx={10}
+                  fill="none"
+                  stroke="#faad14"
+                  strokeWidth={2}
+                  strokeDasharray="6 3"
+                  data-testid={`frontier-glow-${t.id}`}
+                />
+              )}
               <text x={12} y={22} fontSize={13} fontWeight={600} fill="#222">
                 {t.name.length > 10 ? t.name.slice(0, 10) + '…' : t.name}
               </text>

@@ -308,6 +308,45 @@ async def list_projects(session: AsyncSession = Depends(get_session)):
     ]
 
 
+@router.post("/manual-actions/{action_id}/confirm", status_code=200)
+async def confirm_manual_action(action_id: int):
+    """WP-018: MANUAL 模式人工确认 → CONFIRMED + 提交异步执行。"""
+    from project_runtime.execution.service import ExecutionService
+    from project_runtime.project_state.enums import ManualActionStatus
+    from project_runtime.project_state.models import ManualAction
+
+    async with AsyncSession(engine) as session:
+        action = await session.get(ManualAction, action_id)
+        if action is None:
+            raise HTTPException(404, "ManualAction not found")
+        if action.status != ManualActionStatus.PENDING:
+            raise HTTPException(409, f"ManualAction {action_id} not PENDING")
+        action.status = ManualActionStatus.CONFIRMED
+        task_id, project_id = action.task_id, action.project_id
+        await session.commit()
+
+    service = ExecutionService()
+    ex_id = await service.submit(project_id, task_id)
+    return {"status": "CONFIRMED", "execution_id": ex_id}
+
+
+@router.post("/manual-actions/{action_id}/reject", status_code=200)
+async def reject_manual_action(action_id: int):
+    """WP-018: MANUAL 模式人工拒绝 → REJECTED（任务留 READY，可再排队）。"""
+    from project_runtime.project_state.enums import ManualActionStatus
+    from project_runtime.project_state.models import ManualAction
+
+    async with AsyncSession(engine) as session:
+        action = await session.get(ManualAction, action_id)
+        if action is None:
+            raise HTTPException(404, "ManualAction not found")
+        if action.status != ManualActionStatus.PENDING:
+            raise HTTPException(409, f"ManualAction {action_id} not PENDING")
+        action.status = ManualActionStatus.REJECTED
+        await session.commit()
+    return {"status": "REJECTED"}
+
+
 @router.get("/{project_id}/dashboard")
 async def project_dashboard(project_id: int, session: AsyncSession = Depends(get_session)):
     project = await session.get(Project, project_id)
@@ -469,6 +508,75 @@ async def project_dashboard(project_id: int, session: AsyncSession = Depends(get
         ],
         # WP-042: recent runtime events for this project (live progress trail)
         "runtime_events": await _recent_events(session, project_id),
+        # WP-018: manual actions (MANUAL mode pending confirmations)
+        "manual_actions": await _manual_actions(session, project_id),
+        # WP-018: delivery contract view
+        "delivery": await _delivery_view(session, project_id),
+        # WP-018: current frontier (READY task ids — 可推进边界高亮)
+        "frontier": [t.id for t in tasks if t.status.value == "READY"],
+    }
+
+
+async def _manual_actions(session: AsyncSession, project_id: int) -> list[dict]:
+    """PENDING ManualActions for a project (MANUAL mode queue)."""
+    from project_runtime.project_state.enums import ManualActionStatus
+    from project_runtime.project_state.models import ManualAction
+
+    stmt = select(ManualAction).where(
+        ManualAction.project_id == project_id,
+        ManualAction.status == ManualActionStatus.PENDING,
+    )
+    rows = (await session.execute(stmt)).scalars().all()
+    return [
+        {
+            "id": m.id,
+            "task_id": m.task_id,
+            "action_type": m.action_type.value,
+            "status": m.status.value,
+        }
+        for m in rows
+    ]
+
+
+async def _delivery_view(session: AsyncSession, project_id: int) -> dict | None:
+    """Latest delivery contract + items for a project."""
+    from project_runtime.project_state.models import (
+        DeliveryContract,
+        DeliveryItem,
+    )
+
+    stmt = (
+        select(DeliveryContract)
+        .where(DeliveryContract.project_id == project_id)
+        .order_by(DeliveryContract.id.desc())
+        .limit(1)
+    )
+    contract = (await session.execute(stmt)).scalar_one_or_none()
+    if contract is None:
+        return None
+    items = (
+        (
+            await session.execute(
+                select(DeliveryItem).where(
+                    DeliveryItem.contract_id == contract.id
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return {
+        "contract_id": contract.id,
+        "version": contract.version,
+        "status": contract.status.value,
+        "items": [
+            {
+                "id": i.id,
+                "requirement_ref": i.requirement_ref,
+                "status": i.status.value,
+            }
+            for i in items
+        ],
     }
 
 

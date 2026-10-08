@@ -4,6 +4,7 @@ import { listProjects } from './api';
 import { Dashboard } from './components/Dashboard';
 import { LLMSettingsCard } from './components/LLMSettingsCard';
 import { ProjectActions } from './components/ProjectActions';
+import { ProjectPanels } from './components/ProjectPanels';
 import { SkillPanel } from './components/SkillPanel';
 
 function App() {
@@ -50,7 +51,13 @@ function App() {
       {error && <div role="alert">{error}</div>}
       {projectId === null && !error && <div>暂无项目 — 请先创建</div>}
       {projectId !== null && (
-        <Dashboard key={refreshKey} projectId={projectId} paused={busy} />
+        <>
+          <Dashboard key={refreshKey} projectId={projectId} paused={busy} />
+          <ProjectPanels
+            projectId={projectId}
+            onChanged={() => setRefreshKey((k) => k + 1)}
+          />
+        </>
       )}
     </div>
   );

@@ -262,3 +262,47 @@ export async function fetchArtifactContent(
   }
   return resp.json();
 }
+
+// ── WP-018: manual actions / checkpoints ─────────────────────────────
+
+export async function confirmManualAction(actionId: number): Promise<{ status: string }> {
+  const res = await fetch(`/api/projects/manual-actions/${actionId}/confirm`, {
+    method: 'POST',
+  });
+  if (!res.ok) throw new Error(`confirm failed: ${res.status}`);
+  return res.json();
+}
+
+export async function rejectManualAction(actionId: number): Promise<{ status: string }> {
+  const res = await fetch(`/api/projects/manual-actions/${actionId}/reject`, {
+    method: 'POST',
+  });
+  if (!res.ok) throw new Error(`reject failed: ${res.status}`);
+  return res.json();
+}
+
+export async function createCheckpoint(projectId: number): Promise<{ checkpoint_id: number }> {
+  const res = await fetch(`/api/projects/${projectId}/checkpoints`, {
+    method: 'POST',
+  });
+  if (!res.ok) throw new Error(`checkpoint failed: ${res.status}`);
+  return res.json();
+}
+
+export async function listCheckpoints(
+  projectId: number,
+): Promise<Array<{ id: number; trigger: string; summary: string | null; created_at: string | null }>> {
+  const res = await fetch(`/api/projects/${projectId}/checkpoints`);
+  if (!res.ok) throw new Error(`list checkpoints failed: ${res.status}`);
+  return res.json();
+}
+
+export async function restoreCheckpoint(
+  checkpointId: number,
+): Promise<{ restored_project_id: number }> {
+  const res = await fetch(`/api/checkpoints/${checkpointId}/restore`, {
+    method: 'POST',
+  });
+  if (!res.ok) throw new Error(`restore failed: ${res.status}`);
+  return res.json();
+}

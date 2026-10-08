@@ -1,8 +1,7 @@
 # WP-018 Desktop UI
 
-> 状态：TODO  
-> 开发方式：单 Work Package 独立开发  
-> Gate：PASS / FAIL / BLOCKED
+> 状态：DONE（2026-10-07，阶段 7 收官站——UI 完整化）  
+> Gate：PASS（依据 vitest 9 用例 + dashboard API 集成测试）
 
 ## 必读全局文档
 
@@ -85,11 +84,18 @@ Project Settings
 
 ## 7. 验收条件
 
-- [ ] 可创建/导入/恢复项目
-- [ ] Task Graph 可视化
-- [ ] Current Frontier 高亮
-- [ ] 事件实时更新
-- [ ] Automation Mode、Manual Actions 和 Delivery 可操作/查看
+- [x] 可创建/导入/恢复项目（创建/导入 D18 既有；恢复 = Checkpoint 面板「恢复为新副本」按钮）
+- [x] Task Graph 可视化（SVG 分层布局 + 依赖折线，D18 既有）
+- [x] Current Frontier 高亮（READY 节点金色虚线外框 frontier-glow + frontierIds 导出）
+- [x] 事件实时更新（Runtime Events 轮询 D18 既有）
+- [x] Automation Mode、Manual Actions 和 Delivery 可操作/查看（mode 切换既有 + 本批 ManualActionsPanel 确认/拒绝按钮（接异步执行链）+ DeliveryPanel 契约条目 + CheckpointPanel 快照/恢复）
+
+## 本批交付（UI 完整化 2026-10-07）
+
+- `ProjectPanels.tsx`: Manual Actions（确认→CONFIRMED+异步 Execution 提交 / 拒绝→REJECTED 任务留 READY）+ Delivery Contract（契约版本/条目状态）+ Checkpoints（创建快照/恢复为新副本）
+- dashboard API 补三段: manual_actions / delivery / frontier + confirm/reject 双端点（非 PENDING 409）
+- Task Graph READY 节点 frontier-glow 高亮
+- vitest 9 用例（确认交互/契约渲染/快照按钮/frontierIds）+ 后端集成测试（三字段+双端点 409）
 
 ## 8. Gate
 
