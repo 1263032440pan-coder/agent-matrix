@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
 from pathlib import Path
 
@@ -665,6 +666,8 @@ async def _recent_events(session: AsyncSession, project_id: int) -> list[dict]:
             "task_id": e.task_id,
             "phase": e.phase,
             "message": e.message,
+            # CoT UI: 思维链分段全文在 payload（message 只有尾 128 字）
+            "payload": json.loads(e.payload) if e.payload else None,
         }
         for e in reversed(events)
     ]

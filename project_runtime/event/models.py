@@ -52,6 +52,8 @@ class RuntimeEventType(str, enum.Enum):
     GATE_PASSED = "GATE_PASSED"
     CHECKPOINT_CREATED = "CHECKPOINT_CREATED"
     CHECKPOINT_RESTORED = "CHECKPOINT_RESTORED"
+    LLM_THINKING_CHUNK = "LLM_THINKING_CHUNK"   # 思维链流式增量（WP: CoT UI）
+    LLM_ANSWER_CHUNK = "LLM_ANSWER_CHUNK"       # 正式答案流式增量
 
 
 class RuntimeEvent(Base):

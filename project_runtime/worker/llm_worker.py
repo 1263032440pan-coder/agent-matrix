@@ -38,7 +38,7 @@ class LLMWorkerAdapter(WorkerAdapter):
         self,
         session: AsyncSession,
         artifact_mgr: "ArtifactManager | None" = None,
-        max_tokens: int = 4000,
+        max_tokens: int = 16000,
     ):
         self._session = session
         self._fsm = StateTransitionService(session)
@@ -185,12 +185,62 @@ class LLMWorkerAdapter(WorkerAdapter):
             "不要输出思考过程，直接给出结果。"
         )
 
-        resp = await litellm.acompletion(
+        # 流式调用：reasoning（思维链）与 content（答案）分通道增量收集，
+        # 边收边发事件（LLM_THINKING_CHUNK / LLM_ANSWER_CHUNK）供 UI 实时显示
+        task_id = getattr(wp, "task_id", None)
+        stream = await litellm.acompletion(
             model=model,
             api_base=cfg.base_url,
             api_key=cfg.api_key,
             messages=[{"role": "user", "content": "\n".join(prompt_parts)}],
             max_tokens=self._max_tokens,
-            timeout=120,
+            timeout=600,  # 推理型模型思考+生成全程（实测 60-105s+，留裕量）
+            stream=True,
         )
-        return resp.choices[0].message.content or ""
+        reasoning_parts: list[str] = []
+        content_parts: list[str] = []
+        think_buf = ""
+        async for chunk in stream:
+            delta = chunk.choices[0].delta if chunk.choices else None
+            if delta is None:
+                continue
+            rc = getattr(delta, "reasoning_content", None) or ""
+            cc = delta.content or ""
+            if rc:
+                reasoning_parts.append(rc)
+                # 分段发射：缓冲到 ~120 字符或含换行再发（防事件风暴）
+                think_buf += rc
+                if len(think_buf) >= 120 or "\n" in think_buf:
+                    await _emit_cot(task_id, "thinking", think_buf)
+                    think_buf = ""
+            if cc:
+                content_parts.append(cc)
+        if think_buf:
+            await _emit_cot(task_id, "thinking", think_buf)
+        content = "".join(content_parts)
+        if not content.strip():
+            # token 全耗在思考上的兜底：取 reasoning 尾部（通常已含结论）
+            content = "".join(reasoning_parts)[-2000:]
+        return content
+
+
+async def _emit_cot(task_id: int | None, phase: str, text: str) -> None:
+    """思维链/答案增量 → 事件（best-effort，绝不打断执行）。"""
+    try:
+        from project_runtime.event import EventEngine, RuntimeEventType
+
+        evt = (
+            RuntimeEventType.LLM_THINKING_CHUNK
+            if phase == "thinking"
+            else RuntimeEventType.LLM_ANSWER_CHUNK
+        )
+        await EventEngine().record(
+            evt,
+            task_id=task_id,
+            phase=f"LLM_{phase.upper()}",
+            message=text[-128:],
+            actor="LLM",
+            payload={"text": text},
+        )
+    except Exception:  # noqa: BLE001 — 显示链路绝不影响执行
+        pass

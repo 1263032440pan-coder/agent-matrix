@@ -13,6 +13,7 @@ Hard rules (WP-037 red lines):
 from __future__ import annotations
 
 import json
+import re
 import logging
 
 from project_runtime.procedure.normalizer import AMBIGUOUS, UNKNOWN, KeywordExtractor
@@ -88,15 +89,27 @@ class LLMExtractor:
             model = f"openai/{model}"
 
         prompt = _PROMPT.format(text=text[:12000], source_name=source_name)
+        # 推理型模型（kimi-k3 等）默认把 max_tokens 花在 reasoning 上，
+        # content 为 0 且 finish_reason=length——reasoning_effort=none 实测
+        # 该网关完全生效（content 有答案 + reasoning 0 字符）
         resp = await litellm.acompletion(
             model=model,
             api_base=self._cfg.base_url,
             api_key=self._cfg.api_key,
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=4000,
-            timeout=240,  # long-doc semantic extraction is slow; 60s caused spurious fallbacks
+            max_tokens=16000,
+            timeout=600,  # 推理型模型思考+生成长文档抽取——实测 104s+，600s 上限
         )
-        raw = resp.choices[0].message.content or ""
+        msg = resp.choices[0].message
+        # 推理型模型：content 可能为空而 reasoning_content 有内容（token 耗尽在思考）。
+        # 优先 content；空则从 reasoning_content 尾部捞 JSON（思考里常已产出结构）
+        raw = msg.content or ""
+        if not raw.strip():
+            rc = getattr(msg, "reasoning_content", None) or ""
+            # 找思考里的 json 块
+            m = re.search(r"\[[\s\S]*\]", rc)
+            if m:
+                raw = m.group(0)
         nodes = self._parse(raw)
         if not nodes:
             raise ValueError("LLM returned no parseable nodes")

@@ -7,6 +7,7 @@ import { ProjectActions } from './components/ProjectActions';
 import { ProjectPanels } from './components/ProjectPanels';
 import { ProjectSwitcher } from './components/ProjectSwitcher';
 import { SkillPanel } from './components/SkillPanel';
+import { ThinkingPanel } from './components/ThinkingPanel';
 
 function App() {
   const [projectId, setProjectId] = useState<number | null>(null);
@@ -65,6 +66,7 @@ function App() {
             projectId={projectId}
             onChanged={() => setRefreshKey((k) => k + 1)}
           />
+          <ThinkingPanel projectId={projectId} />
         </>
       )}
     </div>
