@@ -17,7 +17,10 @@ export function SkillPanel({ projectId }: { projectId: number | null }) {
 
   const load = () => {
     listSkills()
-      .then((s) => setSkills(s))
+      .then((s) => {
+        setSkills(s);
+        setError(null); // 恢复后清除上次轮询的瞬时错误（重启窗口期残留）
+      })
       .catch((e) => setError(String(e)));
   };
 
