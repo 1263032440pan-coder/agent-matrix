@@ -306,3 +306,32 @@ export async function restoreCheckpoint(
   if (!res.ok) throw new Error(`restore failed: ${res.status}`);
   return res.json();
 }
+
+// ── WP-018 补: 项目切换 / 历史项目 ────────────────────────────────────
+
+export interface ProjectSummary {
+  id: number;
+  name: string;
+  status: string;
+  automation_mode: string;
+  created_at: string | null;
+  task_total?: number;
+  task_accepted?: number;
+}
+
+export async function listProjectSummaries(): Promise<ProjectSummary[]> {
+  const projects = await listProjects();
+  // 任务统计并行拉取（dashboard 太重——用轻量统计端点）
+  const detailed = await Promise.all(
+    projects.map(async (p) => {
+      try {
+        const res = await fetch(`${API_BASE}/api/projects/${p.id}/summary`);
+        if (!res.ok) throw new Error(String(res.status));
+        return { ...p, ...(await res.json()) };
+      } catch {
+        return p;
+      }
+    }),
+  );
+  return detailed;
+}

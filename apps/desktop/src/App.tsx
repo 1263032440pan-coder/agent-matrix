@@ -5,6 +5,7 @@ import { Dashboard } from './components/Dashboard';
 import { LLMSettingsCard } from './components/LLMSettingsCard';
 import { ProjectActions } from './components/ProjectActions';
 import { ProjectPanels } from './components/ProjectPanels';
+import { ProjectSwitcher } from './components/ProjectSwitcher';
 import { SkillPanel } from './components/SkillPanel';
 
 function App() {
@@ -37,6 +38,13 @@ function App() {
   return (
     <div style={{ maxWidth: 1200, margin: '0 auto' }}>
       <LLMSettingsCard />
+      <ProjectSwitcher
+        currentId={projectId}
+        onSelect={(id) => {
+          setProjectId(id);
+          setRefreshKey((k) => k + 1);
+        }}
+      />
       <ProjectActions
         projectId={projectId}
         currentMode={projectMode}

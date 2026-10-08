@@ -347,6 +347,28 @@ async def reject_manual_action(action_id: int):
     return {"status": "REJECTED"}
 
 
+@router.get("/{project_id}/summary")
+async def project_summary(project_id: int):
+    """WP-018: 轻量项目摘要（历史列表用——不拉 dashboard 全量）。"""
+    from sqlalchemy import func as _func
+
+    async with AsyncSession(engine) as session:
+        project = await session.get(Project, project_id)
+        if project is None:
+            raise HTTPException(404, "Project not found")
+        stmt = select(Task.status, _func.count(Task.id)).where(
+            Task.project_id == project_id
+        ).group_by(Task.status)
+        by_status = dict(
+            (await session.execute(stmt)).all()
+        )
+    return {
+        "task_total": sum(by_status.values()),
+        "task_accepted": by_status.get("ACCEPTED", 0),
+        "task_running": by_status.get("RUNNING", 0),
+    }
+
+
 @router.get("/{project_id}/dashboard")
 async def project_dashboard(project_id: int, session: AsyncSession = Depends(get_session)):
     project = await session.get(Project, project_id)
