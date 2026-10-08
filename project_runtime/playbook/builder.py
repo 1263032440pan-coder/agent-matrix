@@ -7,6 +7,7 @@ Every workstream carries provenance (source + authority).
 from __future__ import annotations
 
 import json
+import logging
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +20,8 @@ from project_runtime.project_state.models import (
     ProjectProcedureModel,
     ProjectReadinessAssessment,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class PlaybookBuilder:
@@ -69,14 +72,38 @@ class PlaybookBuilder:
 
         # ── workstreams ──────────────────────────────────────────────────
         nodes = await self._get_nodes(procedure_model)
-        workstreams = self._build_workstreams(nodes, assets, gaps)
+
+        # 偏离① 兑现: 方法不足（无实质流程节点）且项目绑定了
+        # PROJECT_METHOD skill → skill stages 骨架 + 功能点归入阶段
+        # （skill 流程 RECOMMENDED 只补 Gap，不覆盖用户方法）
+        workstreams = None
+        skill_skeleton_applied = False
+        if self._method_deficient(nodes):
+            from project_runtime.procedure.skill_planning import (
+                map_nodes_to_stages,
+                read_skill_stages,
+            )
+
+            stages = await read_skill_stages(self._session, project_id)
+            if stages:
+                workstreams = map_nodes_to_stages(stages, nodes)
+                skill_skeleton_applied = True
+                logger.info(
+                    "Playbook: skill method skeleton applied (%d stages, "
+                    "%d user nodes mapped) — project=%d",
+                    len(stages), len(nodes), project_id,
+                )
+        if workstreams is None:
+            workstreams = self._build_workstreams(nodes, assets, gaps)
         for ws in workstreams:
             related = [r for r in research_refs if self._research_relates(r, ws)]
             if related:
                 ws["research_enrichments"] = related
 
         # ── provenance_map ───────────────────────────────────────────────
-        provenance_map = self._build_provenance_map(assets, nodes)
+        provenance_map = self._build_provenance_map(
+            assets, nodes, skill_skeleton_applied=skill_skeleton_applied
+        )
 
         # ── gap references ───────────────────────────────────────────────
         gap_refs = [
@@ -182,6 +209,21 @@ class PlaybookBuilder:
         return workstreams
 
     @staticmethod
+    def _method_deficient(nodes: list[ProcedureNode]) -> bool:
+        """方法不足判定: 零节点，或节点无过程结构（无阶段依赖链——
+        功能点天然有 activities 描述但互不依赖；真正的流程文档有
+        阶段间 dependencies）。"""
+        if not nodes:
+            return True
+        with_deps = sum(
+            1 for n in nodes
+            if n.dependencies
+            and n.dependencies not in ("UNKNOWN", "无", "")
+        )
+        # 全图零依赖边 = 功能点列表而非流程（过程文档至少有一条阶段链）
+        return with_deps == 0
+
+    @staticmethod
     def _determine_source_type(asset: MethodAsset | None) -> str:
         """Determine source type based on asset origin, not authority level.
 
@@ -196,7 +238,8 @@ class PlaybookBuilder:
     # ── provenance map ───────────────────────────────────────────────────
 
     def _build_provenance_map(
-        self, assets: list[MethodAsset], nodes: list[ProcedureNode]
+        self, assets: list[MethodAsset], nodes: list[ProcedureNode],
+        *, skill_skeleton_applied: bool = False,
     ) -> dict:
         return {
             "assets": [
@@ -210,6 +253,7 @@ class PlaybookBuilder:
             ],
             "procedure_nodes": len(nodes),
             "model_inference": "V0.1 KeywordExtractor — LLM extraction not applied",
+            "skill_method_skeleton": "applied" if skill_skeleton_applied else None,
         }
 
     # ── WP-030 helpers ─────────────────────────────────────────────────
