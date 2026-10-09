@@ -361,3 +361,62 @@ async def _last_gap_id(session):
 
     stmt = select(MethodGap).order_by(MethodGap.id.desc()).limit(1)
     return (await session.execute(stmt)).scalar_one().id
+
+
+# ── 研究问题自然语言化（用户实测暴露: 英文诊断串搜索返回词典页）───────
+
+
+@pytest.mark.asyncio
+async def test_research_question_is_natural_language(dbengine):
+    """gap → 中文研究问题（项目背景+节点名+维度模板），非英文诊断串。"""
+    thin_doc = "# 薄流程\n\n## 阶段：需求分析\n- 活动: 组织评审\n"
+    pid, gid = await _project_with_gaps(
+        dbengine, thin_doc, gap_type=GapType.DOMAIN,
+    )
+    async with AsyncSession(dbengine) as s:
+        from project_runtime.research.router import GapResolver
+
+        resolver = GapResolver(s, research_executor=False)
+        gap = await s.get(MethodGap, gid)
+        q = await resolver._question_of(gap)  # noqa: SLF001 — 直测组装
+
+    # 不再是英文诊断串
+    assert "Dimension" not in q and "MISSING" not in q
+    # 含节点语义（「需求分析」）或项目 goal（建设系统）
+    assert "需求分析" in q or "建设系统" in q
+
+
+@pytest.mark.asyncio
+async def test_six_dimension_templates(dbengine):
+    """六维度 → 各自的中文模板句（含节点名）。"""
+    from project_runtime.research.router import _QUESTION_TEMPLATES
+
+    assert set(_QUESTION_TEMPLATES) == {
+        "scope_coverage", "action_explicitness", "artifact_definition",
+        "acceptance_definition", "dependency_transition",
+        "constraint_authority",
+    }
+    # 模板句可被 format 且含节点占位
+    for tpl in _QUESTION_TEMPLATES.values():
+        rendered = tpl.format(node="需求分析")
+        assert "需求分析" in rendered and "？" in rendered
+
+
+@pytest.mark.asyncio
+async def test_question_fallback_on_garbage_description(dbengine):
+    """description 认不出维度 → 节点名兜底句（仍非英文串）。"""
+    thin_doc = "# 薄流程\n\n## 阶段：设计\n- 活动: 画图\n"
+    pid, gid = await _project_with_gaps(
+        dbengine, thin_doc, gap_type=GapType.DOMAIN,
+    )
+    async with AsyncSession(dbengine) as s:
+        from project_runtime.research.router import GapResolver
+
+        gap = await s.get(MethodGap, gid)
+        gap.description = "garbage-no-dimension-marker"
+        await s.flush()
+        resolver = GapResolver(s, research_executor=False)
+        q = await resolver._question_of(gap)  # noqa: SLF001
+
+    assert "Dimension" not in q
+    assert "设计" in q or "建设系统" in q

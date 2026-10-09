@@ -91,6 +91,17 @@ class CheckReport:
         )
 
 
+# 六维度研究问题模板（WP-038 封闭集合; 中文自然语言可直接搜索）
+_QUESTION_TEMPLATES = {
+    "scope_coverage": "「{node}」阶段需要哪些输入和输出物？",
+    "action_explicitness": "「{node}」阶段通常包含哪些具体活动？",
+    "artifact_definition": "「{node}」阶段应产出哪些交付物？",
+    "acceptance_definition": "「{node}」阶段的完成标准（验收要点）如何定义？",
+    "dependency_transition": "「{node}」与其他阶段的依赖关系和交接物如何安排？",
+    "constraint_authority": "「{node}」阶段需要遵守哪些约束和规范？",
+}
+
+
 class GapResolver:
     """Routes classified gaps; creates research ONLY when五查 all miss."""
 
@@ -339,7 +350,7 @@ class GapResolver:
     async def _find_existing_research(
         self, gap: MethodGap
     ) -> ResearchRecord | None:
-        question = self._question_of(gap)
+        question = await self._question_of(gap)
         kind = ROUTE_TABLE.get(gap.gap_type.value, "")
         stmt = select(ResearchRecord).where(
             ResearchRecord.question == question,
@@ -356,7 +367,7 @@ class GapResolver:
         rec = ResearchRecord(
             project_id=await self._project_of(gap),
             research_kind=route,
-            question=self._question_of(gap),
+            question=await self._question_of(gap),
             gap_id=gap.id,
             status="OPEN",
             summary=None,
@@ -367,8 +378,67 @@ class GapResolver:
         await self._session.flush()
         return rec
 
-    def _question_of(self, gap: MethodGap) -> str:
-        return (gap.description or gap.scope_ref or f"gap-{gap.id}")[:500]
+    async def _question_of(self, gap: MethodGap) -> str:
+        """Gap → 自然语言研究问题（中文，可直接搜索）。
+
+        修复（用户实测暴露）: 此前返回 gap.description 原样——那是
+        assessor 的英文诊断串（"Dimension 'scope_coverage' is MISSING:
+        inputs, outputs"），搜索引擎只认出 "dimension" 单词 → 返回
+        词典页，研究产出无价值。
+
+        三段组装: 项目背景(goal 截断) + 节点名(scope_ref 回查) +
+        维度模板（六维度封闭集合）。两级兜底绝不退回英文诊断串。
+        """
+        import re as _re
+
+        desc = gap.description or ""
+        node_name = await self._node_name_of(gap)
+        m = _re.search(r"Dimension\s+'(\w+)'", desc)
+        dim = m.group(1) if m else None
+
+        if dim and dim in _QUESTION_TEMPLATES and node_name:
+            return f"{await self._goal_of(gap)}{_QUESTION_TEMPLATES[dim].format(node=node_name)}"
+        if node_name:
+            return f"{await self._goal_of(gap)}「{node_name}」阶段的方法要点和最佳实践"
+        return f"{await self._goal_of(gap)}的实施方法和阶段划分"
+
+    async def _node_name_of(self, gap: MethodGap) -> str | None:
+        """scope_ref=procedure_node:<id> → 节点名（按 id 缓存）。"""
+        import re as _re
+
+        if not getattr(self, "_node_cache", None):
+            self._node_cache = {}
+        m = _re.match(r"procedure_node:(\d+)", gap.scope_ref or "")
+        if not m:
+            return None
+        node_id = int(m.group(1))
+        if node_id not in self._node_cache:
+            from project_runtime.project_state.models import ProcedureNode
+
+            name = (
+                await self._session.execute(
+                    select(ProcedureNode.name).where(ProcedureNode.id == node_id)
+                )
+            ).scalar_one_or_none()
+            self._node_cache[node_id] = name
+        return self._node_cache[node_id]
+
+    async def _goal_of(self, gap: MethodGap) -> str:
+        """项目 goal 前缀（搜索语境，截断 50 字）。"""
+        pid = await self._project_of(gap)
+        if not getattr(self, "_goal_cache", None):
+            self._goal_cache = {}
+        if pid not in self._goal_cache:
+            from project_runtime.project_state.models import Project
+
+            goal = (
+                await self._session.execute(
+                    select(Project.goal).where(Project.id == pid)
+                )
+            ).scalar_one_or_none()
+            self._goal_cache[pid] = (goal or "").strip()[:50]
+        g = self._goal_cache[pid]
+        return f"{g}：" if g else ""
 
 # 导入 AssetType 供 typing 引用（避免 ruff F401）
 _ = AssetType
