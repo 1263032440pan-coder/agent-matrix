@@ -48,7 +48,7 @@ class WebSearchProvider:
         query = query.strip()[:200]
         if not query:
             return []
-        for engine in (self._ddg, self._bing):
+        for engine in (self._bing, self._ddg):
             try:
                 results = engine(query, n)
                 if results:
@@ -101,25 +101,31 @@ class WebSearchProvider:
         url = "https://www.bing.com/search?q=" + urllib.parse.quote(query)
         html = self._fetch(url)
         items = []
-        for m in re.finditer(
-            r'<h2><a href="([^"]+)"[^>]*>(.*?)</a></h2>(.*?)(?=<li class="|$)',
-            html, re.S,
-        ):
-            href, title, rest = m.groups()
-            title = re.sub(r"<[^>]+>", "", title).strip()
-            snip = re.search(r'<p[^>]*>(.*?)</p>', rest, re.S)
-            snippet = (
-                re.sub(r"<[^>]+>", "", snip.group(1)).strip() if snip else ""
+        blocks = re.split(r'<li class="b_algo"', html)
+        for b in blocks[1:]:
+            link = re.search(
+                r'<h2[^>]*><a[^>]+href="([^"]+)"[^>]*>(.*?)</a></h2>', b, re.S
             )
+            if not link:
+                continue
+            href, title = link.groups()
+            title = re.sub(r"<[^>]+>", "", title).strip()
+            snip = re.search(r"<p[^>]*>(.*?)</p>", b, re.S)
+            snippet = (
+                re.sub(r"<[^>]+>", "", snip.group(1)).strip()
+                if snip else ""
+            )
+            # 跳过 Bing 内部跳转/空标题
             if title and not href.startswith("/"):
                 items.append({
-                    "source": href[:300],
+                    "source": href.replace("&amp;", "&")[:300],
                     "title": title[:150],
                     "content": snippet[:SNIPPET_MAX],
                 })
             if len(items) >= n:
                 break
         return items
+
 
     @staticmethod
     def _fetch(url: str) -> str:

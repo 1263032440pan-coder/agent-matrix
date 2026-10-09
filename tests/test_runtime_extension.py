@@ -225,6 +225,8 @@ async def test_runner_fires_worker_hooks(tmp_path, monkeypatch):
     async with eng.begin() as c:
         await c.run_sync(Base.metadata.create_all)
     monkeypatch.setattr(svc, "engine", eng)
+    # 联网制作 skill 禁用（测试离线——fabricator 真联网会卡 30s×N）
+    monkeypatch.setattr(svc, "_fabricate_searcher", lambda: False)
     monkeypatch.setattr(evmod, "engine", eng)
 
     from project_runtime.project_state.enums import AutomationMode, TaskStatus
@@ -289,6 +291,7 @@ async def test_before_execute_pause_advisory(tmp_path, monkeypatch):
     async with eng.begin() as c:
         await c.run_sync(Base.metadata.create_all)
     monkeypatch.setattr(svc, "engine", eng)
+    monkeypatch.setattr(svc, "_fabricate_searcher", lambda: False)
     monkeypatch.setattr(evmod, "engine", eng)
 
     from project_runtime.project_state.enums import AutomationMode, TaskStatus

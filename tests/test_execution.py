@@ -34,6 +34,8 @@ async def dbengine(tmp_path, monkeypatch):
         await conn.run_sync(Base.metadata.create_all)
     monkeypatch.setattr(exec_service_module, "engine", eng)
     monkeypatch.setattr(event_engine_module, "engine", eng)
+    # 联网制作 skill 禁用（测试离线）
+    monkeypatch.setattr(exec_service_module, "_fabricate_searcher", lambda: False)
     yield eng
     await eng.dispose()
 

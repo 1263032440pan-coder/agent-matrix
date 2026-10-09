@@ -36,6 +36,8 @@ async def dbengine(tmp_path):
 async def patched_engines(dbengine, monkeypatch):
     monkeypatch.setattr(event_engine_mod, "engine", dbengine)
     monkeypatch.setattr(exec_service_mod, "engine", dbengine)
+    # 联网制作 skill 禁用（测试离线——fabricator 真联网会卡 30s×N）
+    monkeypatch.setattr(exec_service_mod, "_fabricate_searcher", lambda: False)
     return dbengine
 
 

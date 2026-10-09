@@ -145,6 +145,9 @@ class ExecutionRunner:
                 task = await mgr.get_task(task_id)
             task_name = task.name
             task_ready = task.status == TaskStatus.READY
+            # 快照（commit 后 ORM 过期——MissingGreenlet/Detached 老坑）:
+            # Phase B-0 选 skill 需要的任务内容
+            task_select_content = _task_select_content(task)
             await session.commit()
 
         await _emit(
@@ -223,6 +226,7 @@ class ExecutionRunner:
             from project_runtime.skills.selector import SkillSelector
 
             async with AsyncSession(engine) as s:
+                task_content = task_select_content
                 resolver = SkillResolver(s)
                 resolution = await resolver.resolve(
                     SkillRequirement(skill_type=SkillType.TASK_EXECUTION, required=False),
@@ -239,7 +243,6 @@ class ExecutionRunner:
                     # 无绑定命中 → LLM 按任务内容自动选（TASK_EXECUTION
                     # 优先，无则不限类型——方法类 skill 的具体阶段指引
                     # 同样能指导单个任务的执行）
-                    task_content = _task_select_content(task)
                     resolved_def = await SkillSelector(s).select(
                         task_content=task_content,
                         extra_context=(
@@ -247,6 +250,23 @@ class ExecutionRunner:
                         ),
                     )
                     select_reason = "LLM_AUTO_SELECT"
+                if resolved_def is None:
+                    # 用户需求: 无可用 skill → 联网制作一个
+                    # （搜索 → LLM 综合 SKILL.md → 正规注册）
+                    from project_runtime.skills.fabricator import (
+                        SkillFabricator,
+                    )
+
+                    fab = await SkillFabricator(
+                        s, searcher=_fabricate_searcher()
+                    ).fabricate(
+                        task_content=task_content,
+                        task_name=task_name,
+                        project_id=project_id,
+                    )
+                    if fab is not None:
+                        resolved_def = fab[0]
+                        select_reason = "FABRICATED_ONLINE"
                 if resolved_def is not None:
                     loader = SkillLoader(s)
                     skill_ctx = await loader.load(
@@ -564,3 +584,11 @@ def _task_select_content(task) -> str:
     if contract:
         parts.append(str(contract))
     return "\n".join(p for p in parts if p.strip())
+
+
+def _fabricate_searcher():
+    """联网制作 skill 的搜索器开关（测试隔离点）。
+
+    测试 monkeypatch 本函数返回 False/stub 即可完全离线。
+    """
+    return None

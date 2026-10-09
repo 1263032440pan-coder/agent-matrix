@@ -38,6 +38,8 @@ async def dbengine(tmp_path, monkeypatch):
         await conn.run_sync(Base.metadata.create_all)
     # Phase D (auto-gate) writes events via the event engine — patch it too
     monkeypatch.setattr(_svc, "engine", eng)
+    # 联网制作 skill 禁用（测试离线——fabricator 真联网会卡 30s×N）
+    monkeypatch.setattr(_svc, "_fabricate_searcher", lambda: False)
     monkeypatch.setattr(_evmod, "engine", eng)
     yield eng
     await eng.dispose()

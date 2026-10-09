@@ -48,6 +48,10 @@ async def rh_env(tmp_path, monkeypatch):
     monkeypatch.setattr(api_exec, "engine", test_engine)
     monkeypatch.setattr(api_proj, "engine", test_engine)
 
+    # 联网制作 skill 完全禁用（测试离线——fabricator 真联网会卡 30s×N）
+    import project_runtime.execution.service as exec_svc
+    monkeypatch.setattr(exec_svc, "_fabricate_searcher", lambda: False)
+
     yield test_engine
     await test_engine.dispose()
 
