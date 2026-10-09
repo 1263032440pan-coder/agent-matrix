@@ -39,39 +39,53 @@ async def dbengine(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_skill_available_flag(dbengine):
-    """SkillSelector.candidates 非空 = skill_available（_resolve 的判定源）。"""
-    from project_runtime.skills.enums import SkillSource, SkillStatus, SkillType
-    from project_runtime.skills.models import SkillDefinition
+async def test_skill_match_semantics(dbengine):
+    """用户修正（2026-10-09）: 必须是符合任务场景的 skill——不是注册表非空。
+
+    SkillSelector.select(task_content=...) 返回 None（无匹配/LLM+关键词
+    都不中）→ 联网；返回 skill → 不联网。_resolve 消费 select 结果。
+    """
+
+    class FakeSel:
+        def __init__(self, ret):
+            self._ret = ret
+
+        async def select(self, **kw):
+            return self._ret
+
+    # LLM 未配置 + 内容不匹配 → select 返回 None → 应联网
+    from project_runtime import llm as llm_mod
     from project_runtime.skills.selector import SkillSelector
 
-    # 空 → False
-    async with AsyncSession(dbengine) as s:
-        assert await SkillSelector(s).candidates(None) == []
-
-    # 有一个 → True
-    async with AsyncSession(dbengine) as s:
-        s.add(SkillDefinition(
-            skill_id="m", name="M", version="1.0.0",
-            skill_type=SkillType.PROJECT_METHOD, description="d",
-            when_to_use="方法", entrypoint="SKILL.md",
-            source=SkillSource.USER, status=SkillStatus.ENABLED,
-            content_hash="h",
-        ))
-        await s.commit()
-    async with AsyncSession(dbengine) as s:
-        pool = await SkillSelector(s).candidates(None)
-        assert len(pool) == 1
-
-    # DISABLED（排除态）→ 不算可用
-    async with AsyncSession(dbengine) as s:
-        from sqlalchemy import update
-
-        await s.execute(
-            update(SkillDefinition).where(
-                SkillDefinition.skill_id == "m"
-            ).values(status=SkillStatus.DISABLED)
+    orig = llm_mod.load_llm_settings
+    llm_mod.load_llm_settings = lambda: type(
+        "C", (), {"base_url": None, "api_key": None, "model": None}
+    )()
+    try:
+        from project_runtime.skills.enums import (
+            SkillSource,
+            SkillStatus,
+            SkillType,
         )
-        await s.commit()
-    async with AsyncSession(dbengine) as s:
-        assert await SkillSelector(s).candidates(None) == []
+        from project_runtime.skills.models import SkillDefinition
+
+        async with AsyncSession(dbengine) as s:
+            s.add(SkillDefinition(
+                skill_id="cooking", name="烹饪技能", version="1.0.0",
+                skill_type=SkillType.PROJECT_METHOD,
+                description="做菜方法", when_to_use="做饭场景",
+                entrypoint="SKILL.md", source=SkillSource.USER,
+                status=SkillStatus.ENABLED, content_hash="h",
+            ))
+            await s.commit()
+
+        # 软件项目文档 vs 烹饪 skill——关键词不中 → select None
+        async with AsyncSession(dbengine) as s:
+            picked = await SkillSelector(s).select(
+                task_content="开发一个软件项目，需要需求分析、架构设计、测试",
+                skill_type=SkillType.PROJECT_METHOD,
+            )
+        assert picked is None, "不相干 skill 不应被选中"
+    finally:
+        llm_mod.load_llm_settings = orig
+

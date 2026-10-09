@@ -65,8 +65,8 @@ class SkillSelector:
         pool = await self.candidates(skill_type)
         if not pool:
             return None
-        if len(pool) == 1:
-            return pool[0]
+        # 用户修正（2026-10-09）: 唯一候选≠自动匹配——仍要过内容匹配
+        # （LLM 或关键词），不中就不选（宁可不选，不硬塞）。
 
         picked_id = await self._llm_pick(pool, task_content, extra_context)
         if picked_id is None:

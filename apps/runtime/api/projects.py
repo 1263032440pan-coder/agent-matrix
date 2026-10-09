@@ -334,13 +334,27 @@ async def run_planning(project_id: int):
         """
         from sqlalchemy import select as _select
 
+        from project_runtime.procedure.skill_planning import (
+            _project_doc_text,
+        )
         from project_runtime.research.router import GapResolver
+        from project_runtime.skills.enums import SkillType
         from project_runtime.skills.selector import SkillSelector
 
-        # skill 可用性: 注册表有可解析 skill（用户安装的）即视为可用
+        # skill 可用性（用户修正 2026-10-09: 必须是符合任务场景的 skill，
+        # 不是"注册表非空"）:
+        #   1. 项目显式绑定 PROJECT_METHOD skill（用户意志）→ 可用
+        #   2. 无绑定 → LLM 按项目文档内容自动选（function calling，
+        #      与 read_skill_stages 同一选择语义）选中才算可用
+        # 注册表有 skill 但都不匹配场景 → 仍联网研究
+        doc = await _project_doc_text(session, project_id)
         selector = SkillSelector(session)
-        candidates = await selector.candidates(None)
-        skill_available = len(candidates) > 0
+        matched = await selector.select(
+            task_content=doc,
+            skill_type=SkillType.PROJECT_METHOD,
+            extra_context="项目流程规划：判断是否存在匹配本项目的方法类 skill",
+        )
+        skill_available = matched is not None
 
         model = await _stage_last_model(session, project_id)
         assessment = await _stage_last_assessment(session, project_id, model)
