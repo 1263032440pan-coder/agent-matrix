@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { bindSkillToProject, listSkills, type SkillInfo } from '../api';
+import { deleteSkill, listSkills, type SkillInfo } from '../api';
 
 const card: React.CSSProperties = {
   background: '#fff',
@@ -9,14 +9,33 @@ const card: React.CSSProperties = {
   marginBottom: 16,
 };
 
-export function SkillPanel({ projectId }: { projectId: number | null }) {
+const inputStyle: React.CSSProperties = {
+  padding: '6px 10px',
+  border: '1px solid #d9d9d9',
+  borderRadius: 6,
+  fontSize: 13,
+};
+
+/**
+ * Skill 管理面板（用户决策 2026-10-09）:
+ * 查询（元数据关键词/类型）+ 安装（导入）+ 删除。
+ * 不再有"绑定"入口——安装的 skill 由程序自动选用
+ * （显式绑定优先 → LLM 按任务内容自动选）。
+ */
+export function SkillPanel() {
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
-  const [scopeKey, setScopeKey] = useState('');
+  const [q, setQ] = useState('');
+  const [typeFilter, setTypeFilter] = useState('');
+  const [busy, setBusy] = useState(false);
 
-  const load = () => {
-    listSkills()
+  const load = (query = { q, skill_type: typeFilter }) => {
+    listSkills(
+      query.q || query.skill_type
+        ? { q: query.q || undefined, skill_type: query.skill_type || undefined }
+        : undefined
+    )
       .then((s) => {
         setSkills(s);
         setError(null); // 恢复后清除上次轮询的瞬时错误（重启窗口期残留）
@@ -26,74 +45,139 @@ export function SkillPanel({ projectId }: { projectId: number | null }) {
 
   useEffect(() => {
     load();
-    const t = setInterval(load, 30000);
+    const t = setInterval(() => load(), 30000);
     return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const doBind = async (sk: SkillInfo) => {
-    if (projectId === null) return;
+  const doSearch = () => {
+    load();
+  };
+
+  const doDelete = async (sk: SkillInfo) => {
+    if (
+      !window.confirm(
+        `确定删除 skill「${sk.name}」(${sk.skill_id}@${sk.version})？\n` +
+          '将同时解除所有项目对它的引用，不可恢复。'
+      )
+    )
+      return;
+    setBusy(true);
     try {
-      await bindSkillToProject(projectId, sk.skill_id, sk.version, scopeKey);
+      const r = await deleteSkill(sk.skill_id, sk.version);
       setMessage(
-        `已绑定 ${sk.skill_id}@${sk.version} 到项目 ${projectId}` +
-          (scopeKey ? `（任务类型: ${scopeKey}）` : '（通用）')
+        `已删除 ${sk.skill_id}@${sk.version}` +
+          (r.package_files_removed ? '（包文件已清理）' : '（包文件不在磁盘，仅清注册表）')
       );
+      load();
     } catch (e) {
       setMessage(String(e));
+    } finally {
+      setBusy(false);
     }
   };
 
   return (
     <section data-testid="skill-panel" style={card}>
-      <h3 style={{ marginTop: 0 }}>
-        Skill 包（已注册 {skills.length} 个）
-      </h3>
+      <h3 style={{ marginTop: 0 }}>Skill 管理（已安装 {skills.length} 个）</h3>
       {error && <div style={{ color: '#f5222d' }}>{error}</div>}
+      {message && (
+        <div style={{ color: '#389e0d', marginBottom: 8 }}>{message}</div>
+      )}
+
+      {/* 查询条: 关键词 + 类型 */}
+      <div
+        data-testid="skill-search"
+        style={{
+          display: 'flex',
+          gap: 8,
+          marginBottom: 12,
+          alignItems: 'center',
+          flexWrap: 'wrap',
+        }}
+      >
+        <input
+          data-testid="skill-search-input"
+          style={{ ...inputStyle, flex: 1, minWidth: 160 }}
+          placeholder="搜索: 名称 / 描述 / when_to_use / domain…"
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          onKeyDown={(e) => e.key === 'Enter' && doSearch()}
+        />
+        <select
+          style={inputStyle}
+          value={typeFilter}
+          onChange={(e) => {
+            setTypeFilter(e.target.value);
+            setTimeout(() => load({ q, skill_type: e.target.value }), 0);
+          }}
+        >
+          <option value="">全部类型</option>
+          <option value="PROJECT_METHOD">PROJECT_METHOD</option>
+          <option value="TASK_EXECUTION">TASK_EXECUTION</option>
+          <option value="DOMAIN_KNOWLEDGE">DOMAIN_KNOWLEDGE</option>
+          <option value="TOOL_USAGE">TOOL_USAGE</option>
+        </select>
+        <button style={inputStyle} onClick={doSearch}>
+          查询
+        </button>
+      </div>
+
       {skills.length === 0 && !error && (
-        <p style={{ color: '#999' }}>
-          暂无 Skill——点上方「导入 Skill 包 (.zip)」上传你的方法流程（SKILL.md + references 打包为 ZIP）
+        <p data-testid="skill-empty" style={{ color: '#999' }}>
+          没有匹配的 Skill——点上方「导入 Skill 包 (.zip)」安装，或换关键词查询
         </p>
       )}
+
       {skills.length > 0 && (
-        <>
-          <div style={{ marginBottom: 8, display: 'flex', gap: 8, alignItems: 'center' }}>
-            <span style={{ fontSize: 13, color: '#666' }}>绑定任务类型（可空）:</span>
-            <input
-              value={scopeKey}
-              onChange={(e) => setScopeKey(e.target.value)}
-              placeholder="如: 需求 / 测试 / 设计"
-              style={{ padding: '4px 8px', border: '1px solid #ccc', borderRadius: 4, width: 160 }}
-            />
-            <span style={{ fontSize: 12, color: '#999' }}>
-              {projectId === null ? '（先选择项目才能绑定）' : `将绑定到项目 #${projectId}`}
-            </span>
-          </div>
-          <ul style={{ paddingLeft: 18, margin: 0 }}>
-            {skills.map((sk) => (
-              <li key={`${sk.skill_id}@${sk.version}`} style={{ marginBottom: 6 }}>
-                <strong>{sk.name}</strong>
-                <code style={{ color: '#722ed1', marginLeft: 8 }}>
-                  {sk.skill_id}@{sk.version}
-                </code>
-                <span style={{ marginLeft: 8, fontSize: 12, color: '#999' }}>
-                  {sk.skill_type} · {sk.status} · hash {sk.content_hash}
-                </span>
-                {sk.description && (
-                  <div style={{ fontSize: 12, color: '#666' }}>{sk.description}</div>
+        <div style={{ display: 'grid', gap: 8 }}>
+          {skills.map((sk) => (
+            <div
+              key={`${sk.skill_id}@${sk.version}`}
+              data-testid={`skill-item-${sk.skill_id}`}
+              style={{
+                border: '1px solid #f0f0f0',
+                borderRadius: 6,
+                padding: '8px 12px',
+                display: 'flex',
+                justifyContent: 'space-between',
+                gap: 12,
+                alignItems: 'flex-start',
+              }}
+            >
+              <div style={{ minWidth: 0, flex: 1 }}>
+                <div style={{ fontWeight: 600, fontSize: 14 }}>
+                  {sk.name}
+                  <span style={{ color: '#999', fontWeight: 400, fontSize: 12 }}>
+                    {' '}
+                    {sk.skill_id}@{sk.version}
+                  </span>
+                </div>
+                <div style={{ color: '#666', fontSize: 13, marginTop: 2 }}>
+                  {sk.description}
+                </div>
+                {sk.when_to_use && (
+                  <div style={{ color: '#888', fontSize: 12, marginTop: 2 }}>
+                    <span style={{ color: '#999' }}>何时用：</span>
+                    {sk.when_to_use}
+                  </div>
                 )}
-                <button
-                  onClick={() => doBind(sk)}
-                  disabled={projectId === null}
-                  style={{ marginLeft: 8, padding: '2px 10px', fontSize: 12 }}
-                >
-                  绑定到当前项目
-                </button>
-              </li>
-            ))}
-          </ul>
-        </>
+                <div style={{ color: '#999', fontSize: 12, marginTop: 2 }}>
+                  {sk.skill_type} · {sk.status}
+                </div>
+              </div>
+              <button
+                data-testid={`skill-delete-${sk.skill_id}`}
+                style={{ ...inputStyle, color: '#f5222d', flexShrink: 0 }}
+                disabled={busy}
+                onClick={() => doDelete(sk)}
+              >
+                删除
+              </button>
+            </div>
+          ))}
+        </div>
       )}
-      {message && <div style={{ marginTop: 8, fontSize: 13, color: '#52c41a' }}>{message}</div>}
     </section>
   );
 }

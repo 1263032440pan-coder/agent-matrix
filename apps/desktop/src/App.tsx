@@ -56,7 +56,7 @@ function App() {
         onImported={() => setRefreshKey((k) => k + 1)}
         onBusyChange={setBusy}
       />
-      <SkillPanel projectId={projectId} />
+      <SkillPanel />
       {error && <div role="alert">{error}</div>}
       {projectId === null && !error && <div>暂无项目 — 请先创建</div>}
       {projectId !== null && (

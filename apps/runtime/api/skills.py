@@ -35,6 +35,9 @@ def _serialize(sk) -> dict:
         "version": sk.version,
         "skill_type": sk.skill_type.value if sk.skill_type else None,
         "description": sk.description,
+        "when_to_use": sk.when_to_use,
+        "domain": sk.domain,
+        "task_types": sk.task_types,
         "status": sk.status.value if sk.status else None,
         "content_hash": sk.content_hash[:12],
         "package_ref": sk.package_ref,
@@ -90,12 +93,101 @@ async def import_skill_package(file: UploadFile):
 
 @router.get("")
 async def list_skills(
+    q: str | None = None,
+    skill_type: str | None = None,
+    status: str | None = None,
     session: AsyncSession = Depends(get_session),
 ):
-    """已注册 Skill 列表（全部状态）。"""
-    registry = SkillRegistry(session)
-    skills = await registry.list()
+    """已注册 Skill 列表（全部状态）+ 元数据查询。
+
+    q: 关键词（name/description/when_to_use/domain/task_types 模糊匹配）
+    skill_type: 精确（PROJECT_METHOD/TASK_EXECUTION/...）
+    status: 精确（INSTALLED/ENABLED/DISABLED/...）
+    """
+    from sqlalchemy import or_
+
+    from project_runtime.skills.models import SkillDefinition
+
+    stmt = select(SkillDefinition).order_by(SkillDefinition.id)
+    if q:
+        like = f"%{q}%"
+        stmt = stmt.where(
+            or_(
+                SkillDefinition.name.ilike(like),
+                SkillDefinition.description.ilike(like),
+                SkillDefinition.when_to_use.ilike(like),
+                SkillDefinition.domain.ilike(like),
+                SkillDefinition.task_types.ilike(like),
+                SkillDefinition.skill_id.ilike(like),
+            )
+        )
+    if skill_type:
+        stmt = stmt.where(SkillDefinition.skill_type == skill_type)
+    if status:
+        stmt = stmt.where(SkillDefinition.status == status)
+    skills = (await session.execute(stmt)).scalars().all()
     return [_serialize(sk) for sk in skills]
+
+
+@router.delete("/{skill_id}/{version}", status_code=200)
+async def delete_skill(skill_id: str, version: str):
+    """删除已安装 skill: 解绑全部项目引用 + 清理包文件 + 删注册行。
+
+    用户决策（2026-10-09）: skill 装删全由用户管理（安装=导入 ZIP，
+    删除=本端点）；程序只选用，不产生/不删除 skill。
+    """
+    from pathlib import Path as _Path
+
+    from sqlalchemy import delete as _delete
+    from sqlalchemy import select as _select
+
+    from project_runtime.skills.models import SkillBinding, SkillDefinition
+
+    async with AsyncSession(engine) as session:
+        sk = (
+            await session.execute(
+                _select(SkillDefinition).where(
+                    SkillDefinition.skill_id == skill_id,
+                    SkillDefinition.version == version,
+                )
+            )
+        ).scalar_one_or_none()
+        if sk is None:
+            raise HTTPException(404, f"Skill not found: {skill_id}@{version}")
+
+        package_ref = sk.package_ref
+        snapshot = _serialize(sk)
+
+        # 1) 解绑全部引用（悬挂 FK 清理）
+        await session.execute(
+            _delete(SkillBinding).where(SkillBinding.skill_id == skill_id)
+        )
+        # 2) 删注册行
+        await session.delete(sk)
+        await session.commit()
+
+    # 3) 包文件 best-effort 清理（DB 是事实源；目录/zip 双形态）
+    removed_files = False
+    if package_ref:
+        try:
+            p = _Path(package_ref)
+            if p.is_dir():
+                import shutil
+
+                shutil.rmtree(p, ignore_errors=True)
+                removed_files = True
+            elif p.is_file():
+                p.unlink(missing_ok=True)
+                removed_files = True
+        except OSError:
+            pass
+
+    return {
+        **snapshot,
+        "deleted": True,
+        "bindings_removed": True,
+        "package_files_removed": removed_files,
+    }
 
 
 @router.post("/{skill_id}/{version}/enable", status_code=200)

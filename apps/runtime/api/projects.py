@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import tempfile
 from pathlib import Path
 
@@ -24,6 +25,8 @@ from project_runtime.project_state.models import (
     Task,
     TaskRun,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
@@ -321,6 +324,51 @@ async def run_planning(project_id: int):
         gaps = await GapClassifier.with_llm(session).classify(assessment)
         return {"gaps": len(gaps), "assessment_id": assessment}
 
+    async def _resolve(session: AsyncSession):
+        """Gap 路由（首次规划即研究，用户需求 2026-10-09）。
+
+        分类出的 gap 逐个路由: PRIVATE 内部消化 / MANDATORY 阻塞 /
+        可路由类型（DOMAIN/TECHNICAL/PROCESS）五查 miss 时联网研究。
+        有可用 skill（项目绑定或注册表可解析）时不联网——skill 已提供
+        方法，研究只是补充信息（research_executor=False 走创建不执行）。
+        """
+        from sqlalchemy import select as _select
+
+        from project_runtime.research.router import GapResolver
+        from project_runtime.skills.selector import SkillSelector
+
+        # skill 可用性: 注册表有可解析 skill（用户安装的）即视为可用
+        selector = SkillSelector(session)
+        candidates = await selector.candidates(None)
+        skill_available = len(candidates) > 0
+
+        model = await _stage_last_model(session, project_id)
+        assessment = await _stage_last_assessment(session, project_id, model)
+        gap_rows = (
+            await session.execute(
+                _select(MethodGap.id).where(
+                    MethodGap.assessment_id == assessment
+                )
+            )
+        ).scalars().all()
+
+        resolver = GapResolver(
+            session, research_executor=False if skill_available else None
+        )
+        answered = 0
+        for gid in gap_rows:
+            try:
+                resolution = await resolver.resolve_gap(gid)
+                if resolution.action == "RESEARCH_ANSWERED":
+                    answered += 1
+            except Exception:  # noqa: BLE001 — 单 gap 路由失败不阻断
+                logger.debug("gap resolve failed for %s", gid, exc_info=True)
+        return {
+            "resolved_gaps": len(gap_rows),
+            "research_answered": answered,
+            "skill_available": skill_available,
+        }
+
     async def _build(session: AsyncSession):
         playbook = await PlaybookBuilder(session).build(project_id)
         return {"playbook_id": playbook.id}
@@ -335,6 +383,7 @@ async def run_planning(project_id: int):
         result.update(await _stage(_normalize))
         result.update(await _stage(_assess))
         result.update(await _stage(_classify))
+        result.update(await _stage(_resolve))
         result.update(await _stage(_build))
         result.update(await _stage(_plan))
         return result

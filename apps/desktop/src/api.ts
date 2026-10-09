@@ -191,10 +191,19 @@ export interface SkillInfo {
   version: string;
   skill_type: string | null;
   description: string | null;
+  when_to_use: string | null;
+  domain: string | null;
+  task_types: string | null;
   status: string | null;
   content_hash: string;
   package_ref: string | null;
   created_at: string | null;
+}
+
+export interface SkillQuery {
+  q?: string;
+  skill_type?: string;
+  status?: string;
 }
 
 export async function importSkillPackage(file: File): Promise<SkillInfo> {
@@ -211,9 +220,29 @@ export async function importSkillPackage(file: File): Promise<SkillInfo> {
   return resp.json();
 }
 
-export async function listSkills(): Promise<SkillInfo[]> {
-  const resp = await fetch(`${API_BASE}/api/skills`);
+export async function listSkills(query?: SkillQuery): Promise<SkillInfo[]> {
+  const params = new URLSearchParams();
+  if (query?.q) params.set('q', query.q);
+  if (query?.skill_type) params.set('skill_type', query.skill_type);
+  if (query?.status) params.set('status', query.status);
+  const qs = params.toString();
+  const resp = await fetch(`${API_BASE}/api/skills${qs ? `?${qs}` : ''}`);
   if (!resp.ok) throw new Error(`Skills fetch failed: ${resp.status}`);
+  return resp.json();
+}
+
+export async function deleteSkill(
+  skillId: string,
+  version: string
+): Promise<Record<string, unknown>> {
+  const resp = await fetch(
+    `${API_BASE}/api/skills/${encodeURIComponent(skillId)}/${encodeURIComponent(version)}`,
+    { method: 'DELETE' }
+  );
+  if (!resp.ok) {
+    const detail = await resp.json().catch(() => '');
+    throw new Error(`Skill 删除失败: ${detail?.detail ?? resp.status}`);
+  }
   return resp.json();
 }
 

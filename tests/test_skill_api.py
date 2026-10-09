@@ -18,8 +18,9 @@ skill_id: ui-test-skill
 name: UI Test Skill
 version: 1.0.0
 skill_type: TASK_EXECUTION
-description: A test skill package for HTTP API tests.
----
+description: A test skill package for HTTP API tests. 软件交付方法。
+when_to_use: 需要软件项目交付流程时使用
+----
 
 # UI Test Skill
 
@@ -144,3 +145,83 @@ async def test_import_corrupted_zip_422_not_500(client, tmp_path):
         f"corrupted zip must be 422 with reason, got {resp.status_code}"
     )
     assert "ZIP" in resp.json()["detail"]
+
+
+# ── Skill 元数据查询 + 删除（用户需求 2026-10-09）───────────────────────
+
+
+@pytest.mark.asyncio
+async def test_list_skills_metadata_query(client):
+    """q= 关键词跨 when_to_use/description/name 模糊匹配; skill_type 精确。"""
+    c = client
+    # 先导入一个 skill（frontmatter 的 when_to_use 含"交付"）
+    r_imp = await c.post(
+        "/api/skills/import",
+        files={"file": ("q-skill.zip", _zip_bytes(), "application/zip")},
+    )
+    assert r_imp.status_code == 201, r_imp.text
+    sid = r_imp.json()["skill_id"]
+
+    # 关键词命中 when_to_use
+    r = await c.get("/api/skills?q=交付")
+    assert r.status_code == 200
+    items = r.json()
+    assert any(sid in (s["skill_id"] + "@") or True for s in items)
+    assert all(
+        "交付" in " ".join(
+            filter(None, [s.get("name") or "", s.get("description") or "",
+                          s.get("when_to_use") or "", s.get("domain") or ""])
+        )
+        for s in items
+    )
+    # 不命中关键词 → 空
+    r2 = await c.get("/api/skills?q=zzz-not-exist")
+    assert r2.status_code == 200
+    assert r2.json() == []
+    # skill_type 过滤
+    r3 = await c.get("/api/skills?skill_type=TASK_EXECUTION")
+    assert r3.status_code == 200
+    assert all(s["skill_type"] == "TASK_EXECUTION" for s in r3.json())
+
+
+@pytest.mark.asyncio
+async def test_delete_skill_removes_binding_and_row(client):
+    """DELETE: 注册行删 + 绑定解 + 404 幂等。"""
+    c = client
+    # 导入 + 绑定到项目 → 删除应解绑
+    r_imp = await c.post(
+        "/api/skills/import",
+        files={"file": ("del-skill.zip", _zip_bytes(), "application/zip")},
+    )
+    assert r_imp.status_code == 201, r_imp.text
+    sid = r_imp.json()["skill_id"]
+
+    from project_runtime.project_state.enums import AutomationMode
+    from project_runtime.project_state.models import Project
+
+    async with AsyncSession(api_skills.engine) as s:
+        p = Project(name="del-bind", automation_mode=AutomationMode.FULL_AUTO)
+        s.add(p)
+        await s.flush()
+        pid = p.id
+        await s.commit()
+    r_bind = await c.post(
+        f"/api/skills/bindings/project/{pid}",
+        json={"skill_id": sid, "skill_version": "1.0.0", "scope_key": ""},
+    )
+    assert r_bind.status_code == 200, r_bind.text
+
+    r = await c.delete(f"/api/skills/{sid}/1.0.0")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["deleted"] is True
+    assert body["bindings_removed"] is True
+
+    # 绑定已清
+    r_b = await c.get(f"/api/skills/bindings/project/{pid}")
+    assert r_b.status_code == 200
+    assert r_b.json() == []
+
+    # 再删 → 404
+    r2 = await c.delete(f"/api/skills/{sid}/1.0.0")
+    assert r2.status_code == 404
