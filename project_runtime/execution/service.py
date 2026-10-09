@@ -250,23 +250,10 @@ class ExecutionRunner:
                         ),
                     )
                     select_reason = "LLM_AUTO_SELECT"
-                if resolved_def is None:
-                    # 用户需求: 无可用 skill → 联网制作一个
-                    # （搜索 → LLM 综合 SKILL.md → 正规注册）
-                    from project_runtime.skills.fabricator import (
-                        SkillFabricator,
-                    )
-
-                    fab = await SkillFabricator(
-                        s, searcher=_fabricate_searcher()
-                    ).fabricate(
-                        task_content=task_content,
-                        task_name=task_name,
-                        project_id=project_id,
-                    )
-                    if fab is not None:
-                        resolved_def = fab[0]
-                        select_reason = "FABRICATED_ONLINE"
+                # 用户决策（2026-10-09）: 联网 RAG 只用于获取必要信息完成
+                # 当前任务（WebResearchExecutor 研究链），不生成 skill——
+                # skill 必须用户自己安装。无可用 skill → 裸跑（研究清扫
+                # 产出的 ANSWERED ResearchRecord 经 ContextBuilder 进上下文）。
                 if resolved_def is not None:
                     loader = SkillLoader(s)
                     skill_ctx = await loader.load(
@@ -584,11 +571,3 @@ def _task_select_content(task) -> str:
     if contract:
         parts.append(str(contract))
     return "\n".join(p for p in parts if p.strip())
-
-
-def _fabricate_searcher():
-    """联网制作 skill 的搜索器开关（测试隔离点）。
-
-    测试 monkeypatch 本函数返回 False/stub 即可完全离线。
-    """
-    return None
