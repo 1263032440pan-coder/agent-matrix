@@ -93,12 +93,12 @@ class CheckReport:
 
 # 六维度研究问题模板（WP-038 封闭集合; 中文自然语言可直接搜索）
 _QUESTION_TEMPLATES = {
-    "scope_coverage": "「{node}」阶段需要哪些输入和输出物？",
-    "action_explicitness": "「{node}」阶段通常包含哪些具体活动？",
-    "artifact_definition": "「{node}」阶段应产出哪些交付物？",
-    "acceptance_definition": "「{node}」阶段的完成标准（验收要点）如何定义？",
-    "dependency_transition": "「{node}」与其他阶段的依赖关系和交接物如何安排？",
-    "constraint_authority": "「{node}」阶段需要遵守哪些约束和规范？",
+    "scope_coverage": "{node}阶段需要哪些输入和输出物？",
+    "action_explicitness": "{node}阶段通常包含哪些具体活动？",
+    "artifact_definition": "{node}阶段应产出哪些交付物？",
+    "acceptance_definition": "{node}阶段的完成标准（验收要点）如何定义？",
+    "dependency_transition": "{node}与其他阶段的依赖关系和交接物如何安排？",
+    "constraint_authority": "{node}阶段需要遵守哪些约束和规范？",
 }
 
 
@@ -118,6 +118,25 @@ class GapResolver:
 
         gtype = gap.gap_type.value
         route = ROUTE_TABLE.get(gtype, "USER_CLARIFICATION")
+
+        # 用户决策 2026-10-09: 阶段间依赖是项目内部信息——搜索引擎答不了
+        # （实测搜回来全是「直角引号怎么打」），该维度 gap 交给 Planner
+        # 的依赖兜底链处理（研究回流/LLM 推断/列举顺序），不联网。
+        import re as _re0
+
+        if _re0.search(
+            r"Dimension 'dependency_transition'", gap.description or ""
+        ):
+            return Resolution(
+                gap_id=gap_id, gap_type=gtype,
+                route="USER_CLARIFICATION",
+                action="INTERNAL_RESOLVED",
+                source="dependency-internal",
+                detail=(
+                    "阶段间依赖属项目内部结构——由 Planner 依赖兜底链"
+                    "处理，不联网"
+                ),
+            )
 
         # ── 红线 1: PRIVATE 永不去 Web Search ─────────────────────────
         if gtype == "PRIVATE":

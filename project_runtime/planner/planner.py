@@ -57,6 +57,13 @@ class DynamicPlanner:
         # Phase 2: Establish dependencies
         await self._create_dependencies(workstreams, task_map)
 
+        # Phase 2.5（用户决策 2026-10-09 方案 C: 研究回流 + 依赖兜底）:
+        # 抽取的 dependencies 全 UNKNOWN 时任务图会零边（散点图）。
+        # 三级补链: ①ANSWERED 研究结论回流（research_enrichments/
+        #    summary 里的阶段顺序知识）②LLM 语义推断（标注 inferred）
+        #    ③文档列举顺序串行兜底。
+        await self._backfill_dependencies(playbook, workstreams, task_map)
+
         # WP-007: knowledge-gap signals — the Planner NEVER researches on
         # its own; workstreams whose methods carry UNKNOWN essential fields
         # emit REQUEST_RESEARCH / REQUEST_USER_INPUT signals for the
@@ -179,3 +186,91 @@ class DynamicPlanner:
                     )
                 except ValueError as e:
                     logger.warning("Dependency skipped: %s -> %s: %s", task.id, upstream.id, e)
+
+
+
+
+    async def _backfill_dependencies(
+        self, playbook: ProjectPlaybook,
+        workstreams: list[dict], task_map: dict[str, Task],
+    ) -> None:
+        """零边兜底: 研究回流 → LLM 推断 → 列举顺序（方案 C）。
+
+        仅在「抽取依赖全空」时介入——文档明写的依赖（Phase 2 已建）
+        永不被覆盖。产出的边标 dep_type=SOFT + playbook_ref.inferred=true
+        （可辨识、可人工改）。
+        """
+        from project_runtime.project_state.enums import DependencyType
+
+        # 已有边 → 不介入
+        existing = sum(
+            1 for ws in workstreams
+            if ws.get("dependencies") and ws.get("dependencies") != "UNKNOWN"
+        )
+        if existing > 0:
+            return
+        names = [ws["name"] for ws in workstreams]
+        if len(names) < 2:
+            return
+
+        order = await self._research_order(playbook, names)
+        source = "research"
+        if order is None:
+            # WP-007 红线: Planner 永不自己调大模型（结构性断言扫描
+            # 本文件源码）。LLM 语义推断登记 TD（挪独立组件后回接）。
+            order = names  # 列举顺序兜底
+            source = "declared_order"
+
+        for i in range(1, len(order)):
+            cur = task_map.get(order[i])
+            up = task_map.get(order[i - 1])
+            if cur is None or up is None:
+                continue
+            try:
+                await self._mgr.add_dependency(
+                    cur.id, up.id, dep_type=DependencyType.SOFT
+                )
+                ref = json.loads(cur.playbook_ref or "{}")
+                ref["inferred_dependency"] = True
+                ref["inference_source"] = source
+                cur.playbook_ref = json.dumps(ref, ensure_ascii=False)
+            except ValueError:
+                pass
+        logger.info(
+            "dependency backfill (%s): %s", source, " -> ".join(order)
+        )
+
+    async def _research_order(
+        self, playbook: ProjectPlaybook, names: list[str]
+    ) -> list[str] | None:
+        """ANSWERED 研究结论 → 阶段顺序（方案 C 回流源）。
+
+        找依赖类研究（question 含『依赖关系和交接物』）的 summary，
+        按 names 在 summary 中出现的先后位置排序；覆盖不全 → None。
+        """
+        from sqlalchemy import select as _select
+
+        from project_runtime.research.models import ResearchRecord
+
+        stmt = (
+            _select(ResearchRecord.summary)
+            .where(
+                ResearchRecord.project_id == playbook.project_id,
+                ResearchRecord.status == "ANSWERED",
+                ResearchRecord.question.like("%依赖关系%"),
+            )
+            .limit(3)
+        )
+        rows = (await self._session.execute(stmt)).scalars().all()
+        text = " ".join(r or "" for r in rows if r)
+        if not text:
+            return None
+        positions = []
+        for n in names:
+            idx = text.find(n)
+            if idx >= 0:
+                positions.append((idx, n))
+        if len(positions) < len(names):
+            return None  # 覆盖不全不硬排
+        positions.sort()
+        return [n for _, n in positions]
