@@ -182,6 +182,7 @@ class SkillPackageImporter:
             version=version,
             skill_type=SkillType(meta["skill_type"]),
             description=str(meta["description"]),
+            when_to_use=meta.get("when_to_use"),
             domain=_json_list("domain"),
             stages=_json_list("stages"),
             task_types=_json_list("task_types"),

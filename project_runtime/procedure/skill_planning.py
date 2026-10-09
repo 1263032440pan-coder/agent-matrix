@@ -51,19 +51,26 @@ def classify_document_mode(
 
 
 async def read_skill_stages(
-    session: AsyncSession, project_id: int
+    session: AsyncSession, project_id: int, *, doc_text: str = ""
 ) -> list[dict] | None:
-    """项目绑定的 ENABLED PROJECT_METHOD skill → stages 骨架。
+    """PROJECT_METHOD skill → stages 骨架。
+
+    选择顺序（用户需求: 程序根据任务内容自动选 skill）:
+      1. 项目显式绑定的 ENABLED skill（用户意志优先）
+      2. 无绑定 → LLM 选择器从注册表自动选
+         （name + description + when_to_use 作为 tool 列表，
+          function calling；LLM 不可用退化关键词匹配）
 
     Returns: [{"name": 阶段名, "expected_outputs": [...]}] or None
     """
-    try:
-        from project_runtime.skills.enums import SkillStatus, SkillType
-        from project_runtime.skills.models import (
-            SkillBinding,
-            SkillDefinition,
-        )
+    from project_runtime.skills.enums import SkillStatus, SkillType
+    from project_runtime.skills.models import (
+        SkillBinding,
+        SkillDefinition,
+    )
 
+    sk: SkillDefinition | None = None
+    try:
         stmt = (
             select(SkillDefinition)
             .join(
@@ -79,9 +86,34 @@ async def read_skill_stages(
             .limit(1)
         )
         sk = (await session.execute(stmt)).scalar_one_or_none()
-        if sk is None:
+    except Exception:  # noqa: BLE001 — 绑定查询失败走自动选择
+        pass
+
+    if sk is None:
+        # 无绑定 → LLM 按项目内容自动选择（偏离①增强: 自动选 skill）
+        try:
+            from project_runtime.skills.selector import SkillSelector
+
+            content = doc_text or await _project_doc_text(session, project_id)
+            if not content.strip():
+                return None
+            sk = await SkillSelector(session).select(
+                task_content=content,
+                skill_type=SkillType.PROJECT_METHOD,
+                extra_context="生成项目流程计划：需要软件项目交付方法类 skill",
+            )
+            if sk is not None and not (sk.stages or "").strip():
+                # 选中的 skill 没有 stages 元数据 — 用不了
+                return None
+        except Exception:  # noqa: BLE001 — 自动选择失败不阻断规划
+            logger.debug("LLM skill auto-select failed", exc_info=True)
             return None
 
+    if sk is None:
+        return None
+
+    # 解析 stages/expected_outputs（skill 是可选增强，绝不阻断）
+    try:
         stages: list[dict] = []
         if sk.stages:
             try:
@@ -110,7 +142,7 @@ async def read_skill_stages(
             st["skill_id"] = sk.skill_id
             st["skill_version"] = sk.version
         return stages
-    except Exception:  # noqa: BLE001 — skill 是可选增强，绝不阻断
+    except Exception:  # noqa: BLE001
         logger.debug("skill stages load failed", exc_info=True)
         return None
 
@@ -208,3 +240,17 @@ def map_nodes_to_stages(
         }
         workstreams.append(ws)
     return workstreams
+
+
+async def _project_doc_text(session: AsyncSession, project_id: int) -> str:
+    """项目方法资料全文（LLM 选 skill 的任务内容输入）。"""
+    from project_runtime.project_state.models import MethodAsset
+
+    stmt = (
+        select(MethodAsset.content)
+        .where(MethodAsset.project_id == project_id)
+        .order_by(MethodAsset.id.desc())
+        .limit(3)
+    )
+    rows = (await session.execute(stmt)).scalars().all()
+    return "\n\n".join(r or "" for r in rows)

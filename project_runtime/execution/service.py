@@ -207,8 +207,10 @@ class ExecutionRunner:
         except Exception:  # noqa: BLE001 — hook plane must never break execution
             logger.debug("before_execute hook failed", exc_info=True)
 
-        # Phase B-0 (D17C/D17D): resolve + load the bound skill for this
-        # project, injecting the method body into the WorkPackage. Best-effort:
+        # Phase B-0 (D17C/D17D + 用户需求: 按任务内容自动选 skill):
+        # 1) 项目显式绑定 → SkillResolver（用户意志优先）
+        # 2) 无绑定 → SkillSelector 按任务内容 LLM 自动选
+        #    （name + description + when_to_use 作为 tool 列表）
         # resolution failure never blocks execution (runs without a skill).
         skill_ctx = None
         try:
@@ -218,6 +220,7 @@ class ExecutionRunner:
                 SkillResolver,
                 SkillType,
             )
+            from project_runtime.skills.selector import SkillSelector
 
             async with AsyncSession(engine) as s:
                 resolver = SkillResolver(s)
@@ -225,25 +228,47 @@ class ExecutionRunner:
                     SkillRequirement(skill_type=SkillType.TASK_EXECUTION, required=False),
                     project_id=project_id,
                 )
-                if resolution.status.value == "RESOLVED" and resolution.resolved_skill:
+                resolved_def = resolution.resolved_skill
+                select_reason = (
+                    resolution.reason.value if resolution.reason else "bound"
+                )
+                if (
+                    resolution.status.value != "RESOLVED"
+                    or resolved_def is None
+                ):
+                    # 无绑定命中 → LLM 按任务内容自动选（TASK_EXECUTION
+                    # 优先，无则不限类型——方法类 skill 的具体阶段指引
+                    # 同样能指导单个任务的执行）
+                    task_content = _task_select_content(task)
+                    resolved_def = await SkillSelector(s).select(
+                        task_content=task_content,
+                        extra_context=(
+                            f"项目任务执行：{task_name}"
+                        ),
+                    )
+                    select_reason = "LLM_AUTO_SELECT"
+                if resolved_def is not None:
                     loader = SkillLoader(s)
                     skill_ctx = await loader.load(
-                        resolution.resolved_skill.skill_id,
-                        resolution.resolved_skill.version,
-                        expected_hash=resolution.resolved_skill.content_hash,
+                        resolved_def.skill_id,
+                        resolved_def.version,
+                        expected_hash=resolved_def.content_hash,
                     )
                     logger.info(
                         "Execution %s skill: %s@%s (%s)",
                         execution_id,
                         skill_ctx.skill_id,
                         skill_ctx.skill_version,
-                        resolution.reason.value if resolution.reason else "",
+                        select_reason,
                     )
                     await _emit(
                         RuntimeEventType.SKILL_RESOLVED,
                         project_id=project_id, task_id=task_id, execution_id=execution_id,
                         phase="SKILL",
-                        message=f"skill {skill_ctx.skill_id}@{skill_ctx.skill_version}",
+                        message=(
+                            f"skill {skill_ctx.skill_id}@{skill_ctx.skill_version}"
+                            f" ({select_reason})"
+                        ),
                     )
         except Exception as e:  # noqa: BLE001 — skill is optional guidance
             logger.debug("skill resolution failed for %s: %s", execution_id, e)
@@ -527,3 +552,15 @@ class ExecutionService:
         # Background: runs beyond HTTP request lifecycle (ADR-041)
         asyncio.create_task(self._runner.run(execution_id))
         return execution_id
+
+
+def _task_select_content(task) -> str:
+    """选 skill 用的任务内容（任务名 + 描述 + 合同文本）。"""
+    parts = [task.name or ""]
+    desc = getattr(task, "description", None)
+    if desc:
+        parts.append(str(desc))
+    contract = getattr(task, "contract", None)
+    if contract:
+        parts.append(str(contract))
+    return "\n".join(p for p in parts if p.strip())

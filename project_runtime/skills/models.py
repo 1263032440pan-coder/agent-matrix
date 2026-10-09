@@ -38,6 +38,9 @@ class SkillDefinition(Base):
     version: Mapped[str] = mapped_column(String(64), nullable=False)
     skill_type: Mapped[SkillType] = mapped_column(Enum(SkillType), nullable=False)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # When to use this skill — consumed by the LLM skill selector
+    # (name + description + when_to_use as the function/tool list).
+    when_to_use: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Metadata lists stored as JSON text (V0.1)
     domain: Mapped[str | None] = mapped_column(Text, nullable=True)
