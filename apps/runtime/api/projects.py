@@ -10,6 +10,7 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from pydantic import BaseModel
 from sqlalchemy import func, select
+from sqlalchemy import text as _text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from infrastructure.database import engine
@@ -305,6 +306,81 @@ async def run_planning(project_id: int):
             await session.commit()
             return result
 
+    async def _clear_old_plan(session: AsyncSession):
+        """重新规划清场（用户决策 2026-10-09: 方案 1 全清）。
+
+        同一项目内再次「生成计划」= 换一版方案——本项目全部旧任务
+        （含 ACCEPTED）连同依赖边、执行记录、产物引用一起删除，
+        不再叠加多轮规划的任务图。项目/方法资产/研究记录保留。
+        删除序: 间接表（task_id 引用）先删，task 后删。
+        """
+        from sqlalchemy import select as _select
+
+        from project_runtime.project_state.models import Task
+
+        task_ids = list(
+            (
+                await session.execute(
+                    _select(Task.id).where(Task.project_id == project_id)
+                )
+            ).scalars().all()
+        )
+        if not task_ids:
+            return {"cleared_tasks": 0}
+        idlist = ",".join(str(t) for t in task_ids)
+
+        # 间接表（task_id / execution 经 task 引用）
+        from project_runtime.execution.models import Execution
+
+        exec_ids = list(
+            (
+                await session.execute(
+                    _select(Execution.id).where(Execution.task_id.in_(task_ids))
+                )
+            ).scalars().all()
+        )
+
+        for table, col in [
+            ("task_run", "task_id"),
+            ("gate_result", "task_id"),
+            ("manual_action", "task_id"),
+            ("task_dependency", "task_id"),
+            ("issue", "task_id"),
+        ]:
+            await session.execute(
+                _text(
+                    f'DELETE FROM "{table}" WHERE "{col}" IN ({idlist})'
+                )
+            )
+        if exec_ids:
+            exlist = ",".join(str(e) for e in exec_ids)
+            for table in ("artifact", "event", "runtime_event"):
+                await session.execute(
+                    _text(
+                        f'DELETE FROM "{table}" '
+                        f'WHERE execution_id IN ({exlist}) '
+                        f'OR task_id IN ({idlist})'
+                    )
+                )
+        else:
+            for table in ("artifact", "event", "runtime_event"):
+                await session.execute(
+                    _text(
+                        f'DELETE FROM "{table}" WHERE task_id IN ({idlist})'
+                    )
+                )
+        await session.execute(
+            _text(f'DELETE FROM execution WHERE task_id IN ({idlist})')
+        )
+        await session.execute(
+            _text(f'DELETE FROM task WHERE id IN ({idlist})')
+        )
+        logger.info(
+            "plan clear: project %d removed %d old tasks (full reset)",
+            project_id, len(task_ids),
+        )
+        return {"cleared_tasks": len(task_ids)}
+
     async def _normalize(session: AsyncSession):
         project = await session.get(Project, project_id)
         if project is None:
@@ -394,6 +470,7 @@ async def run_planning(project_id: int):
 
     result: dict = {}
     try:
+        result.update(await _stage(_clear_old_plan))
         result.update(await _stage(_normalize))
         result.update(await _stage(_assess))
         result.update(await _stage(_classify))
