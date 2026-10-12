@@ -208,11 +208,41 @@ async def _llm_synthesize(question: str, results: list[dict]) -> dict | None:
 
 
 class WebResearchExecutor:
-    """执行 OPEN 的 ResearchRecord → 搜索 → LLM 综合 → ANSWERED。"""
+    """执行 OPEN 的 ResearchRecord → 搜索 → LLM 综合 → ANSWERED。
+
+    搜索走共享 ExtensionRegistry 的 RESEARCH provider（规范 19 §3.4，
+    AOP-P2-1 清偿）: Exa keyless 优先 → scrape 兜底 → 全失败空结果
+    （研究保持 OPEN 可重试）。
+    """
 
     def __init__(self, session: AsyncSession):
         self._session = session
-        self._searcher = WebSearchProvider()
+        # 搜索 provider 集合（AOP-P2-1: 经 registry，不直连实现）
+        from project_runtime.extension.shared import shared_registry
+        from project_runtime.research.providers import (
+            register_search_providers,
+        )
+
+        self._registry = shared_registry()
+        register_search_providers(self._registry)
+
+    async def _search(self, query: str) -> list[dict]:
+        """经 registry 按 priority 试 provider——全失败返回空。"""
+        from project_runtime.plugin.capability import CapabilityType
+
+        providers = self._registry.list_providers(CapabilityType.RESEARCH)
+        for info in providers:
+            if not info.enabled:
+                continue
+            try:
+                results = await info.provider.invoke({"query": query})
+                if results:
+                    return results
+            except Exception:  # noqa: BLE001 — provider 间兜底
+                logger.debug(
+                    "search provider %s failed", info.name, exc_info=True
+                )
+        return []
 
     async def execute_research(self, research_id: int) -> ResearchRecord | None:
         rec = await self._session.get(ResearchRecord, research_id)
@@ -221,7 +251,7 @@ class WebResearchExecutor:
         if rec.status == "ANSWERED":
             return rec  # 五查幂等——已答不重做
 
-        results = self._searcher.search(rec.question)
+        results = await self._search(rec.question)
         if not results:
             logger.warning(
                 "web search empty for research %d — keep OPEN", research_id

@@ -54,6 +54,8 @@ class RuntimeEventType(str, enum.Enum):
     CHECKPOINT_RESTORED = "CHECKPOINT_RESTORED"
     LLM_THINKING_CHUNK = "LLM_THINKING_CHUNK"   # 思维链流式增量（WP: CoT UI）
     LLM_ANSWER_CHUNK = "LLM_ANSWER_CHUNK"       # 正式答案流式增量
+    LLM_TOOL_CALL = "LLM_TOOL_CALL"             # 模型发起工具调用（规范 19 §4.3）
+    LLM_TOOL_RESULT = "LLM_TOOL_RESULT"         # 工具执行完成（审计: ok/计数/时长）
 
 
 class RuntimeEvent(Base):
