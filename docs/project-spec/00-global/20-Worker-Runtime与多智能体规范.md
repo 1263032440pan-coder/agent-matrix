@@ -344,6 +344,32 @@ CREATED ──→ IDLE ⇄ BUSY ──→ PAUSED ──→ TERMINATED
 | **摘要结构** | 保留: 文件状态/决策/当前任务/关键代码片段; 丢弃: 被取代的工具输出/死路探索/未改文件内容 | **"接班说明"结构化摘要**（目标/决策/完成/进行中/阻塞/相关文件——另一 Agent 可接手） | 泛化摘要 + session_search 恢复指针 | **任务卡片**（结论/产物 sha/遗留）——结构化同 opencode 理念，粒度更细 |
 | **system 层** | 永不动；CLAUDE.md 压缩后从磁盘重载 | 永不动 | 永不动 | 永不动（Definition 角色 prompt） |
 
+#### 触发阈值的模型适配（用户决策 2026-10-12: 压缩触发阈值要能根据不同模型适配）
+
+压缩参数随 Agent 所配模型动态计算——**每个 AgentDefinition.model_config 指定不同模型时，各自实例的触发阈值独立适配**：
+
+```
+窗口元数据源（opencode 同款）: models.dev/api.json
+  ├─ 字段: limit.context（窗口）/ limit.output（最大输出）
+  ├─ 启动时按已配置模型拉取缓存到 data/model_meta.json
+  │  （离线兜底: 内置常见模型表 + 用户可在 llm_settings.json
+  │   手动覆盖 model_overrides: {"模型名": {context: N, output: N}}）
+  └─ 网关自定义模型（如 qwen/deepseek-v4-pro 不在 models.dev）:
+     ① llm_settings.json 显式配置优先
+     ② 无配置 → 保守默认（context=128K/output=16K）+ 
+        AGENT_CONTEXT_CONFIG_FALLBACK 事件提示用户配置
+
+触发公式（opencode 原式，参数逐模型代入）:
+  threshold(model) = limit.context − min(20000, limit.output)
+  示例:
+    qwen/deepseek-v4-pro: 128K − 16K = 112K
+    未来某 Agent 配 32K 小模型: 32K − 20K = 12K（几乎每任务都压——
+    小窗口模型自动更激进压缩，公式天然适配）
+    1M 窗口模型: 1M − 20K ≈ 98% 才触发（大窗口自动少压）
+```
+
+Prune 保护带（PRUNE_PROTECT=40K）同样按窗口比例适配：`min(40000, 30% × limit.context)`——32K 小模型保护带降到 9.6K，防止保护带比窗口还大（opencode 对小窗口模型同款处理思路）。
+
 **采纳吸收**（对照后确认/调整本规范）：
 1. 压缩请求预留空间——opencode 教训直接采纳：压缩触发阈值需再减摘要输出的预算（否则摘要请求自身可能超限）；本规范 50% 阈值远低于上限，天然安全，批次 3 校准时确认
 2. **"接班说明"式任务卡片**（opencode）——卡片字段增加"进行中/阻塞/相关文件"，让卡片不止是记忆还可交接（DEGRADED 换新实例时新 Agent 可接手）
