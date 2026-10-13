@@ -98,7 +98,12 @@ AgentInstance（agent_instance 表——运行时状态机，项目内实体）
 **术语澄清（2026-10-12 用户问询补充）**：
 - **模板库** = `agent_definition` 表里全部 Definition 的集合（内置五个 seed + 用户自建 + Controller 动态生成的都在同一张表，scope 字段区分 GLOBAL/PROJECT）
 - **默认模板** = 内置五个（analyst/designer/coder/tester/releaser）——安装即有、开箱即用的出厂配置；AgentProvisioner 优先从中匹配，用户可修改可停用可自建
-- **AI 生成的模板** = Controller 动态派生（§2.2 路径 3：监控发现能力缺口时按模板库结构新建 Definition）——与用户自建的同等地位入表，UI 可辨识来源（source: BUILT_IN / USER / CONTROLLER_GENERATED）
+- **AI 生成的模板** = Controller 动态派生（§2.2 路径 3：监控发现能力缺口时按模板库结构新建 Definition）——与用户自建的同等地位入表，UI 可辨识来源（source: BUILT_IN / USER / CONTROLLER_GENERATED）。**门（用户决策 2026-10-12）：AI 生成模板默认 scope=PROJECT（只服务当前项目），升级 GLOBAL 须用户在 UI 确认——AI 为单项目凑合的岗位配置未必值得全局复用，人把关；AI 生成永不标 BUILT_IN，不污染出厂配置**
+
+**模板设计依据（用户问询补充，三层）**：
+1. **skill 阶段结构归组**（直接来源）：九阶段（skill 包 software-project-delivery 定义）按职能归五组——输入侧（analyst：理解/需求，要汇报→PPT 插件）/ 设计侧（designer：方案/原型/架构，要画图→arch_diagram）/ 实现侧（coder）/ 验证侧（tester：test_runner 专属）/ 输出侧（releaser：打包/文档）；项目9 实测任务图即此形状
+2. **opencode agents 实践对标**：其 build/plan/review 内置 agents 验证了"按职能切工具白名单"模式（plan/review 只读禁 edit/bash；我们按交付阶段进一步细分）
+3. **task_type 实证**：stage_affinity 引用的九标准词 = 任务图 task_type 实际取值（P1 修订时核实库里真实在用）——环节亲和词不是发明，是任务图本来就产出的词
 
 （模板数据 seed 进库，用户可改可自建——模板只是初始配置不是硬编码）
 
