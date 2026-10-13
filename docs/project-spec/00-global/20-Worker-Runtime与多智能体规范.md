@@ -312,16 +312,25 @@ CREATED ──→ IDLE ⇄ BUSY ──→ PAUSED ──→ TERMINATED
     （BM25 查事件/产物文本——"我之前在哪提过 User 模块"）
 ```
 
-### 7.3 机制参数（Hermes 对标 + 任务粒度改造）
+### 7.3 机制参数（定稿：压缩引擎=opencode 单一蓝本，窗口结构=Hermes 单一蓝本——用户决策 2026-10-12 不做融合）
+
+**压缩引擎（照抄 opencode compaction.ts 三件）**：
 
 | 项 | 取值 | 依据 |
 |---|---|---|
-| 触发阈值 | prompt_tokens ≥ 50% × 模型窗口（网关返回真实数优先，chars/4 估算兜底） | Hermes 默认；按模型可覆盖（DeepSeek 128K 用 0.5） |
-| 尾部保护 | 当前任务全部 + 最近 2 任务原文（消息数语义改为任务数——本项目粒度优势） | protect_last_n 的任务版 |
-| 任务卡片 | 每任务 ~200 token；含任务名/结论要点/产物引用（task_id+artifact sha）/遗留问题 | 结构化优于泛化摘要 |
-| 恢复指针 | 产物引用永不压（sha 直指原文，file_rw 取回） | Hermes session_search 的结构化加强版 |
-| 防抖 | 摘要失败冷却 600s 不重试；失败不丢活上下文（跳过本次压缩） | Hermes 同款 |
-| 审计 | AGENT_CONTEXT_COMPRESSED 事件（何时/压掉多少 token/保了什么） | 可观测性 |
+| 触发公式 | used_tokens ≥ limit.context − min(20000, limit.output)（参数随模型适配，见 §7.5+ 模型适配节；qwen/deepseek-v4-pro 代入 = 112K） | opencode compaction.ts:32-48 原式——预留压缩请求自身空间（不预留则压缩请求自己超限失败，opencode 踩过的坑） |
+| 两步压缩 | ①Prune：尾部保护带（min(40K, 30%×context)）之外的老工具结果清零——零 LLM；清理量 <20K 跳过（PRUNE_MINIMUM）②仍超 → Summarize 摘要替换老消息（摘要 prompt 抄 opencode compaction agent 模板） | opencode Prune+Summarize 顺序——Prune 常常已够，省摘要成本 |
+| 失败处理 | 摘要请求过长 → 缩文本重试一次 → 再败报错（不静默丢上下文）；冷却 600s | opencode 重试语义 + Hermes 冷却 |
+| token 计数 | chars/4 估算为主（网关 usage 不稳定返回） | 我们网关现实约束 |
+
+**窗口使用结构（照抄 Hermes ContextCompressor 三件）**：
+
+| 项 | 取值 | 依据 |
+|---|---|---|
+| 头尾结构 | 头 = system（角色 prompt，永不动）+ 压缩摘要 + 恢复指针；尾 = 当前任务全部 + 最近 2 任务原文（Hermes protect_last_n 的任务粒度适配——本项目任务边界清晰的优势） | Hermes 头尾结构 |
+| 关键串保真 | 压缩时正则提取文件路径/接口名/artifact sha/URL——原文嵌入摘要永不转述 | Hermes lean tail 模式 |
+| 恢复指针 | 摘要尾部附被压内容检索入口——落地为 artifact sha + file_rw 取回（批次 1）；search_memory（FTS5）批次 3 | Hermes session_search 指针的结构化版 |
+| 审计 | AGENT_CONTEXT_COMPRESSED 事件（何时/压掉多少 token/保了什么/蓝本路径） | 可观测性 |
 
 ### 7.4 约束下的能力边界（如实声明）
 
@@ -329,10 +338,10 @@ CREATED ──→ IDLE ⇄ BUSY ──→ PAUSED ──→ TERMINATED
 - **插件口预留**：retrieval.providers 扩展点（WP-025）本就支持注册 Embedding Provider——用户未来接入嵌入模型时注册一个 Provider 即升级语义检索，零 Core 改动（V1.12 "FTS5 为核 + Embedding 可选插件"选型的价值兑现）
 - 摘要成本：压缩触发时一次主模型调用（同账单类型，非新增依赖）——防抖机制保证不会连环调用
 
-### 7.5 交付安排
+### 7.5 交付安排（用户纠正 2026-10-12: 大型软件开发项目 50-150 任务/Agent 累计 600K-1.2M token，批次 1 第一个真实项目就必触发——压缩必须批次 1 就位，不留"Demo 规模够用"的侥幸）
 
-- **批次 1 简版**：硬限触发（50% 窗口估算）+ 任务卡片摘要 + 当前任务/最近 2 任务保护 + AGENT_CONTEXT_COMPRESSED 事件——Demo 规模够用
-- **批次 3 完整版**：search_memory 工具（FTS5 包装）+ 按模型阈值覆盖 + Checkpoint 联动（压缩后快照）
+- **批次 1（核心压缩全量）**：SessionStore（任务终态归档）+ 组装时序（§7.6 五段）+ 触发公式（模型适配 §7.5+）+ Prune/Summarize 两步 + 头尾结构 + 关键串保真 + 恢复指针（artifact sha+file_rw）+ 冷却 600s + AGENT_CONTEXT_COMPRESSED 事件 + 真实大历史 fixture 测试（15 任务塞满窗口断言压缩发生/卡片生成/当前任务原文完好）+ context_tokens/threshold 写入（UI 压力条数据源）
+- **批次 3（调优增强）**：search_memory 工具（FTS5 查历史）+ 连败 3 次熔断 + 工具循环每轮轻检查（网关真实数校准后）+ Checkpoint 联动（压缩后快照）+ Prune/摘要两步分离参数调优
 
 ### 7.5+ 主流开源实现对照（2026-10-12 查证补录）
 
