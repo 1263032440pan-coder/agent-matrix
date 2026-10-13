@@ -24,7 +24,10 @@
 
 ```
 Project Runtime（大脑）
-  └─ Controller 智能体（项目唯一，不干活）
+  └─ Controller 智能体（项目唯一——管理型 Agent，不执行业务任务但承担规划构建）
+       ├─ 流程构建: 项目流程与每个流程环节工作内容 md 的构建/维护
+       │    （/plan 链的编排者——理解材料→组织流程→写各环节工作内容契约，
+       │      即任务图与任务契约的生产者；重规划时增量修订）
        ├─ 巡检: 订阅 Agent 事件流 → 偏移检测
        ├─ 纠正: ACP correction → 目标 Agent 重启当前任务
        ├─ 调度: 任务图派发路由（环节匹配→空闲优先→能力匹配）
@@ -124,11 +127,16 @@ CREATED ──→ IDLE ⇄ BUSY ──→ PAUSED ──→ TERMINATED
 
 `AGENT_CREATED / AGENT_IDLE / AGENT_BUSY / AGENT_PAUSED / AGENT_DEGRADED / AGENT_RECOVERED / AGENT_TERMINATED`——payload 带 agent_id/instance_id/project_id/原因字段。Controller 巡检与 UI 监控面板直接消费。
 
-### 3.4 Controller（特殊 Agent）
+### 3.4 Controller（特殊 Agent——管理型，非纯监控）
 
 - 常驻（不参与六态业务转移；随项目启动创建、项目删除终止）
-- 不执行任务、不挂干活插件；唯一工具是 ACP 消息 + 路由决策
-- 偏移检测复用 Gate 语义：CompletionCheck 七条件 + 任务契约对照（产物类型/验收标准/依赖交接物）——不发明新检测逻辑
+- **不执行业务任务**（不写代码/不写测试），但**承担规划构建**：
+  - 项目流程构建：方法材料理解 → 流程阶段组织（skill 骨架/文档抽取/研究补齐的编排者，即 /plan 链的智能体化）
+  - 各环节工作内容 md：为任务图每个节点构建工作内容契约（任务描述/验收标准/依赖交接物——即 Task.contract 的生产者）
+  - 重规划：Replanner 触发时增量修订流程与契约（四触发源接线后的执行者）
+  - 产物落既有体系（ProjectPlaybook/Task.contract/Artifact）——Controller 的"活"是管理产物而非交付物本身
+- 插件配置：只挂管理类（web_search 查方法论/file_rw 读写契约），不挂 shell/code_search 等干活插件
+- 偏移检测复用 Gate 语义：CompletionCheck 七条件 + 任务契约对照（产物类型/验收标准/依赖交接物）——不发明新检测逻辑；检测依据正是自己构建的契约（构建者最清楚验收标准，语义自洽）
 
 ---
 
@@ -278,6 +286,7 @@ Migration：一张 migration 建三表 + 索引（project_id/definition_id/statu
 ### 批次 2：ACP + Controller（~4 天）
 - acp_message 表 + 五类消息收发 + 超时升级
 - Controller：巡检（Gate 语义偏移检测）+ correction 纠正闭环 + 调度裁决 + 环等待检测
+- **规划构建职责迁移**：/plan 链（normalize→…→plan）由直接函数调用改为 Controller 编排（既有链路语义不变，调用主体换成 Controller Agent——流程与环节工作内容 md 的构建成为 Controller 的本职产出）
 - Agent 间契约交互（request/inform）
 - Agent 详情 ACP 回放 UI + Controller 活动流
 
