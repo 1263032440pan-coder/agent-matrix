@@ -154,6 +154,17 @@ CREATED ──→ IDLE ⇄ BUSY ──→ PAUSED ──→ TERMINATED
   - 重规划：四触发源检测 → 增量修订流程与契约
   - 产物落既有体系（ProjectPlaybook/Task.contract/Artifact）——产出的是管理产物而非交付物本身
 - **【Work Runtime 新增职能】**：巡检（偏移检测）/ 纠正（ACP correction）/ 调度（Agent 路由）/ 生命周期权限（PAUSE/TERMINATE）
+- **【交付清单对账循环——长文档续作问题的解法（用户决策 2026-10-12）】**：长开发文档（32KB+）没有任何智能体能单会话不中断完成——本项目的解法是 Controller 常驻对账，三层机制：
+  - **检测（清单对账）**：规划期从文档抽出「交付清单」（全部待实现项+逐项验收标准——即 Task.contract 集）；执行中/后定期对账——复用 Traceability 覆盖图（WP-022 rebuild_scope 即对账查询：清单项→任务→产物有无链）+ CompletionCheck 七条件（WP-023）；三类结果：✓已覆盖 / ✗卡点（任务 FAILED/BLOCKED）/ ✗漏项（清单项无任务覆盖——长文档后半段被 LLM 遗忘的经典场景）
+  - **决策（四动作）**：漏项→动态建任务（Replanner FACT_CHANGE 增量通道既有）；卡点→ACP correction/换 Agent 重派；质量差→REWORK（Gate FAIL 链路既有）；全绿→才允许项目完成
+  - **驱动（停止条件改写）**：FULL_AUTO 推进循环的停止条件 = 清单全绿（不是任务队列空——"任务图跑完"但清单未对平时 Controller 继续对账补任务）；MANUAL 模式卡点主动请求用户（ManualAction 既有），但"提醒继续"本身不需要人
+- **【防死循环五闸（用户确认 2026-10-12——自动验收循环系统的死亡螺旋防线）】**：
+  1. **验收标准规划期冻结**：Task.contract 验收条款只在规划时写，执行期只做闭式逐条对照（boolean），不得新增/拔高标准；REWORK 指令必须引用具体条款（"违反条款 3: 404≠500"），禁止开放式挑刺（"测试不够充分"）——合同验收而非薛定谔验收
+  2. **REWORK 轮次上限**（max_rework_rounds=3 默认可配）：第 3 轮 FAIL 后不再 REWORK，升级 ManualAction 三选一（降级接受 WAIVED+豁免理由留审计 / 换 Agent 或换模型 / 用户裁决）——系统永不自作主张第 4 轮
+  3. **漏项补给预算**：对账补新任务 ≤ 原任务图节点数 50%（9 节点最多补 4）——超限停止补给升级用户（"文档过大/需求颗粒度不适配，建议拆项目"）
+  4. **全局死循环熔断**：连续 8 次任务终态均 FAIL/REWORK → 判定系统性问题 → 项目自动 PAUSED + 报告用户，停止消耗 token
+  5. **循环成本可见**：UI 任务卡显示 rework_round ×/3；项目页显示"对账第 N 轮 | 补给 m/预算 | 累计消耗"
+  - **设计原则**："完成"必须有限可判定——验收条款有限集 + REWORK 有限轮 + 补给有限额 + 熔断有限触发，四层有限叠加数学上保证循环必然终止（完成或升级人类，无第三种无限状态）；宽松度旋钮只留两个且都归用户（max_rework_rounds / WAIVED 降级接受开关），不留给 LLM
 - 插件配置：管理类（web_search/file_rw/code_search 只读），不挂 shell 执行/测试运行等干活插件
 - 偏移检测复用 Gate 语义：CompletionCheck 七条件 + 任务契约对照——检测依据正是自己构建的契约（构建者最清楚验收标准，语义自洽）
 
@@ -216,6 +227,7 @@ CREATED ──→ IDLE ⇄ BUSY ──→ PAUSED ──→ TERMINATED
 | `correction` | Controller→Agent | 偏移纠正（先 PAUSE 目标 Agent → 下发修正指令与依据 → 重启当前任务） |
 | `report` | Agent→Controller | 冲突上报（需求矛盾请求裁决）；进度/风险上报 |
 | `directive` | Controller→Agent | 调度指令（暂停等待上游/恢复执行） |
+| `manifest_check`（审计事件） | Controller→系统 | 清单对账结果（对账轮次/✓数/✗卡点/✗漏项/补给动作）——驱动续作循环的可观测信号（§3.4 对账机制） |
 
 ### 5.2 交互内容原则
 
@@ -490,6 +502,8 @@ Migration：一张 migration 建三表 + 索引（project_id/definition_id/statu
 - acp_message 表 + 五类消息收发 + 超时升级
 - Controller：巡检（Gate 语义偏移检测）+ correction 纠正闭环 + 调度裁决 + 环等待检测
 - **规划链路 Agent 化（职能不变，主体升级）**：/plan 链（normalize→…→plan）由直接函数调用改为 Controller 编排——全部既有职能（流程构建/工作内容契约/研究编排/重规划）原样保留，仅调用主体升级为 Controller Agent 实体；迁移期双轨保险：Agent 化编排失败自动回退直接函数链（降级矩阵同款语义）
+- **交付清单对账循环（§3.4 长文档续作解法）**：清单抽取（文档→交付清单）/ 定期对账（Traceability 覆盖查询 + CompletionCheck）/ 四动作决策 / 停止条件改写（清单全绿才完成）
+- **防死循环五闸（§3.4）**：验收冻结（REWORK 指令引用条款校验）/ max_rework_rounds=3 + WAIVED 降级/ 补给预算 50% / 全局熔断（连续 8 FAIL/REWORK→PAUSED）/ UI 循环成本展示（rework ×/3、对账轮次、补给用量）
 - Agent 间契约交互（request/inform）
 - Agent 详情 ACP 回放 UI + Controller 活动流
 
@@ -525,6 +539,8 @@ Migration：一张 migration 建三表 + 索引（project_id/definition_id/statu
 | 域 | 用例形态 |
 |---|---|
 | FSM | 六态全转移正/反（非法转移拒绝+审计） |
+| 对账循环 | 漏项检测（清单项无任务→检出）/ 全绿判定（清单对平才完成）/ 停止条件（任务图空但清单未平→继续对账） |
+| 防死循环 | REWORK 第 4 轮拒绝（升级 ManualAction）/ 开放式挑刺指令被拒（必须引用条款）/ 补给超 50% 停止升级 / 连续 8 FAIL→项目 PAUSED / WAIVED 留审计 |
 | 路由 | 环节匹配（标准词精确等值+别名归一+misc 兜底）/空闲优先/插件需求过滤/无匹配请求创建 |
 | 生命周期 | DEGRADED 自愈/TERMINATED 审计保留/删模板不炸实例 |
 | 插件 | shell 白名单（黑名单命令拒绝/**cwd 逃逸拒绝——cd 与绝对路径参数/**/**pytest -c 注入拒绝**）/slide_generator 生成 pptx 校验（python-pptx 读回断言页数标题）/webfetch |
