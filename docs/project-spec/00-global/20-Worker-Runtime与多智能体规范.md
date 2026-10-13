@@ -226,6 +226,7 @@ CREATED ──→ IDLE ⇄ BUSY ──→ PAUSED ──→ TERMINATED
 2. 未命中（自由文本/default）→ 别名表映射（如"实现开发"→"开发实现"、"需求分析"→"需求基线"；别名表 seed 进库，仅规范升级时可扩）
 3. 别名仍不中 → "misc" → 路由给 analyst 默认 Agent（并记 AMBIGUOUS 事件供 Controller 观察归新词）
 4. planner 补填充：keyword 路径从节点 workstream/节点名做同一归一化（与 skill 路径同表）
+5. **兜底词统一（用户验证发现 2026-10-12）**：现存两处兜底词不一致——models.py/CreateTaskRequest/planner 均为 "generic"，但 playbook/builder.py:187 workstream 兜底写 "default"（库里 53 条 default 即源于此）。批次 1 统一为 "generic"（models.py 模型默认值为准），迁移侧不回填历史行（default/generic 归一化后同落 misc，影响为零）；测试断言两个旧词都归一为 misc
 
 **词表维护纪律**：标准词表与别名表是**规范资产**（migration seed，改动走 CR）——模板 stage_affinity 只准引用标准词（创建表单下拉限定），杜绝自由文本。
 
