@@ -24,14 +24,16 @@
 
 ```
 Project Runtime（大脑）
-  └─ Controller 智能体（项目唯一——管理型 Agent，不执行业务任务但承担规划构建）
-       ├─ 流程构建: 项目流程与每个流程环节工作内容 md 的构建/维护
-       │    （/plan 链的编排者——理解材料→组织流程→写各环节工作内容契约，
-       │      即任务图与任务契约的生产者；重规划时增量修订）
-       ├─ 巡检: 订阅 Agent 事件流 → 偏移检测
-       ├─ 纠正: ACP correction → 目标 Agent 重启当前任务
-       ├─ 调度: 任务图派发路由（环节匹配→空闲优先→能力匹配）
-       └─ 生命周期权限: 唯一可 PAUSE/TERMINATE 其他 Agent 的角色
+  └─ Controller 智能体（项目唯一——即既有的"项目规划链路"智能体化）
+       ├─ 【既有本职，不可丢】流程构建: 项目流程与每个流程环节
+       │    工作内容 md 的构建/维护（/plan 链全部职能——理解材料→
+       │    组织流程→写各环节工作内容契约；重规划时增量修订）
+       │    ← 该职能自 D06-D10 链路起就存在，Worker Runtime 不改变它，
+       │      只是把调用主体从"直接函数链"升级为"Agent 实体"
+       ├─ 【Work Runtime 新增职能】巡检: 订阅 Agent 事件流 → 偏移检测
+       ├─ 【新增】纠正: ACP correction → 目标 Agent 重启当前任务
+       ├─ 【新增】调度: 任务图派发路由（环节匹配→空闲优先→能力匹配）
+       └─ 【新增】生命周期权限: 唯一可 PAUSE/TERMINATE 其他 Agent 的角色
 
 干活智能体 ×N（按环节归组，4-5 个/项目典型）
   ├─ 理解/设计/编码/测试/交付 各挂对应插件集 + skill 白名单
@@ -127,16 +129,20 @@ CREATED ──→ IDLE ⇄ BUSY ──→ PAUSED ──→ TERMINATED
 
 `AGENT_CREATED / AGENT_IDLE / AGENT_BUSY / AGENT_PAUSED / AGENT_DEGRADED / AGENT_RECOVERED / AGENT_TERMINATED`——payload 带 agent_id/instance_id/project_id/原因字段。Controller 巡检与 UI 监控面板直接消费。
 
-### 3.4 Controller（特殊 Agent——管理型，非纯监控）
+### 3.4 Controller（特殊 Agent——既有规划智能体的 Agent 化 + 新增管理职能）
+
+**定位澄清（用户决策 2026-10-12）**：Controller 不是新建的岗位——它就是**既有的项目规划链路（/plan 全链）的智能体化**。规划构建（流程组织/各环节工作内容 md/契约生产/重规划）自 D06-D10 起一直是这个"角色"的本职，Worker Runtime 不夺走也不降级它，只是把它从隐式的函数调用链升级为显式的 Agent 实体；在此基础上**新增**监控管理职能。
 
 - 常驻（不参与六态业务转移；随项目启动创建、项目删除终止）
-- **不执行业务任务**（不写代码/不写测试），但**承担规划构建**：
-  - 项目流程构建：方法材料理解 → 流程阶段组织（skill 骨架/文档抽取/研究补齐的编排者，即 /plan 链的智能体化）
-  - 各环节工作内容 md：为任务图每个节点构建工作内容契约（任务描述/验收标准/依赖交接物——即 Task.contract 的生产者）
-  - 重规划：Replanner 触发时增量修订流程与契约（四触发源接线后的执行者）
-  - 产物落既有体系（ProjectPlaybook/Task.contract/Artifact）——Controller 的"活"是管理产物而非交付物本身
-- 插件配置：只挂管理类（web_search 查方法论/file_rw 读写契约），不挂 shell/code_search 等干活插件
-- 偏移检测复用 Gate 语义：CompletionCheck 七条件 + 任务契约对照（产物类型/验收标准/依赖交接物）——不发明新检测逻辑；检测依据正是自己构建的契约（构建者最清楚验收标准，语义自洽）
+- **【既有本职，全部保留】**：
+  - 项目流程构建：材料理解 → 流程阶段组织（skill 骨架/文档抽取/研究补齐的编排）
+  - 各环节工作内容 md：任务图每节点的工作内容契约（Task.contract 生产者——任务描述/验收标准/依赖交接物）
+  - 研究编排：方法缺口检测 → 联网研究触发 → 结论回流（既有 gap 链）
+  - 重规划：四触发源检测 → 增量修订流程与契约
+  - 产物落既有体系（ProjectPlaybook/Task.contract/Artifact）——产出的是管理产物而非交付物本身
+- **【Work Runtime 新增职能】**：巡检（偏移检测）/ 纠正（ACP correction）/ 调度（Agent 路由）/ 生命周期权限（PAUSE/TERMINATE）
+- 插件配置：管理类（web_search/file_rw/code_search 只读），不挂 shell 执行/测试运行等干活插件
+- 偏移检测复用 Gate 语义：CompletionCheck 七条件 + 任务契约对照——检测依据正是自己构建的契约（构建者最清楚验收标准，语义自洽）
 
 ---
 
@@ -286,7 +292,7 @@ Migration：一张 migration 建三表 + 索引（project_id/definition_id/statu
 ### 批次 2：ACP + Controller（~4 天）
 - acp_message 表 + 五类消息收发 + 超时升级
 - Controller：巡检（Gate 语义偏移检测）+ correction 纠正闭环 + 调度裁决 + 环等待检测
-- **规划构建职责迁移**：/plan 链（normalize→…→plan）由直接函数调用改为 Controller 编排（既有链路语义不变，调用主体换成 Controller Agent——流程与环节工作内容 md 的构建成为 Controller 的本职产出）
+- **规划链路 Agent 化（职能不变，主体升级）**：/plan 链（normalize→…→plan）由直接函数调用改为 Controller 编排——全部既有职能（流程构建/工作内容契约/研究编排/重规划）原样保留，仅调用主体升级为 Controller Agent 实体；迁移期双轨保险：Agent 化编排失败自动回退直接函数链（降级矩阵同款语义）
 - Agent 间契约交互（request/inform）
 - Agent 详情 ACP 回放 UI + Controller 活动流
 
