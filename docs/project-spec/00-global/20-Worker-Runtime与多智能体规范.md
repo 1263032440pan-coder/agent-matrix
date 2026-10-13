@@ -278,12 +278,34 @@ Migration：一张 migration 建三表 + 索引（project_id/definition_id/statu
 
 ---
 
-## 8. UI
+## 8. UI（按批次完整清单）
 
-- **「智能体管理」面板**：列表（状态徽章/当前任务/模型）+ 创建表单（§2.2 路径 2）+ 暂停/恢复/终止按钮 + 点击进 Agent 详情（ACP 消息流回放——监控形态）
-- Task Graph 节点显示执行 Agent 名
-- 产物区 pptx 下载卡片（复用产物预览，加文件类型图标）
-- Controller 活动流（纠正/裁决事件时间线）
+### 8.1 批次 1
+
+| UI 项 | 内容 | 复杂度 |
+|---|---|---|
+| **「智能体管理」面板**（新组件） | Agent 列表（六态色状态徽章/名称/当前任务/模型名）+ 创建表单（名称/角色描述/模型下拉/**stage_affinity 下拉限定九标准词**/插件勾选/skill 勾选）+ 操作按钮（暂停/恢复/终止，按状态禁用）+ 30s 轮询与错误清除（SkillPanel 同款范式） | ★★★ 本批最大件 |
+| pptx 产物卡片 | 产物区预览扩展：.pptx 文件类型图标 + 下载按钮（复用 GET /api/artifacts/{id}/content，前端识别扩展名换图标） | ★ |
+| Task Graph 节点标 Agent 名 | 节点卡片加"执行者: coder-1"行（任务详情 API 补 agent 字段） | ★ |
+
+### 8.2 批次 2
+
+| UI 项 | 内容 |
+|---|---|
+| **Agent 详情页**（点列表进，新组件） | ACP 消息流时间线（五类消息分色：request/inform/correction/report/directive）+ 生命周期事件轨迹（CREATED→…→当前态）+ 该 Agent 产出产物列表 |
+| **Controller 活动流**（新区块） | 纠正事件时间线：巡检发现什么偏移→发了什么 correction→Agent 是否修正（监控诉求的可视化主体） |
+| 生命周期事件进执行时间线 | AGENT_BUSY/DEGRADED 等事件在事件流/ThinkingPanel 可见 |
+
+### 8.3 批次 3
+
+| UI 项 | 内容 |
+|---|---|
+| 成本配额展示 | Agent 详情页加 token/调用统计条 |
+| 插件包管理入口 | SkillPanel 旁"插件包"导入（行业插件包 ZIP，与 skill ZIP 同款交互，复用组件模式） |
+
+**汇总**：新组件 2 个（智能体管理面板/Agent 详情页）+ 新区块 1 个（Controller 活动流）+ 既有组件小改 3 处（产物卡片/Task Graph 节点/SkillPanel 旁插件包入口）；全部走既有 UI 范式（轮询/卡片/表单），无新 UI 框架依赖。API 侧配套三组端点：agents CRUD + 生命周期操作 + ACP 查询。
+
+**UI 工作量占比**：批次 1 约 1 天（面板为主）、批次 2 约 1 天（ACP 回放）、批次 3 顺带。
 
 ---
 
