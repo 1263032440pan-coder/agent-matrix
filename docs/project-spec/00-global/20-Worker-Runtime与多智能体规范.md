@@ -276,7 +276,65 @@ CREATED ──→ IDLE ⇄ BUSY ──→ PAUSED ──→ TERMINATED
 
 ---
 
-## 7. 数据与审计
+## 7. Agent 会话上下文压缩（零嵌入融合方案）
+
+> 用户约束（2026-10-12）：默认无法调用嵌入模型与重排序模型（用户不可能买了大模型接口再承担其他类型模型成本）——方案全程零嵌入依赖。
+
+### 7.1 调研结论（五流派与选型）
+
+| 流派 | 机制 | 本项目选型 |
+|---|---|---|
+| ① 会话压缩/摘要化（Claude Code/Hermes/OpenAI 主流） | 老消息 LLM 摘要替换 + 尾部 protect_last_n 原文保留 | ✅ **主方案** |
+| ② 记忆分层/外置（MemGPT→Letta） | 窗口=主内存，外部存储=磁盘，按需换入换出 | ✅ **辅助**（指针外置） |
+| ③ Token 级压缩（LLMLingua） | 小模型打困惑度分逐词剔除 | ❌ 工程重、对话伤语义 |
+| ④ KV Cache 压缩（KVQuant 等） | 推理服务端内部 | ❌ API 网关层碰不到 |
+| ⑤ RAG 化记忆（语义检索取回） | 历史向量化按需检索 | ⏸ 语义版依赖嵌入模型（约束禁用）——关键词版经 FTS5 部分实现 |
+
+主流产品实际组合 = ①+②；本项目同款，且多一个天然优势——**任务边界清晰**（一次任务一个 WorkPackage），按任务粒度压缩比消息粒度更干净、恢复指针更结构化。
+
+### 7.2 三层会话记忆（全部零嵌入依赖）
+
+```
+┌ 工作记忆（窗口内——热，原文）
+│   system prompt + 当前任务全部消息（4 轮工具循环语义不可断，
+│   任务内永不压）+ 最近 2 个任务原文
+├ 任务卡片层（窗口内——温，压缩产物）
+│   更早任务 → 主模型 LLM 摘要为任务卡片（~200 token/任务）:
+│   「任务68 开发实现 | 结论: 完成 UserService CRUD
+│     产物: artifact#91 sha:3f2a | 遗留: 接口未写测试」
+│   摘要者 = 主模型（DeepSeek 网关内，无新增成本类型）
+└ 外置层（数据库/磁盘——冷，指针不占窗口）
+    全部产物原文（artifact 表）+ 全部事件流（runtime_event）
+    取回 = file_rw 插件（Agent 判"需要原文"时读——恢复指针语义）
+    检索 = FTS5 关键词（既有 Retrieval 域）→ search_memory 工具
+    （BM25 查事件/产物文本——"我之前在哪提过 User 模块"）
+```
+
+### 7.3 机制参数（Hermes 对标 + 任务粒度改造）
+
+| 项 | 取值 | 依据 |
+|---|---|---|
+| 触发阈值 | prompt_tokens ≥ 50% × 模型窗口（网关返回真实数优先，chars/4 估算兜底） | Hermes 默认；按模型可覆盖（DeepSeek 128K 用 0.5） |
+| 尾部保护 | 当前任务全部 + 最近 2 任务原文（消息数语义改为任务数——本项目粒度优势） | protect_last_n 的任务版 |
+| 任务卡片 | 每任务 ~200 token；含任务名/结论要点/产物引用（task_id+artifact sha）/遗留问题 | 结构化优于泛化摘要 |
+| 恢复指针 | 产物引用永不压（sha 直指原文，file_rw 取回） | Hermes session_search 的结构化加强版 |
+| 防抖 | 摘要失败冷却 600s 不重试；失败不丢活上下文（跳过本次压缩） | Hermes 同款 |
+| 审计 | AGENT_CONTEXT_COMPRESSED 事件（何时/压掉多少 token/保了什么） | 可观测性 |
+
+### 7.4 约束下的能力边界（如实声明）
+
+- 语义检索不可用：找历史只能关键词命中（FTS5 中文 bigram 部分缓解近义）；"意思相近但字面不同"的内容可能检索不到——已接受的取舍
+- **插件口预留**：retrieval.providers 扩展点（WP-025）本就支持注册 Embedding Provider——用户未来接入嵌入模型时注册一个 Provider 即升级语义检索，零 Core 改动（V1.12 "FTS5 为核 + Embedding 可选插件"选型的价值兑现）
+- 摘要成本：压缩触发时一次主模型调用（同账单类型，非新增依赖）——防抖机制保证不会连环调用
+
+### 7.5 交付安排
+
+- **批次 1 简版**：硬限触发（50% 窗口估算）+ 任务卡片摘要 + 当前任务/最近 2 任务保护 + AGENT_CONTEXT_COMPRESSED 事件——Demo 规模够用
+- **批次 3 完整版**：search_memory 工具（FTS5 包装）+ 按模型阈值覆盖 + Checkpoint 联动（压缩后快照）
+
+---
+
+## 8. 数据与审计
 
 | 表 | 内容 |
 |---|---|
@@ -289,9 +347,9 @@ Migration：一张 migration 建三表 + 索引（project_id/definition_id/statu
 
 ---
 
-## 8. UI（按批次完整清单）
+## 9. UI（按批次完整清单）
 
-### 8.1 批次 1
+### 9.1 批次 1
 
 | UI 项 | 内容 | 复杂度 |
 |---|---|---|
@@ -299,7 +357,7 @@ Migration：一张 migration 建三表 + 索引（project_id/definition_id/statu
 | pptx 产物卡片 | 产物区预览扩展：.pptx 文件类型图标 + 下载按钮（复用 GET /api/artifacts/{id}/content，前端识别扩展名换图标） | ★ |
 | Task Graph 节点标 Agent 名 | 节点卡片加"执行者: coder-1"行（任务详情 API 补 agent 字段） | ★ |
 
-### 8.2 批次 2
+### 9.2 批次 2
 
 | UI 项 | 内容 |
 |---|---|
@@ -307,7 +365,7 @@ Migration：一张 migration 建三表 + 索引（project_id/definition_id/statu
 | **Controller 活动流**（新区块） | 纠正事件时间线：巡检发现什么偏移→发了什么 correction→Agent 是否修正（监控诉求的可视化主体） |
 | 生命周期事件进执行时间线 | AGENT_BUSY/DEGRADED 等事件在事件流/ThinkingPanel 可见 |
 
-### 8.3 批次 3
+### 9.3 批次 3
 
 | UI 项 | 内容 |
 |---|---|
@@ -322,7 +380,7 @@ Migration：一张 migration 建三表 + 索引（project_id/definition_id/statu
 
 ---
 
-## 9. 交付批次
+## 10. 交付批次
 
 ### 批次 1：骨架 + 底座插件（~3 天）
 - AgentDefinition/AgentInstance + migration + 六态 FSM（含 actor 防护/非法转移拒绝测试）
@@ -351,12 +409,12 @@ Migration：一张 migration 建三表 + 索引（project_id/definition_id/statu
 
 ---
 
-## 10. 依赖与工程（返修补充 P3-2）
+## 11. 依赖与工程（返修补充 P3-2）
 
 - **python-pptx** 为新第三方依赖（uv 可达已验，1.0.2）：批次 1 开工首步 `pyproject.toml` dependencies + `uv sync`，与代码同 commit（依赖声明与安装是两回事——skill 既有教训）
 - slide_generator 产物校验依赖 python-pptx 读回（测试同用，无需额外 devDep）
 
-## 11. 明确不做（Out of Scope）
+## 12. 明确不做（Out of Scope）
 
 - 非软件开发行业插件实现（建筑/法律等——只留槽位架构）
 - Agent 自由聊天（ACP 限五类结构化消息）
@@ -366,7 +424,7 @@ Migration：一张 migration 建三表 + 索引（project_id/definition_id/statu
 
 ---
 
-## 12. 测试计划（摘要）
+## 13. 测试计划（摘要）
 
 | 域 | 用例形态 |
 |---|---|
