@@ -64,7 +64,8 @@ AgentDefinition（agent_definition 表——静态配置，长期存在，跨项
   ├─ plugins: JSON（插件白名单：["shell","file_rw","slide_generator",…]）
   ├─ skills: JSON（skill 白名单：skill_id 列表；AI 在白名单内自决）
   ├─ stage_affinity: JSON（环节亲和：["设计","架构"]——路由依据）
-  └─ scope: GLOBAL（全局模板）/ PROJECT（项目实例化）
+  ├─ scope: GLOBAL（全局模板）/ PROJECT（项目实例化）
+  └─ source: BUILT_IN（内置）/ USER（用户自建）/ CONTROLLER_GENERATED（AI 动态生成）
 
 AgentInstance（agent_instance 表——运行时状态机，项目内实体）
   ├─ definition_id → AgentDefinition
@@ -93,6 +94,11 @@ AgentInstance（agent_instance 表——运行时状态机，项目内实体）
 | coder | 开发实现 | file_rw, shell, code_search, git, lsp | 编码三件套 |
 | tester | 测试验证 | file_rw, shell, test_runner, code_search | 跑测+报告 |
 | releaser | 交付打包,使用文档 | file_rw, shell, builder, slide_generator | 打包+交付文档 |
+
+**术语澄清（2026-10-12 用户问询补充）**：
+- **模板库** = `agent_definition` 表里全部 Definition 的集合（内置五个 seed + 用户自建 + Controller 动态生成的都在同一张表，scope 字段区分 GLOBAL/PROJECT）
+- **默认模板** = 内置五个（analyst/designer/coder/tester/releaser）——安装即有、开箱即用的出厂配置；AgentProvisioner 优先从中匹配，用户可修改可停用可自建
+- **AI 生成的模板** = Controller 动态派生（§2.2 路径 3：监控发现能力缺口时按模板库结构新建 Definition）——与用户自建的同等地位入表，UI 可辨识来源（source: BUILT_IN / USER / CONTROLLER_GENERATED）
 
 （模板数据 seed 进库，用户可改可自建——模板只是初始配置不是硬编码）
 
@@ -284,7 +290,7 @@ Migration：一张 migration 建三表 + 索引（project_id/definition_id/statu
 
 | UI 项 | 内容 | 复杂度 |
 |---|---|---|
-| **「智能体管理」面板**（新组件） | Agent 列表（六态色状态徽章/名称/当前任务/模型名）+ 创建表单（名称/角色描述/模型下拉/**stage_affinity 下拉限定九标准词**/插件勾选/skill 勾选）+ 操作按钮（暂停/恢复/终止，按状态禁用）+ 30s 轮询与错误清除（SkillPanel 同款范式） | ★★★ 本批最大件 |
+| **「智能体管理」面板**（新组件） | **两个视图页签——模板 + 实例全可见（用户决策 2026-10-12：项目过程中 AI 生成的模板与实例都要在 UI 体现）**：<br>**① 模板视图**：全部 Definition 列表（含来源徽章 BUILT_IN/USER/CONTROLLER_GENERATED——AI 动态生成的一眼可辨）+ 新建/编辑/停用 + 点击看配置详情（插件/skill/环节亲和）<br>**② 实例视图**：本项目全部 AgentInstance 卡片——**实时状态徽章（六态色）+ 正在做什么（BUSY 时显示当前任务名与阶段/工具循环最近动作如"搜索中/写 PPT 中"，IDLE 显示待命，DEGRADED 显示原因与冷却倒计时）+ 所属模板 + 模型名**；点卡片进详情页（批次 2 接 ACP 回放）<br>创建表单（名称/角色描述/模型下拉/**stage_affinity 下拉限定九标准词**/插件勾选/skill 勾选）+ 操作按钮（暂停/恢复/终止，按状态禁用）+ 5s 轮询（执行期状态变化快，比 SkillPanel 30s 密）与错误清除 | ★★★ 本批最大件 |
 | pptx 产物卡片 | 产物区预览扩展：.pptx 文件类型图标 + 下载按钮（复用 GET /api/artifacts/{id}/content，前端识别扩展名换图标） | ★ |
 | Task Graph 节点标 Agent 名 | 节点卡片加"执行者: coder-1"行（任务详情 API 补 agent 字段） | ★ |
 
@@ -303,7 +309,9 @@ Migration：一张 migration 建三表 + 索引（project_id/definition_id/statu
 | 成本配额展示 | Agent 详情页加 token/调用统计条 |
 | 插件包管理入口 | SkillPanel 旁"插件包"导入（行业插件包 ZIP，与 skill ZIP 同款交互，复用组件模式） |
 
-**汇总**：新组件 2 个（智能体管理面板/Agent 详情页）+ 新区块 1 个（Controller 活动流）+ 既有组件小改 3 处（产物卡片/Task Graph 节点/SkillPanel 旁插件包入口）；全部走既有 UI 范式（轮询/卡片/表单），无新 UI 框架依赖。API 侧配套三组端点：agents CRUD + 生命周期操作 + ACP 查询。
+**汇总**：新组件 2 个（智能体管理面板/Agent 详情页）+ 新区块 1 个（Controller 活动流）+ 既有组件小改 3 处（产物卡片/Task Graph 节点/SkillPanel 旁插件包入口）；全部走既有 UI 范式（轮询/卡片/表单），无新 UI 框架依赖。API 侧配套：agents CRUD + 生命周期操作 + **实例实时状态端点（GET /api/projects/{id}/agents——含 status/current_task/最近工具动作，聚合自 agent_instance 表 + 最新 LLM_TOOL 事件）** + ACP 查询。
+
+**实时性纪律**：实例"正在做什么"的数据源是既有事件流（LLM_TOOL_CALL/AGENT_BUSY 等）——不新增上报通道，UI 轮询聚合即可；状态变化经生命周期七事件落库，5s 轮询的显示延迟可接受（执行期无秒级需求）。
 
 **UI 工作量占比**：批次 1 约 1 天（面板为主）、批次 2 约 1 天（ACP 回放）、批次 3 顺带。
 
