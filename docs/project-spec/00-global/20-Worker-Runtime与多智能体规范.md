@@ -72,6 +72,8 @@ AgentInstance（agent_instance 表——运行时状态机，项目内实体）
   ├─ project_id / status（§3 六态）
   ├─ context_ref（会话上下文——多轮累积；含已加载 skill/已产出摘要）
   ├─ fail_count / degraded_until（自愈计数）
+  ├─ context_tokens / context_threshold（上下文使用/触发阈值——组装器
+  │    每次组装写入，UI 压力条数据源；阈值随模型适配 §7.5+）
   └─ current_task_id（BUSY 时非空）
 ```
 
@@ -438,7 +440,7 @@ Migration：一张 migration 建三表 + 索引（project_id/definition_id/statu
 
 | UI 项 | 内容 | 复杂度 |
 |---|---|---|
-| **「智能体管理」面板**（新组件） | **两个视图页签——模板 + 实例全可见（用户决策 2026-10-12：项目过程中 AI 生成的模板与实例都要在 UI 体现）**：<br>**① 模板视图**：全部 Definition 列表（含来源徽章 BUILT_IN/USER/CONTROLLER_GENERATED——AI 动态生成的一眼可辨）+ 新建/编辑/停用 + 点击看配置详情（插件/skill/环节亲和）<br>**② 实例视图**：本项目全部 AgentInstance 卡片——**实时状态徽章（六态色）+ 正在做什么（BUSY 时显示当前任务名与阶段/工具循环最近动作如"搜索中/写 PPT 中"，IDLE 显示待命，DEGRADED 显示原因与冷却倒计时）+ 所属模板 + 模型名**；点卡片进详情页（批次 2 接 ACP 回放）<br>创建表单（名称/角色描述/模型下拉/**stage_affinity 下拉限定九标准词**/插件勾选/skill 勾选）+ 操作按钮（暂停/恢复/终止，按状态禁用）+ 5s 轮询（执行期状态变化快，比 SkillPanel 30s 密）与错误清除 | ★★★ 本批最大件 |
+| **「智能体管理」面板**（新组件） | **两个视图页签——模板 + 实例全可见（用户决策 2026-10-12：项目过程中 AI 生成的模板与实例都要在 UI 体现）**：<br>**① 模板视图**：全部 Definition 列表（含来源徽章 BUILT_IN/USER/CONTROLLER_GENERATED——AI 动态生成的一眼可辨）+ 新建/编辑/停用 + 点击看配置详情（插件/skill/环节亲和）<br>**② 实例视图**：本项目全部 AgentInstance 卡片——**实时状态徽章（六态色）+ 正在做什么（BUSY 时显示当前任务名与阶段/工具循环最近动作如"搜索中/写 PPT 中"，IDLE 显示待命，DEGRADED 显示原因与冷却倒计时）+ 所属模板 + 模型名**；点卡片进详情页（批次 2 接 ACP 回放）<br>**上下文压力条（用户决策 2026-10-12：UI 要体现每个智能体的上下文使用情况）**：卡片底部细进度条——已用 token/触发阈值（如 45K/112K），三段变色（<60% 绿 / 60-90% 黄 / ≥90% 红）；数据源=组装器（§7）每次组装时写入 AgentInstance.context_tokens/threshold（压缩机制的计算副产品，零新增采集成本）；触发压缩时条上闪压缩图标（读 AGENT_CONTEXT_COMPRESSED 事件）<br>创建表单（名称/角色描述/模型下拉/**stage_affinity 下拉限定九标准词**/插件勾选/skill 勾选）+ 操作按钮（暂停/恢复/终止，按状态禁用）+ 5s 轮询（执行期状态变化快，比 SkillPanel 30s 密）与错误清除 | ★★★ 本批最大件 |
 | pptx 产物卡片 | 产物区预览扩展：.pptx 文件类型图标 + 下载按钮（复用 GET /api/artifacts/{id}/content，前端识别扩展名换图标） | ★ |
 | Task Graph 节点标 Agent 名 | 节点卡片加"执行者: coder-1"行（任务详情 API 补 agent 字段） | ★ |
 
@@ -454,7 +456,7 @@ Migration：一张 migration 建三表 + 索引（project_id/definition_id/statu
 
 | UI 项 | 内容 |
 |---|---|
-| 成本配额展示 | Agent 详情页加 token/调用统计条 |
+| 成本配额展示 | Agent 详情页加 token/调用统计条（与批次 1 上下文压力条不同载体：压力条=单次会话窗口占用（防压缩盲区），配额条=累计消耗统计（防成本失控），两条并存） |
 | 插件包管理入口 | SkillPanel 旁"插件包"导入（行业插件包 ZIP，与 skill ZIP 同款交互，复用组件模式） |
 
 **汇总**：新组件 2 个（智能体管理面板/Agent 详情页）+ 新区块 1 个（Controller 活动流）+ 既有组件小改 3 处（产物卡片/Task Graph 节点/SkillPanel 旁插件包入口）；全部走既有 UI 范式（轮询/卡片/表单），无新 UI 框架依赖。API 侧配套：agents CRUD + 生命周期操作 + **实例实时状态端点（GET /api/projects/{id}/agents——含 status/current_task/最近工具动作，聚合自 agent_instance 表 + 最新 LLM_TOOL 事件）** + ACP 查询。
