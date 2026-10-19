@@ -38,6 +38,7 @@ import project_runtime.retrieval.models  # noqa: E402, F401 — register retriev
 import project_runtime.skills.models  # noqa: E402, F401 — register skill tables
 import project_runtime.traceability.models  # noqa: E402, F401 — register traceability tables
 import project_runtime.understanding.models  # noqa: E402, F401 — register understanding table
+import project_runtime.worker.agent_models  # noqa: E402, F401 — register agent tables (20号规范)
 from project_runtime.project_state.base import Base  # noqa: E402
 
 target_metadata = Base.metadata

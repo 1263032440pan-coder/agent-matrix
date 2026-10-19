@@ -56,6 +56,14 @@ class RuntimeEventType(str, enum.Enum):
     LLM_ANSWER_CHUNK = "LLM_ANSWER_CHUNK"       # 正式答案流式增量
     LLM_TOOL_CALL = "LLM_TOOL_CALL"             # 模型发起工具调用（规范 19 §4.3）
     LLM_TOOL_RESULT = "LLM_TOOL_RESULT"         # 工具执行完成（审计: ok/计数/时长）
+    AGENT_CREATED = "AGENT_CREATED"             # Agent 实例创建（规范 20 §3.3）
+    AGENT_IDLE = "AGENT_IDLE"
+    AGENT_BUSY = "AGENT_BUSY"
+    AGENT_PAUSED = "AGENT_PAUSED"
+    AGENT_DEGRADED = "AGENT_DEGRADED"
+    AGENT_RECOVERED = "AGENT_RECOVERED"
+    AGENT_TERMINATED = "AGENT_TERMINATED"
+    AGENT_CONTEXT_COMPRESSED = "AGENT_CONTEXT_COMPRESSED"  # 会话压缩发生（§7.3 审计）
 
 
 class RuntimeEvent(Base):
