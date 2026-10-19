@@ -34,3 +34,5 @@ test-assets/
 
 # Local git hooks (dev machine config, not shared)
 .githooks/
+*.zip
+docs/*(1).md
