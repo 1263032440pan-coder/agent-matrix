@@ -7,6 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from apps.runtime.api import executions_router, projects_router, settings_router
+from apps.runtime.api.agents import router as agents_router
 from apps.runtime.api.artifacts import router as artifacts_router
 from apps.runtime.api.checkpoints import router as checkpoints_router
 from apps.runtime.api.pipelines import router as pipelines_router
@@ -85,6 +86,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(agents_router)
 app.include_router(projects_router)
 app.include_router(executions_router)
 app.include_router(skills_router)

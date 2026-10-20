@@ -16,6 +16,7 @@ class ProjectStatus(str, enum.Enum):
     COMPLETING = "COMPLETING"
     COMPLETED = "COMPLETED"
     CANCELLED = "CANCELLED"
+    PAUSED = "PAUSED"  # 20号规范五闸④: 全局熔断暂停（连续 FAIL/REWORK）
 
 
 class TaskStatus(str, enum.Enum):

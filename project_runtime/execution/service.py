@@ -470,6 +470,44 @@ class ExecutionRunner:
                 # runs end-to-end without per-step clicking. MANUAL mode is
                 # untouched (no auto submit — its red line).
                 if gate_status == "PASS":
+                    # 20号规范批次2: 五闸④全局熔断检查（连续 8 FAIL/
+                    # REWORK → 项目 PAUSED 停止推进）+ Controller 清单
+                    # 对账（all_green 才允许继续 advance——停止条件=
+                    # 清单全绿而非队列空，§3.4 驱动层）
+                    try:
+                        from project_runtime.worker.controller import (
+                            Controller,
+                        )
+
+                        async with AsyncSession(engine) as csession:
+                            ctl = Controller(csession)
+                            fused = await ctl.check_global_fuse(project_id)
+                            report = None
+                            if not fused:
+                                report = await ctl.reconcile(project_id)
+                            await csession.commit()
+                        if fused:
+                            logger.warning(
+                                "Execution %s: global fuse tripped for "
+                                "project %d — auto-advance suppressed",
+                                execution_id, project_id,
+                            )
+                            return
+                        if report is not None and not report.all_green \
+                                and report.stuck:
+                            # 有卡点: Controller 已发 correction（对账
+                            # act 内联在 reconcile 事件里；批次 3 接
+                            # 补任务）——仍推进 READY 下游（不因单点
+                            # 卡死整链）
+                            logger.info(
+                                "Execution %s: reconciliation found stuck "
+                                "tasks %s — corrections dispatched",
+                                execution_id, report.stuck[:5],
+                            )
+                    except Exception:  # noqa: BLE001 — Controller 巡检绝不阻断执行
+                        logger.debug(
+                            "controller reconcile failed", exc_info=True
+                        )
                     await self._auto_advance(project_id)
             except Exception as e:  # noqa: BLE001 — gate failure must not
                 # corrupt the execution record; task stays EXECUTION_DONE and
@@ -488,6 +526,7 @@ class ExecutionRunner:
         )
         from project_runtime.project_state.enums import (
             AutomationMode,
+            ProjectStatus,
             TaskStatus,
         )
         from project_runtime.project_state.models import (
@@ -502,6 +541,9 @@ class ExecutionRunner:
                 proj = await session.get(ProjectModel, project_id)
                 if proj is None or proj.automation_mode != AutomationMode.FULL_AUTO:
                     return  # MANUAL: never auto-submit
+                # 20号规范批次2 五闸④: 熔断态（PAUSED）项目不推进
+                if proj.status == ProjectStatus.PAUSED:
+                    return  # global fuse — no submissions
                 ready_ids = list(
                     (
                         await session.execute(
