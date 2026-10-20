@@ -6,6 +6,7 @@ import { LLMSettingsCard } from './components/LLMSettingsCard';
 import { ProjectActions } from './components/ProjectActions';
 import { ProjectPanels } from './components/ProjectPanels';
 import { ProjectSwitcher } from './components/ProjectSwitcher';
+import { AgentPanel } from './components/AgentPanel';
 import { SkillPanel } from './components/SkillPanel';
 import { ThinkingPanel } from './components/ThinkingPanel';
 
@@ -66,6 +67,7 @@ function App() {
             projectId={projectId}
             onChanged={() => setRefreshKey((k) => k + 1)}
           />
+          <AgentPanel projectId={projectId} onChanged={() => setRefreshKey((k) => k + 1)} />
           <ThinkingPanel projectId={projectId} />
         </>
       )}

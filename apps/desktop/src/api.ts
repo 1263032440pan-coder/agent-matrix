@@ -389,3 +389,59 @@ export async function batchDeleteProjects(
   if (!res.ok) throw new Error(`批量删除失败: ${res.status}`);
   return res.json();
 }
+
+
+// ── 智能体管理面板（20号规范 §9——双视图+六态+上下文压力条）─────────
+
+export interface AgentDefinitionInfo {
+  id: number;
+  agent_id: string;
+  name: string;
+  role_description: string | null;
+  plugins: string[];
+  skills: string[];
+  stage_affinity: string[];
+  source: string;
+  scope: string;
+  enabled: boolean;
+}
+
+export interface AgentInstanceInfo {
+  id: number;
+  definition_id: number;
+  agent_id: string | null;
+  name: string | null;
+  project_id: number;
+  status: string;
+  current_task_id: number | null;
+  fail_count: number;
+  context_tokens: number;
+  context_threshold: number;
+}
+
+export async function listProjectAgents(
+  projectId: number
+): Promise<AgentInstanceInfo[]> {
+  const resp = await fetch(`${API_BASE}/api/projects/${projectId}/agents`);
+  if (!resp.ok) throw new Error(`Agents fetch failed: ${resp.status}`);
+  return resp.json();
+}
+
+export async function listAgentDefinitions(): Promise<AgentDefinitionInfo[]> {
+  const resp = await fetch(`${API_BASE}/api/agent-definitions`);
+  if (!resp.ok) throw new Error(`Agent definitions fetch failed: ${resp.status}`);
+  return resp.json();
+}
+
+export async function agentLifecycle(
+  projectId: number,
+  instanceId: number,
+  action: 'pause' | 'resume' | 'terminate'
+): Promise<AgentInstanceInfo> {
+  const resp = await fetch(
+    `${API_BASE}/api/projects/${projectId}/agents/${instanceId}/${action}`,
+    { method: 'POST' }
+  );
+  if (!resp.ok) throw new Error(`Agent ${action} failed: ${resp.status}`);
+  return resp.json();
+}

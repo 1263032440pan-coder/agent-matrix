@@ -50,6 +50,11 @@ class GitProvider:
     priority = 150
     enabled = True
 
+    def tool_schema(self) -> dict:
+        from project_runtime.worker.tool_schemas import tool_schema_for
+
+        return tool_schema_for(self.name)
+
     def __init__(self) -> None:
         from project_runtime.plugin.capability import CapabilityType
 
@@ -123,6 +128,11 @@ class TestRunnerProvider:
     priority = 150
     enabled = True
 
+    def tool_schema(self) -> dict:
+        from project_runtime.worker.tool_schemas import tool_schema_for
+
+        return tool_schema_for(self.name)
+
     def __init__(self) -> None:
         from project_runtime.plugin.capability import CapabilityType
 
@@ -195,6 +205,11 @@ class BuilderProvider:
     priority = 150
     enabled = True
 
+    def tool_schema(self) -> dict:
+        from project_runtime.worker.tool_schemas import tool_schema_for
+
+        return tool_schema_for(self.name)
+
     def __init__(self) -> None:
         from project_runtime.plugin.capability import CapabilityType
 
@@ -234,6 +249,11 @@ class ArchDiagramProvider:
     permission = "READ_ONLY"
     priority = 150
     enabled = True
+
+    def tool_schema(self) -> dict:
+        from project_runtime.worker.tool_schemas import tool_schema_for
+
+        return tool_schema_for(self.name)
 
     def __init__(self) -> None:
         from project_runtime.plugin.capability import CapabilityType
@@ -289,6 +309,11 @@ class TodoProvider:
     permission = "READ_ONLY"
     priority = 140
     enabled = True
+
+    def tool_schema(self) -> dict:
+        from project_runtime.worker.tool_schemas import tool_schema_for
+
+        return tool_schema_for(self.name)
 
     def __init__(self) -> None:
         from project_runtime.plugin.capability import CapabilityType

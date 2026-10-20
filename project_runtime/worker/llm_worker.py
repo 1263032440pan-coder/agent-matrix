@@ -310,16 +310,49 @@ class LLMWorkerAdapter(WorkerAdapter):
     # ── 搜索工具（规范 19 §4.2）────────────────────────────────────
 
     def _search_tools(self) -> list[dict] | None:
-        """web_search 工具定义（描述即调用策略）。registry 无 provider → None。"""
+        """工具循环的工具面: web_search + 全部 TOOL 插件（描述即调用策略）。
+
+        20号规范 §4.3 三能力①: 插件自主调用——白名单内全部插件以
+        tool 形式进循环，模型按任务上下文自决调不调/怎么调。
+        可用性决定可见性: RESEARCH 无 provider → 无 web_search;
+        TOOL 面零注册 → 仅 web_search（若在）。全空 → None。
+        """
         from project_runtime.extension.shared import shared_registry
         from project_runtime.plugin.capability import CapabilityType
 
-        providers = shared_registry().list_providers(
-            CapabilityType.RESEARCH
-        )
-        if not any(i.enabled for i in providers):
+        registry = shared_registry()
+        providers = registry.list_providers(CapabilityType.RESEARCH)
+        search_ok = any(i.enabled for i in providers)
+
+        # TOOL 插件面（注册即暴露——白名单=已注册∩启用）
+        tool_defs: list[dict] = []
+        for info in registry.list_providers(CapabilityType.TOOL):
+            if not info.enabled:
+                continue
+            schema_fn = getattr(info.provider, "tool_schema", None)
+            if not callable(schema_fn):
+                continue  # 无 schema 契约的 provider 不进循环
+            schema = schema_fn()
+            if not isinstance(schema, dict) or not schema.get("name"):
+                continue
+            tool_defs.append({
+                "type": "function",
+                "function": {
+                    "name": schema["name"],
+                    "description": (
+                        schema.get("description") or schema["name"]
+                    )[:600],
+                    "parameters": schema.get("parameters") or {
+                        "type": "object", "properties": {},
+                    },
+                },
+            })
+        if not search_ok and not tool_defs:
             return None  # 可用性决定可见性（opencode 同款）
-        return [{
+        if not search_ok:
+            return tool_defs
+
+        web_search_def = [{
             "type": "function",
             "function": {
                 "name": "web_search",
@@ -346,6 +379,51 @@ class LLMWorkerAdapter(WorkerAdapter):
                 },
             },
         }]
+        return web_search_def + tool_defs
+
+    async def _run_tool_plugin(self, name: str, args: dict) -> dict | None:
+        """TOOL 插件分发（§4.3 三能力①）。
+
+        循环里暴露的 tool:xxx / mcp_xxx 在 shared_registry 找
+        provider → invoke；未注册返回 None（unknown tool 语义）。
+        """
+        from project_runtime.extension.shared import shared_registry
+        from project_runtime.plugin.capability import CapabilityType
+
+        for info in shared_registry().list_providers(CapabilityType.TOOL):
+            if info.name == name and info.enabled:
+                try:
+                    return await info.provider.invoke(args)
+                except Exception as e:  # noqa: BLE001 — 降级不炸循环
+                    return {"ok": False, "error": str(e)[:300]}
+        return None
+
+    async def _emit_tool_result(
+        self, task_id: int | None, name: str, ok: bool, text: str,
+        t0: float, round_no: int,
+    ) -> None:
+        """工具结果审计事件（全文不进事件——正文归属 TaskRun）。"""
+        import time as _time
+
+        from project_runtime.event import EventEngine, RuntimeEventType
+
+        try:
+            await EventEngine().record(
+                RuntimeEventType.LLM_TOOL_RESULT,
+                task_id=task_id,
+                phase="LLM_TOOL",
+                message=f"{name} ok={ok}",
+                actor="WORKER",
+                payload={
+                    "tool": name,
+                    "ok": ok,
+                    "chars": len(text),
+                    "duration_ms": int((_time.monotonic() - t0) * 1000),
+                    "round": round_no,
+                },
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
     async def _run_search_tool(
         self, task_id: int | None, name: str, arguments: str, round_no: int
@@ -382,8 +460,22 @@ class LLMWorkerAdapter(WorkerAdapter):
                 results = await self._search_via_registry(query, args)
             except Exception as e:  # noqa: BLE001
                 err = str(e)[:200]
-        else:
+        elif not name.startswith("web_search"):
+            # TOOL 插件分发（§4.3 三能力①——注册进循环的插件在此执行）
+            tool_result = await self._run_tool_plugin(name, args)
+            if tool_result is not None:
+                ok = bool(tool_result.get("ok"))
+                text = str(tool_result.get("stdout")
+                           or tool_result.get("result")
+                           or tool_result.get("error")
+                           or "")[:6000]
+                await self._emit_tool_result(
+                    task_id, name, ok, text, t0, round_no
+                )
+                return text, ok
             err = f"unknown tool: {name}"
+        else:
+            err = "web_search: query 必填"
 
         ok = bool(results) and not err
         if results:
@@ -434,6 +526,18 @@ class LLMWorkerAdapter(WorkerAdapter):
 
         registry = shared_registry()
         register_search_providers(registry)
+        # 20号规范 §4.3 三能力①: TOOL 插件面注册（幂等——批次1+3 十件）
+        try:
+            from project_runtime.worker.tools import register_worker_tools
+
+            register_worker_tools(registry)
+            from project_runtime.worker.coding_tools import (
+                register_batch3_tools,
+            )
+
+            register_batch3_tools(registry)
+        except Exception:  # noqa: BLE001 — 插件面失败不阻断搜索
+            pass
         n = min(int(args.get("num_results") or 6), 10)
         for info in registry.list_providers(CapabilityType.RESEARCH):
             if not info.enabled:

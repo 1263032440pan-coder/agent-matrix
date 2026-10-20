@@ -258,7 +258,14 @@ class TestWorkerToolLoop:
             reg.unregister(i.name)
         try:
             w = LLMWorkerAdapter.__new__(LLMWorkerAdapter)
-            assert w._search_tools() is None
+            tools = w._search_tools()
+            # 契约（20号规范 §4.3 三能力①接入后）: 搜索不可用 →
+            # web_search 不暴露（原意图）; TOOL 插件若已注册仍可见。
+            if tools is not None:
+                names = [t["function"]["name"] for t in tools]
+                assert "web_search" not in names
+            else:
+                assert tools is None
         finally:
             for name, info in saved.items():
                 reg.register(info.provider)

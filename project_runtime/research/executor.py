@@ -229,6 +229,17 @@ class WebResearchExecutor:
 
         self._registry = shared_registry()
         register_search_providers(self._registry)
+        # 20号规范 §4.3 三能力①: TOOL 插件面注册（幂等——研究链同根）
+        try:
+            from project_runtime.worker.coding_tools import (
+                register_batch3_tools,
+            )
+            from project_runtime.worker.tools import register_worker_tools
+
+            register_worker_tools(self._registry)
+            register_batch3_tools(self._registry)
+        except Exception:  # noqa: BLE001 — 插件面失败不阻断搜索
+            pass
 
     async def _search(self, query: str) -> list[dict]:
         """经 registry 按 priority 试 provider——全失败返回空。"""
