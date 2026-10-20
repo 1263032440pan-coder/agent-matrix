@@ -149,6 +149,7 @@ class ExecutionRunner:
             # Phase B-0 选 skill 需要的任务内容 + Agent 绑定需要的 task_type
             task_select_content = _task_select_content(task)
             task_type_snapshot = task.task_type
+            task_contract_snapshot = task.contract
             await session.commit()
 
         await _emit(
@@ -226,6 +227,7 @@ class ExecutionRunner:
                 agent_binding = await bind_agent(
                     s, project_id, task_id,
                     task_type=task_type_snapshot,
+                    task_contract=task_contract_snapshot,
                 )
                 await s.commit()
         except Exception:  # noqa: BLE001 — Agent 面绝不阻断执行
@@ -258,7 +260,15 @@ class ExecutionRunner:
                     # 无绑定命中 → LLM 按任务内容自动选（TASK_EXECUTION
                     # 优先，无则不限类型——方法类 skill 的具体阶段指引
                     # 同样能指导单个任务的执行）
-                    resolved_def = await SkillSelector(s).select(
+                    # V1.4: Agent skill 白名单过滤（None=全局候选池）
+                    selector = SkillSelector(s)
+                    if agent_binding is not None and (
+                        agent_binding.skill_whitelist is not None
+                    ):
+                        selector = selector.restrict_to(
+                            agent_binding.skill_whitelist
+                        )
+                    resolved_def = await selector.select(
                         task_content=task_content,
                         extra_context=(
                             f"项目任务执行：{task_name}"
@@ -347,6 +357,13 @@ class ExecutionRunner:
                     skill_execution_context_ref=(
                         f"skill-ctx:{skill_ctx.skill_id}:{skill_ctx.skill_content_hash[:12]}"
                         if skill_ctx is not None else None
+                    ),
+                    # V1.4: Agent 白名单透传（None=不限 / list=交集）
+                    tool_whitelist=(
+                        agent_binding.tool_whitelist if agent_binding else None
+                    ),
+                    skill_whitelist=(
+                        agent_binding.skill_whitelist if agent_binding else None
                     ),
                 )
             )

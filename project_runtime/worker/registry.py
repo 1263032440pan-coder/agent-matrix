@@ -304,7 +304,7 @@ BUILT_IN_TEMPLATES = [
         "role_description": "负责项目理解与需求基线阶段——理解输入材料、"
                             "定义结构化需求并产出汇报材料（PPT）。",
         "plugins": ["file_rw", "web_search", "webfetch", "slide_generator"],
-        "skills": [],
+        "skills": None,
         "stage_affinity": ["项目理解", "需求基线"],
         "source": AgentSource.BUILT_IN,
     },
@@ -315,7 +315,7 @@ BUILT_IN_TEMPLATES = [
                             "产出方案文档、架构图与评审材料。",
         "plugins": ["file_rw", "web_search", "webfetch",
                     "slide_generator", "arch_diagram"],
-        "skills": [],
+        "skills": None,
         "stage_affinity": ["解决方案", "原型设计", "架构设计"],
         "source": AgentSource.BUILT_IN,
     },
@@ -323,8 +323,11 @@ BUILT_IN_TEMPLATES = [
         "agent_id": "coder",
         "name": "编码智能体",
         "role_description": "负责开发实现阶段——按契约实现功能代码。",
-        "plugins": ["file_rw", "shell", "code_search", "git", "lsp"],
-        "skills": [],
+        # V1.4: +web_search（三能力③基线）; lsp 摘除（provider 未实现）
+        "plugins": ["file_rw", "web_search", "shell", "code_search", "git"],
+        # V1.4: skills None=不限（[] 是 fail-closed 零 skill——违反
+        # "安装即可被程序利用"定则）
+        "skills": None,
         "stage_affinity": ["开发实现"],
         "source": AgentSource.BUILT_IN,
     },
@@ -332,8 +335,8 @@ BUILT_IN_TEMPLATES = [
         "agent_id": "tester",
         "name": "测试智能体",
         "role_description": "负责测试验证阶段——编写与执行测试、产出报告。",
-        "plugins": ["file_rw", "shell", "test_runner", "code_search"],
-        "skills": [],
+        "plugins": ["file_rw", "web_search", "shell", "test_runner", "code_search"],
+        "skills": None,
         "stage_affinity": ["测试验证"],
         "source": AgentSource.BUILT_IN,
     },
@@ -341,8 +344,8 @@ BUILT_IN_TEMPLATES = [
         "agent_id": "releaser",
         "name": "交付智能体",
         "role_description": "负责交付打包与使用文档阶段——构建交付物与文档。",
-        "plugins": ["file_rw", "shell", "builder", "slide_generator"],
-        "skills": [],
+        "plugins": ["file_rw", "web_search", "shell", "builder", "slide_generator"],
+        "skills": None,
         "stage_affinity": ["交付打包", "使用文档"],
         "source": AgentSource.BUILT_IN,
     },
@@ -350,7 +353,15 @@ BUILT_IN_TEMPLATES = [
 
 
 async def seed_builtin_templates(session: AsyncSession) -> int:
-    """内置五模板 seed（幂等——已存在跳过）。"""
+    """内置五模板 seed（V1.4: BUILT_IN 来源 upsert）。
+
+    出厂配置归代码管——BUILT_IN 行随代码更新白名单/亲和（含修订）;
+    USER / CONTROLLER_GENERATED 来源的行永不覆盖（用户与 AI 的
+    定制不受 seed 干扰）。幂等: 连续 seed 同值零副作用。
+    返回插入数（upsert 更新不计数）。
+    """
+    from project_runtime.worker.agent_models import AgentSource
+
     count = 0
     for tpl in BUILT_IN_TEMPLATES:
         exists = (
@@ -361,7 +372,13 @@ async def seed_builtin_templates(session: AsyncSession) -> int:
             )
         ).scalar_one_or_none()
         if exists is not None:
-            continue
+            if exists.source is AgentSource.BUILT_IN:
+                # upsert: 同步最新出厂配置（plugins/skills/亲和/描述）
+                exists.plugins = tpl["plugins"]
+                exists.skills = tpl["skills"]
+                exists.stage_affinity = tpl["stage_affinity"]
+                exists.role_description = tpl["role_description"]
+            continue  # USER/CONTROLLER_GENERATED 永不覆盖
         session.add(AgentDefinition(
             agent_id=tpl["agent_id"],
             name=tpl["name"],
@@ -372,8 +389,7 @@ async def seed_builtin_templates(session: AsyncSession) -> int:
             source=tpl["source"],
         ))
         count += 1
-    if count:
-        await session.flush()
+    await session.flush()
     return count
 
 

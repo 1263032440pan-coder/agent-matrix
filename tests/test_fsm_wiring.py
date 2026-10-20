@@ -161,13 +161,18 @@ class TestLifecyclePrimitives:
             assert len(cps) == 1
 
     @pytest.mark.asyncio
-    async def test_no_instance_returns_none(self, dbengine):
-        """无实例（未 provision）→ None——老路径零回归。"""
+    async def test_no_instance_triggers_derive(self, dbengine):
+        """无实例（未 provision）→ V1.4 派生链兜底（不再是 None）。
+
+        语义演进（返修-20号-V1.4 §2.2）: route-miss 先走 Controller
+        派生模板 + provision + 重试路由; 派生触闸/失败才落 None。
+        """
         eng, pid = dbengine
         async with AsyncSession(eng) as s:
             binding = await bind_agent(s, pid, task_id=1, task_type="开发实现")
             await s.commit()
-        assert binding is None
+        assert binding is not None  # 派生链生效
+        assert binding.tool_whitelist is not None
 
 
 # ── /plan 集成: provision 落地 ─────────────────────────────────────

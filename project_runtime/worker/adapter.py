@@ -44,6 +44,10 @@ class WorkPackage:
     skill_requirement: str | None = None        # "NONE" | "REQUIRED" | "OPTIONAL"
     resolved_skill_ref: str | None = None       # "skill_id@version" or None
     skill_execution_context_ref: str | None = None  # loader audit ref
+    # 返修-20号-V1.4: Agent 白名单快照（bind 时取自 definition）
+    # None=不限 / list=白名单（fail-closed）
+    tool_whitelist: list[str] | None = None
+    skill_whitelist: list[str] | None = None
 
 
 @dataclass

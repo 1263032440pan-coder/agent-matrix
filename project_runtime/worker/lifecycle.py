@@ -33,11 +33,17 @@ class AgentBinding:
     instance_id: int
     project_id: int
     task_id: int
+    # 返修-20号-V1.4: 白名单快照（bind 时从 definition 取——
+    # commit 后 ORM 过期，快照是唯一安全通道）
+    # None=不限（全部已注册可见）; list=白名单（fail-closed）
+    tool_whitelist: list[str] | None = None
+    skill_whitelist: list[str] | None = None
 
 
 async def bind_agent(
     session: AsyncSession, project_id: int, task_id: int,
     task_type: str | None,
+    task_contract: str | None = None,
 ) -> AgentBinding | None:
     """任务派发前: 路由选 Agent 实例 → BUSY。
 
@@ -50,7 +56,33 @@ async def bind_agent(
         reg = WorkerRegistry(session)
         inst = await reg.route(project_id, task_type)
         if inst is None:
-            return None
+            # V1.4 §2.2 route-miss 派生链: 先尝试 Controller 派生模板
+            # （双闸: 签名幂等 + 数量上限; 失败落老路径零回归）
+            try:
+                from project_runtime.worker.derive import (
+                    ensure_controller_template,
+                )
+
+                d = await ensure_controller_template(
+                    session, project_id, task_type or "",
+                    task_contract,
+                )
+                if d is not None:
+                    from project_runtime.worker.registry import (
+                        AgentProvisioner,
+                    )
+
+                    await AgentProvisioner(session).provision(
+                        project_id, [task_type]
+                    )
+                    inst = await reg.route(project_id, task_type)
+            except Exception:  # noqa: BLE001 — 派生失败落老路径
+                logger.debug(
+                    "controller derive on route-miss failed",
+                    exc_info=True,
+                )
+            if inst is None:
+                return None
         if inst.status is AgentStatus.CREATED:
             await reg.fsm.transition(
                 inst, AgentStatus.IDLE, actor="SYSTEM", reason="first bind"
@@ -60,9 +92,15 @@ async def bind_agent(
             reason=f"task {task_id} dispatched",
         )
         inst.current_task_id = task_id
+        # V1.4: 白名单快照（definition 归一——plugins 存裸名）
+        from project_runtime.worker.agent_models import AgentDefinition
+
+        d = await session.get(AgentDefinition, inst.definition_id)
         await session.flush()
         return AgentBinding(
-            instance_id=inst.id, project_id=project_id, task_id=task_id
+            instance_id=inst.id, project_id=project_id, task_id=task_id,
+            tool_whitelist=(d.plugins if d else None),
+            skill_whitelist=(d.skills if d else None),
         )
     except Exception:  # noqa: BLE001 — Agent 面绝不阻断执行
         logger.debug("bind_agent failed", exc_info=True)

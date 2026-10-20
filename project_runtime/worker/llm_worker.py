@@ -248,7 +248,9 @@ class LLMWorkerAdapter(WorkerAdapter):
 
         # 模型驱动工具循环（规范 19 §4）: web_search 作为工具暴露，
         # 模型自主决定调用；上限 4 轮；降级矩阵见 §4.4。
-        tools = self._search_tools()
+        # V1.4: Agent 白名单交集（wp 透传——None=不限）
+        tool_wl = getattr(wp, "tool_whitelist", None)
+        tools = self._search_tools(whitelist=tool_wl)
         content = ""
         for round_no in range(1, _TOOL_ROUNDS + 1):
             try:
@@ -350,7 +352,8 @@ class LLMWorkerAdapter(WorkerAdapter):
             messages.append(assistant_msg)
             for i, tc in enumerate(tool_calls):
                 result_text, ok = await self._run_search_tool(
-                    task_id, tc["name"], tc["arguments"], round_no
+                    task_id, tc["name"], tc["arguments"], round_no,
+                    whitelist=tool_wl,
                 )
                 messages.append({
                     "role": "tool",
@@ -420,13 +423,19 @@ class LLMWorkerAdapter(WorkerAdapter):
 
         # ── 搜索工具（规范 19 §4.2）────────────────────────────────────
 
-    def _search_tools(self) -> list[dict] | None:
+    def _search_tools(
+        self, whitelist: list[str] | None = None
+    ) -> list[dict] | None:
         """工具循环的工具面: web_search + 全部 TOOL 插件（描述即调用策略）。
 
         20号规范 §4.3 三能力①: 插件自主调用——白名单内全部插件以
         tool 形式进循环，模型按任务上下文自决调不调/怎么调。
-        可用性决定可见性: RESEARCH 无 provider → 无 web_search;
-        TOOL 面零注册 → 仅 web_search（若在）。全空 → None。
+        可见性 = 白名单 ∩ 已注册（返修-20号-V1.4）:
+        whitelist=None → 全部已注册 TOOL 插件（老路径/不限模板）;
+        whitelist=list → 仅列内插件（裸名比对——剥 tool: 前缀）。
+        web_search 同受白名单门控（三能力③配额内基线必含）。
+        RESEARCH 无 provider → 无 web_search; TOOL 面零注册 →
+        仅 web_search（若在）。全空 → None。
         """
         from project_runtime.extension.shared import shared_registry
         from project_runtime.plugin.capability import CapabilityType
@@ -435,9 +444,14 @@ class LLMWorkerAdapter(WorkerAdapter):
         providers = registry.list_providers(CapabilityType.RESEARCH)
         search_ok = any(i.enabled for i in providers)
 
-        # TOOL 插件面（注册即暴露——白名单=已注册∩启用）
+        # TOOL 插件面（V1.4: 白名单 ∩ 已注册——裸名比对剥前缀）
+        allowed = None if whitelist is None else set(whitelist)
         tool_defs: list[dict] = []
         for info in registry.list_providers(CapabilityType.TOOL):
+            if allowed is not None:
+                bare = info.name.split(":", 1)[-1]
+                if bare not in allowed and info.name not in allowed:
+                    continue  # 白名单外——模型不可见（护栏）
             if not info.enabled:
                 continue
             schema_fn = getattr(info.provider, "tool_schema", None)
@@ -460,6 +474,10 @@ class LLMWorkerAdapter(WorkerAdapter):
             })
         if not search_ok and not tool_defs:
             return None  # 可用性决定可见性（opencode 同款）
+        # web_search 门控（三能力③: web_search 是每模板基线——
+        # 但白名单显式列出且不含它时同样不可见，护栏优先）
+        if allowed is not None and "web_search" not in allowed:
+            search_ok = False
         if not search_ok:
             return tool_defs
 
@@ -492,12 +510,28 @@ class LLMWorkerAdapter(WorkerAdapter):
         }]
         return web_search_def + tool_defs
 
-    async def _run_tool_plugin(self, name: str, args: dict) -> dict | None:
+    async def _run_tool_plugin(
+        self, name: str, args: dict,
+        whitelist: list[str] | None = None,
+    ) -> dict | None:
         """TOOL 插件分发（§4.3 三能力①）。
 
         循环里暴露的 tool:xxx / mcp_xxx 在 shared_registry 找
         provider → invoke；未注册返回 None（unknown tool 语义）。
+        V1.4 纵深防御: whitelist 内不含的工具名直接拒（模型幻觉出
+        未暴露但已注册的工具也拒——返回降级文案而非执行）。
         """
+        if whitelist is not None:
+            allowed = set(whitelist)
+            bare = name.split(":", 1)[-1]
+            if bare not in allowed and name not in allowed:
+                return {
+                    "ok": False,
+                    "error": (
+                        f"工具 {name} 不在本 Agent 白名单内——"
+                        "该能力对当前角色不可用，请用白名单内工具完成。"
+                    ),
+                }
         from project_runtime.extension.shared import shared_registry
         from project_runtime.plugin.capability import CapabilityType
 
@@ -537,7 +571,8 @@ class LLMWorkerAdapter(WorkerAdapter):
             pass
 
     async def _run_search_tool(
-        self, task_id: int | None, name: str, arguments: str, round_no: int
+        self, task_id: int | None, name: str, arguments: str, round_no: int,
+        whitelist: list[str] | None = None,
     ) -> tuple[str, bool]:
         """执行模型发起的搜索工具 → (结果文本, ok)。审计双事件。"""
         import json as _json
@@ -573,7 +608,9 @@ class LLMWorkerAdapter(WorkerAdapter):
                 err = str(e)[:200]
         elif not name.startswith("web_search"):
             # TOOL 插件分发（§4.3 三能力①——注册进循环的插件在此执行）
-            tool_result = await self._run_tool_plugin(name, args)
+            tool_result = await self._run_tool_plugin(
+                name, args, whitelist=whitelist
+            )
             if tool_result is not None:
                 ok = bool(tool_result.get("ok"))
                 text = str(tool_result.get("stdout")

@@ -33,6 +33,18 @@ class SkillSelector:
 
     def __init__(self, session: AsyncSession):
         self._session = session
+        # V1.4: Agent skill 白名单（None=不过滤）
+        self._allowed_skill_ids: set[str] | None = None
+
+    def restrict_to(self, skill_ids: list[str] | None) -> "SkillSelector":
+        """Agent skill 白名单（返修-20号-V1.4 §1.2）。
+
+        None = 不限（全局候选池——默认）; list = 只在列内选
+        （fail-closed）。返回 self 便于链式调用。
+        """
+        if skill_ids is not None:
+            self._allowed_skill_ids = set(skill_ids)
+        return self
 
     # ── 候选集 ─────────────────────────────────────────────────────────
     async def candidates(self, skill_type) -> list[SkillDefinition]:
@@ -48,7 +60,10 @@ class SkillSelector:
         )
         if skill_type is not None:
             stmt = stmt.where(SkillDefinition.skill_type == skill_type)
-        return list((await self._session.execute(stmt)).scalars().all())
+        rows = list((await self._session.execute(stmt)).scalars().all())
+        if self._allowed_skill_ids is not None:
+            rows = [r for r in rows if r.skill_id in self._allowed_skill_ids]
+        return rows
 
     # ── LLM 选择 ──────────────────────────────────────────────────────
     async def select(
