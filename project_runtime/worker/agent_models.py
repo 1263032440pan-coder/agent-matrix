@@ -137,6 +137,11 @@ class AgentInstance(Base):
     # 会话记忆（SessionStore 序列化——完整历史永不删，压缩只是视图）
     session_ref: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    # §10.3 成本配额（批次 3）: 预算 + 累计统计（0=不限）
+    token_budget: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    token_used: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    call_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=_now
     )

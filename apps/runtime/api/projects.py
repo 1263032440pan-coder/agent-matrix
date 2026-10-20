@@ -466,7 +466,18 @@ async def run_planning(project_id: int):
     async def _plan(session: AsyncSession):
         playbook = await _stage_last_playbook(session, project_id)
         tasks = await DynamicPlanner(session).plan(playbook)
-        return {"tasks": len(tasks)}
+        # 20号规范 §2.2 路径1: 规划后按任务环节自动建 Agent 实例
+        # （best-effort——Agent 面故障绝不阻断规划落账）
+        from project_runtime.worker.lifecycle import provision_after_plan
+
+        agents = provision_after_plan(
+            session, project_id, [t.task_type for t in tasks]
+        )
+        try:
+            spawned = await agents
+        except Exception:  # noqa: BLE001
+            spawned = 0
+        return {"tasks": len(tasks), "agents_provisioned": spawned}
 
     result: dict = {}
     try:

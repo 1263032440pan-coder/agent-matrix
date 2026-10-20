@@ -85,12 +85,11 @@ class SkillSelector:
         try:
             import asyncio
 
-            import litellm
-
             from project_runtime.llm import (
                 load_llm_settings,
                 normalize_model_for_gateway,
             )
+            from project_runtime.llm.provider import llm_complete
 
             cfg = load_llm_settings()
             if not (cfg.base_url and cfg.api_key and cfg.model):
@@ -118,25 +117,7 @@ class SkillSelector:
             if extra:
                 content = f"{content}\\n\\n[上下文]\\n{extra[:1000]}"
 
-            def _blocking() -> str | None:
-                resp = litellm.completion(
-                    model=model_id,
-                    api_base=cfg.base_url,
-                    api_key=cfg.api_key,
-                    messages=[{
-                        "role": "user",
-                        "content": (
-                            f"任务内容：\\n{content}\\n\\n"
-                            "从下面的 skill 工具列表中选择一个最适合"
-                            "辅助完成该任务的 skill（只能选列表中的，"
-                            "没有合适的就不调用任何工具）。"
-                        ),
-                    }],
-                    tools=tools,
-                    tool_choice="auto",
-                    max_tokens=2000,
-                    timeout=120,
-                )
+            def _pick(resp) -> str | None:
                 msg = resp.choices[0].message
                 tcs = getattr(msg, "tool_calls", None) or []
                 if tcs:
@@ -148,9 +129,31 @@ class SkillSelector:
                         return f"skill_{sk.skill_id}"
                 return None
 
-            raw = await asyncio.wait_for(
-                asyncio.to_thread(_blocking), timeout=130
+            # AOP-P2-2 清偿: litellm 直调 → LLM Capability Provider
+            result = await asyncio.wait_for(
+                llm_complete(
+                    model=model_id,
+                    api_base=cfg.base_url,
+                    api_key=cfg.api_key,
+                    messages=[{
+                        "role": "user",
+                        "content": (
+                            f"任务内容：\n{content}\n\n"
+                            "从下面的 skill 工具列表中选择一个最适合"
+                            "辅助完成该任务的 skill（只能选列表中的，"
+                            "没有合适的就不调用任何工具）。"
+                        ),
+                    }],
+                    tools=tools,
+                    tool_choice="auto",
+                    max_tokens=2000,
+                    timeout=120,
+                ),
+                timeout=130,
             )
+            if not result.get("ok"):
+                return None
+            raw = _pick(result["response"])
             if raw and raw.startswith("skill_"):
                 return raw[len("skill_"):]
             return None

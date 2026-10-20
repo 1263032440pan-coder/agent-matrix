@@ -82,7 +82,8 @@ class LLMExtractor:
         return await self._extract_llm(text, source_name)
 
     async def _extract_llm(self, text: str, source_name: str) -> list[dict]:
-        import litellm
+        # AOP-P2-2 清偿: litellm 直调 → LLM Capability Provider
+        from project_runtime.llm.provider import llm_acomplete
 
         model = self._cfg.model
         known = ("openai/", "azure/", "anthropic/", "huggingface/", "ollama/",
@@ -93,7 +94,7 @@ class LLMExtractor:
         prompt = _PROMPT.format(text=text[:12000], source_name=source_name)
         # 流式调用（CoT UI）：reasoning/content 分通道增量收集，
         # 思考过程边收边发 LLM_THINKING_CHUNK 事件供界面实时显示
-        stream = await litellm.acompletion(
+        result = await llm_acomplete(
             model=model,
             api_base=self._cfg.base_url,
             api_key=self._cfg.api_key,
@@ -102,6 +103,11 @@ class LLMExtractor:
             timeout=600,  # 推理型模型思考+生成长文档抽取——实测 104s+，600s 上限
             stream=True,
         )
+        if not result.get("ok"):
+            # LLM 已配置但调用失败必须抛错（用户决策 2026-09-25——
+            # 静默降级产物比失败更糟，会被幂等键永久缓存）
+            raise RuntimeError(result.get("error", "LLM failed"))
+        stream = result["response"]
         reasoning_parts: list[str] = []
         content_parts: list[str] = []
         think_buf = ""

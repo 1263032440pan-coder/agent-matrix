@@ -146,8 +146,9 @@ class ExecutionRunner:
             task_name = task.name
             task_ready = task.status == TaskStatus.READY
             # 快照（commit 后 ORM 过期——MissingGreenlet/Detached 老坑）:
-            # Phase B-0 选 skill 需要的任务内容
+            # Phase B-0 选 skill 需要的任务内容 + Agent 绑定需要的 task_type
             task_select_content = _task_select_content(task)
+            task_type_snapshot = task.task_type
             await session.commit()
 
         await _emit(
@@ -215,6 +216,20 @@ class ExecutionRunner:
         # 2) 无绑定 → SkillSelector 按任务内容 LLM 自动选
         #    （name + description + when_to_use 作为 tool 列表）
         # resolution failure never blocks execution (runs without a skill).
+        # 20号规范批次3 FSM 接线: 派发前绑定 Agent 实例（BUSY +
+        # current_task_id; best-effort——无实例照常执行老路径）
+        agent_binding = None
+        try:
+            from project_runtime.worker.lifecycle import bind_agent
+
+            async with AsyncSession(engine) as s:
+                agent_binding = await bind_agent(
+                    s, project_id, task_id,
+                    task_type=task_type_snapshot,
+                )
+                await s.commit()
+        except Exception:  # noqa: BLE001 — Agent 面绝不阻断执行
+            logger.debug("agent bind failed", exc_info=True)
         skill_ctx = None
         try:
             from project_runtime.skills import (
@@ -384,6 +399,28 @@ class ExecutionRunner:
             message="worker completed" if success else "worker failed",
             payload={"success": success, "artifacts": artifact_ids},
         )
+
+        # 20号规范批次3 FSM 接线: Agent 实例生命周期回收
+        # （成功→release BUSY→IDLE+记账; 失败→record_failure 3 连败
+        #   DEGRADED+强制快照+传播三段链; best-effort 绝不阻断）
+        if agent_binding is not None:
+            try:
+                from project_runtime.worker.lifecycle import (
+                    fail_agent,
+                    release_agent,
+                )
+
+                async with AsyncSession(engine) as s:
+                    if success:
+                        await release_agent(s, agent_binding)
+                    else:
+                        await fail_agent(
+                            s, agent_binding,
+                            reason=f"execution {execution_id} failed",
+                        )
+                    await s.commit()
+            except Exception:  # noqa: BLE001 — Agent 面绝不阻断执行
+                logger.debug("agent release/fail failed", exc_info=True)
         for aid in artifact_ids:
             await _emit(
                 RuntimeEventType.ARTIFACT_CREATED,

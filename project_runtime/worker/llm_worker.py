@@ -160,12 +160,13 @@ class LLMWorkerAdapter(WorkerAdapter):
         return "llm_not_configured"
 
     async def _execute_llm(self, wp: WorkPackage) -> str:
-        import litellm
-
         from project_runtime.llm import (
             load_llm_settings,
             normalize_model_for_gateway,
         )
+
+        # AOP-P2-2 清偿: litellm 直调 → LLM Capability Provider
+        from project_runtime.llm.provider import llm_acomplete
 
         cfg = load_llm_settings()
         if not (cfg.base_url and cfg.api_key and cfg.model):
@@ -197,7 +198,7 @@ class LLMWorkerAdapter(WorkerAdapter):
         content = ""
         for round_no in range(1, _TOOL_ROUNDS + 1):
             try:
-                stream = await litellm.acompletion(
+                result = await llm_acomplete(
                     model=model,
                     api_base=cfg.base_url,
                     api_key=cfg.api_key,
@@ -208,12 +209,15 @@ class LLMWorkerAdapter(WorkerAdapter):
                     **({"tools": tools} if tools else {}),
                     **({"tool_choice": "auto"} if tools else {}),
                 )
+                if not result.get("ok"):
+                    raise RuntimeError(result.get("error", "LLM failed"))
+                stream = result["response"]
             except Exception as e:  # noqa: BLE001
                 # 降级: 网关不支持 tools（报错）→ 剔除 tools 重发单轮
                 if tools and round_no == 1:
                     logger.info("tools unsupported (%s) — fallback single", e)
                     tools = None
-                    stream = await litellm.acompletion(
+                    result = await llm_acomplete(
                         model=model,
                         api_base=cfg.base_url,
                         api_key=cfg.api_key,
@@ -222,6 +226,11 @@ class LLMWorkerAdapter(WorkerAdapter):
                         timeout=600,
                         stream=True,
                     )
+                    if not result.get("ok"):
+                        raise RuntimeError(
+                            result.get("error", "LLM failed")
+                        )
+                    stream = result["response"]
                 else:
                     raise
 

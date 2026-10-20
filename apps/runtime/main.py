@@ -25,7 +25,28 @@ async def lifespan(app: FastAPI):
     setup_logging()
     await check_db()
     await _check_migration_version()
+    await _seed_agent_templates()
     yield
+
+
+async def _seed_agent_templates() -> None:
+    """启动时 seed 内置五 Agent 模板（幂等——20号规范 §2.1）。
+
+    best-effort: 模板缺失只影响 Agent 实例化（任务照常走老路径），
+    绝不阻断 runtime 启动。
+    """
+    try:
+        from sqlalchemy.ext.asyncio import AsyncSession
+
+        from project_runtime.worker.registry import seed_builtin_templates
+
+        async with AsyncSession(engine) as session:
+            count = await seed_builtin_templates(session)
+            await session.commit()
+        if count:
+            logger.info("seeded %d built-in agent templates", count)
+    except Exception:  # noqa: BLE001 — Agent 面绝不阻断启动
+        logger.warning("agent template seed failed", exc_info=True)
 
 
 class SchemaBehindError(RuntimeError):

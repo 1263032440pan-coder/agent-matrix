@@ -173,6 +173,19 @@ STANDARD_STAGES = (
 
 # 别名表（§6.1 归一化第 2 步——seed 资产，扩词走 CR）
 STAGE_ALIASES = {
+    # 英文 task_type（keyword 路径/外部调用方）→ 中文环节
+    "development": "开发实现",
+    "coding": "开发实现",
+    "testing": "测试验证",
+    "test": "测试验证",
+    "design": "架构设计",
+    "architecture": "架构设计",
+    "requirement": "需求基线",
+    "analysis": "项目理解",
+    "documentation": "使用文档",
+    "release": "交付打包",
+    "deployment": "交付打包",
+    # 中文别名
     "实现开发": "开发实现",
     "需求分析": "需求基线",
     "需求文档": "需求基线",

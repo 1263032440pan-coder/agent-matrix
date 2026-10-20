@@ -149,20 +149,25 @@ async def _llm_synthesize(question: str, results: list[dict]) -> dict | None:
     try:
         import asyncio
 
-        import litellm
-
         from project_runtime.llm import (
             load_llm_settings,
             normalize_model_for_gateway,
         )
+
+        # AOP-P2-2 清偿: litellm 直调 → LLM Capability Provider
+        from project_runtime.llm.provider import llm_complete
 
         cfg = load_llm_settings()
         if not (cfg.base_url and cfg.api_key and cfg.model):
             raise RuntimeError("LLM not configured")
         model_id = normalize_model_for_gateway(cfg.model, cfg.base_url)
 
-        def _blocking() -> str:
-            resp = litellm.completion(
+        def _answer(resp) -> str:
+            m = resp.choices[0].message
+            return m.content or (getattr(m, "reasoning_content", "") or "")[-800:]
+
+        result = await asyncio.wait_for(
+            llm_complete(
                 model=model_id,
                 api_base=cfg.base_url,
                 api_key=cfg.api_key,
@@ -176,13 +181,12 @@ async def _llm_synthesize(question: str, results: list[dict]) -> dict | None:
                 }],
                 max_tokens=2000,
                 timeout=120,
-            )
-            m = resp.choices[0].message
-            return m.content or (getattr(m, "reasoning_content", "") or "")[-800:]
-
-        answer = await asyncio.wait_for(
-            asyncio.to_thread(_blocking), timeout=130
+            ),
+            timeout=130,
         )
+        if not result.get("ok"):
+            raise RuntimeError(result.get("error", "LLM failed"))
+        answer = _answer(result["response"])
         return {
             "summary": answer.strip()[:1200],
             "findings": [

@@ -125,15 +125,13 @@ class GapClassifier:
         except Exception:
             return None
 
-        import litellm
-
         lines = "\n".join(
             f"{i}. {g.get('reason', '')[:80]}" for i, g in enumerate(raw_gaps)
         )
         prompt = (
             "将下列项目缺口逐条归类为六类之一，仅输出编号+类别（每行一条）：\n"
             "PRIVATE / EXPLICITNESS / DOMAIN / TECHNICAL / PROCESS / CAPABILITY\n\n"
-            f"{lines}\n\n输出格式：0: PROCESS\\n1: EXPLICITNESS\\n..."
+            f"{lines}\n\n输出格式：0: PROCESS\n1: EXPLICITNESS\n..."
         )
         model = cfg.model
         known = ("openai/", "azure/", "anthropic/", "huggingface/", "ollama/",
@@ -141,11 +139,17 @@ class GapClassifier:
         if "/" in model and not model.startswith(known):
             model = f"openai/{model}"
         try:
-            resp = await litellm.acompletion(
+            # AOP-P2-2 清偿: litellm 直调 → LLM Capability Provider
+            from project_runtime.llm.provider import llm_acomplete
+
+            result = await llm_acomplete(
                 model=model, api_base=cfg.base_url, api_key=cfg.api_key,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=min(4096, 50 + len(raw_gaps) * 10), timeout=120,
             )
+            if not result.get("ok"):
+                raise RuntimeError(result.get("error", "LLM failed"))
+            resp = result["response"]
             answer = (resp.choices[0].message.content or "").strip()
             return self._parse_batch(answer, len(raw_gaps))
         except Exception as e:
@@ -196,8 +200,6 @@ class GapClassifier:
         except Exception:
             return None
 
-        import litellm
-
         reason = raw_gap.get("reason", "")
         if not reason:
             return None
@@ -217,11 +219,17 @@ class GapClassifier:
         if "/" in model and not model.startswith(known):
             model = f"openai/{model}"
         try:
-            resp = await litellm.acompletion(
+            # AOP-P2-2 清偿: litellm 直调 → LLM Capability Provider
+            from project_runtime.llm.provider import llm_acomplete
+
+            result = await llm_acomplete(
                 model=model, api_base=cfg.base_url, api_key=cfg.api_key,
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=20, timeout=30,
             )
+            if not result.get("ok"):
+                raise RuntimeError(result.get("error", "LLM failed"))
+            resp = result["response"]
             answer = (resp.choices[0].message.content or "").strip().upper()
             for gt in GapType:
                 if gt.value in answer:

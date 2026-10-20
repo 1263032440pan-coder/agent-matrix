@@ -20,7 +20,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-_WORKSPACE_ROOT = Path("data/tasks").resolve()
+_WORKSPACE_ROOT = Path("data/tasks")  # 相对——_resolve 动态解析（可注入绝对根）
 _HTTP_TIMEOUT = 20
 _OUTPUT_LIMIT = 8000
 
@@ -126,12 +126,22 @@ class FileRwProvider:
 
     @staticmethod
     def _resolve(path: str) -> Path:
-        """工作区禁闭——解析后必须落在 data/tasks/ 下（防穿越）。"""
+        """工作区禁闭——解析后必须落在 data/tasks/ 下（防穿越）。
+
+        根动态计算（cwd/data/tasks）而非模块级固化——
+        测试 chdir 隔离后语义一致（生产 cwd 即项目根，行为不变）。
+        """
         p = Path(path)
         resolved = (p if p.is_absolute() else Path.cwd() / p).resolve()
-        if not str(resolved).startswith(str(_WORKSPACE_ROOT)):
+        # 根: 测试可注入 _WORKSPACE_ROOT; 未注入则 cwd 动态计算
+        root = (
+            _WORKSPACE_ROOT
+            if _WORKSPACE_ROOT.is_absolute()
+            else Path("data/tasks").resolve()
+        )
+        if not str(resolved).startswith(str(root)):
             raise ValueError(
-                f"路径越界: {path}——只允许 { _WORKSPACE_ROOT } 工作区内"
+                f"路径越界: {path}——只允许 {root} 工作区内"
             )
         return resolved
 
@@ -141,9 +151,12 @@ class FileRwProvider:
 # 命令白名单: 命令名 → 允许的参数模式（正则；None=任意）
 _SHELL_WHITELIST: dict[str, str | None] = {
     "ls": None, "cat": None, "head": None, "tail": None, "dir": None,
-    "python": r"^[a-zA-Z0-9_/.:\\ -]*$",
+    # python/pytest: 特殊哨兵 PATHTOKENS——token 级校验（见 _path_tokens_ok）
+    # （批次1 字符集正则含空格和'-', ' -c evil.cfg' 可注入——批次3 修复;
+    #   纯正则负向环视要么误伤 'my-file.py' 要么漏 '-c'——函数才是对的）
+    "python": "PATHTOKENS",
     "pip": r"^(list|show|freeze)( .*)?$",
-    "pytest": r"^[a-zA-Z0-9_/.:\\ -]*$",   # 禁 -c/--rootdir（配置注入）
+    "pytest": "PATHTOKENS",
     "npm": r"^(run|test|list)( .*)?$",
     "npx": r"^[a-zA-Z0-9@/.:_-]+( .*)?$",
     "git": r"^(status|diff|log|show|branch)( .*)?$",  # 限只读子命令
@@ -156,6 +169,25 @@ _SHELL_FORBIDDEN = re.compile(
     re.IGNORECASE,
 )
 _SHELL_TIMEOUT_S = 120
+
+
+def _path_tokens_ok(args: str) -> bool:
+    """token 级路径校验（python/pytest 哨兵用）。
+
+    每个空格分隔 token 必须是纯路径（拒 - 开头 flag——
+    -c/--rootdir 配置注入全灭; 允许 'my-file.py' 带连字符文件名，
+    只拒 token 以 '-' 开头的形态）。
+    """
+    if not args:
+        return True
+    if args != args.strip() or "  " in args:
+        return False
+    for tok in args.split(" "):
+        if not tok or tok.startswith("-"):
+            return False
+        if not re.match(r"^[a-zA-Z0-9_/.:\\-]+$", tok):
+            return False
+    return True
 
 
 class ShellProvider:
@@ -200,7 +232,11 @@ class ShellProvider:
                     "error": f"命令不在白名单: {cmd_name}（允许: "
                              f"{sorted(_SHELL_WHITELIST)[:8]}…）"}
         pattern = _SHELL_WHITELIST[cmd_name]
-        if pattern and not re.match(pattern, args):
+        if pattern == "PATHTOKENS":
+            if not _path_tokens_ok(args):
+                return {"ok": False,
+                        "error": f"参数模式不合规（只准纯路径，禁 -flag）: {args[:60]}"}
+        elif pattern and not re.match(pattern, args):
             return {"ok": False,
                     "error": f"参数模式不合规（该命令限安全参数）: {args[:60]}"}
         # ② 注入黑名单（cd 绝对路径/危险命令）

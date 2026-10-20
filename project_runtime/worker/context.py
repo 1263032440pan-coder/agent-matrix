@@ -260,12 +260,13 @@ class ContextCompressor:
         try:
             import asyncio
 
-            import litellm
-
             from project_runtime.llm import (
                 load_llm_settings,
                 normalize_model_for_gateway,
             )
+
+            # AOP-P2-2 清偿: litellm 直调 → LLM Capability Provider
+            from project_runtime.llm.provider import llm_complete
 
             cfg = load_llm_settings()
             if not (cfg.base_url and cfg.api_key and cfg.model):
@@ -284,8 +285,13 @@ class ContextCompressor:
                 if critical else ""
             )
 
-            def _blocking() -> str:
-                resp = litellm.completion(
+            def _card(resp) -> str:
+                m = resp.choices[0].message
+                return m.content or (getattr(m, "reasoning_content", "") or "")[-300:]
+
+            # AOP-P2-2 清偿: litellm 直调 → LLM Capability Provider
+            result = await asyncio.wait_for(
+                llm_complete(
                     model=model_id,
                     api_base=cfg.base_url,
                     api_key=cfg.api_key,
@@ -301,13 +307,12 @@ class ContextCompressor:
                     }],
                     max_tokens=500,
                     timeout=120,
-                )
-                m = resp.choices[0].message
-                return m.content or (getattr(m, "reasoning_content", "") or "")[-300:]
-
-            raw = await asyncio.wait_for(
-                asyncio.to_thread(_blocking), timeout=130
+                ),
+                timeout=130,
             )
+            if not result.get("ok"):
+                return None
+            raw = _card(result["response"])
             card = (raw or "").strip()
             if len(card) < 10:
                 # 缩文本重试一次（opencode 语义）
