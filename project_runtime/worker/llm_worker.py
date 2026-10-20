@@ -188,9 +188,63 @@ class LLMWorkerAdapter(WorkerAdapter):
         )
 
         task_id = getattr(wp, "task_id", None)
-        messages: list[dict] = [
-            {"role": "user", "content": "\n".join(prompt_parts)}
-        ]
+
+        # 20号规范 §7 会话记忆接线: Worker 消费 AgentInstance.session_ref
+        # （SessionStore 历史经组装器进 messages——三层记忆包裹既有 prompt;
+        #  组装 stats 回写压力条数据源）。best-effort: 无实例/异常照常执行。
+        session_store = None
+        assembler = None
+        context_stats: dict = {}
+        try:
+            from sqlalchemy import select as _select
+
+            from project_runtime.worker.agent_models import (
+                AgentInstance,
+                AgentStatus,
+            )
+            from project_runtime.worker.context import (
+                ContextAssembler,
+                SessionStore,
+            )
+
+            inst = (
+                await self._session.execute(
+                    _select(AgentInstance).where(
+                        AgentInstance.current_task_id == task_id,
+                        AgentInstance.status == AgentStatus.BUSY,
+                    )
+                )
+            ).scalar_one_or_none()
+            if inst is not None:
+                session_store = SessionStore.from_json(inst.session_ref)
+                assembler = ContextAssembler(model)
+        except Exception:  # noqa: BLE001 — 会话记忆是增强不是依赖
+            session_store = None
+            assembler = None
+
+        if session_store is not None and assembler is not None:
+            try:
+                current_payload = [
+                    {"role": "user", "content": "\n".join(prompt_parts)}
+                ]
+                messages, context_stats = await assembler.assemble(
+                    session_store,
+                    role_prompt=(
+                        "你是项目开发智能体，按任务契约交付。"
+                        "历史任务卡片供参考，不要复述。"
+                    ),
+                    current_task=None,
+                    current_payload=current_payload,
+                )
+            except Exception:  # noqa: BLE001 — 组装失败退裸 messages
+                context_stats = {}
+                messages = [
+                    {"role": "user", "content": "\n".join(prompt_parts)}
+                ]
+        else:
+            messages = [
+                {"role": "user", "content": "\n".join(prompt_parts)}
+            ]
 
         # 模型驱动工具循环（规范 19 §4）: web_search 作为工具暴露，
         # 模型自主决定调用；上限 4 轮；降级矩阵见 §4.4。
@@ -274,7 +328,9 @@ class LLMWorkerAdapter(WorkerAdapter):
                 # 正常出口: 无工具调用 → 本轮即终稿
                 if not content.strip():
                     content = "".join(reasoning_parts)[-2000:]
-                return content
+                return await self._archive_session(
+                    task_id, wp, session_store, content, context_stats
+                )
 
             # 有工具调用 → 执行搜索、喂回、下一轮
             assistant_msg: dict = {
@@ -305,9 +361,64 @@ class LLMWorkerAdapter(WorkerAdapter):
         # 4 轮用尽强收（防搜索上瘾，规范 19 §4.5）
         if not content.strip():
             content = "（工具循环达上限，未能产出最终内容）"
+        return await self._archive_session(
+            task_id, wp, session_store, content, context_stats
+        )
+
+    async def _archive_session(
+        self, task_id: int | None, wp, session_store, content: str,
+        context_stats: dict,
+    ) -> str:
+        """任务终态归档（§7.2）: 会话消息+卡片进 SessionStore →
+        序列化回写 AgentInstance.session_ref + 压力条数据回写。
+
+        best-effort: 归档失败不影响返回内容（审计记忆可丢，产物不能丢）。
+        """
+        if task_id is None or session_store is None:
+            return content
+        try:
+            from sqlalchemy import select as _select
+
+            from project_runtime.worker.agent_models import (
+                AgentInstance,
+                AgentStatus,
+            )
+
+            inst = (
+                await self._session.execute(
+                    _select(AgentInstance).where(
+                        AgentInstance.current_task_id == task_id,
+                        AgentInstance.status == AgentStatus.BUSY,
+                    )
+                )
+            ).scalar_one_or_none()
+            if inst is None:
+                return content
+            # 归档本任务会话（user prompt + assistant 终稿）
+            session_store.archive_task(
+                task_id=task_id,
+                task_name=getattr(wp, "task_name", f"task-{task_id}"),
+                messages=[
+                    {"role": "user", "content": getattr(wp, "contract", None)
+                     or getattr(wp, "task_name", "")[:500]},
+                    {"role": "assistant", "content": content[:8000]},
+                ],
+            )
+            inst.session_ref = session_store.to_json()
+            # 压力条数据源回写（§9——组装器计算副产品落行）
+            if context_stats:
+                inst.context_tokens = int(
+                    context_stats.get("context_tokens", 0)
+                )
+                inst.context_threshold = int(
+                    context_stats.get("threshold", 0)
+                )
+            await self._session.flush()
+        except Exception:  # noqa: BLE001 — 归档 best-effort
+            pass
         return content
 
-    # ── 搜索工具（规范 19 §4.2）────────────────────────────────────
+        # ── 搜索工具（规范 19 §4.2）────────────────────────────────────
 
     def _search_tools(self) -> list[dict] | None:
         """工具循环的工具面: web_search + 全部 TOOL 插件（描述即调用策略）。
