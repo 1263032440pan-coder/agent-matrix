@@ -17,6 +17,9 @@ vi.mock('../api', () => ({
       fail_count: 0,
       context_tokens: 45000,
       context_threshold: 112000,
+      plugins: ['file_rw', 'web_search', 'shell', 'code_search', 'git'],
+      skills: [],
+      stage_affinity: ['开发实现'],
     },
     {
       id: 2,
@@ -29,6 +32,9 @@ vi.mock('../api', () => ({
       fail_count: 3,
       context_tokens: 105000,
       context_threshold: 112000,
+      plugins: ['file_rw', 'web_search'],
+      skills: [],
+      stage_affinity: ['misc'],
     },
   ]),
   listAgentDefinitions: vi.fn().mockResolvedValue([
@@ -71,6 +77,18 @@ describe('AgentPanel（20号规范 §9 双视图+六态+压力条）', () => {
     expect(screen.getByText('任务 #42')).toBeTruthy();
     // 失败计数可见（DEGRADED 实例 3 次）
     expect(screen.getByText('3')).toBeTruthy();
+  });
+
+  it('能力徽章: 工具/技能/环节可见（白名单护栏可视化）', async () => {
+    render(<AgentPanel projectId={1} onChanged={() => {}} />);
+    const cap = await screen.findByTestId('capability-1');
+    // coder 实例: 5 工具徽章 + 环节徽章
+    expect(cap.textContent).toContain('file_rw');
+    expect(cap.textContent).toContain('shell');
+    expect(cap.textContent).toContain('git');
+    expect(cap.textContent).toContain('开发实现');
+    // skills=[] → 显示全局自动选提示
+    expect(cap.textContent).toContain('全局自动选');
   });
 
   it('上下文压力条: 三段变色数据源渲染（45K/112K 与 105K/112K）', async () => {

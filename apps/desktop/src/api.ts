@@ -417,6 +417,10 @@ export interface AgentInstanceInfo {
   fail_count: number;
   context_tokens: number;
   context_threshold: number;
+  // V1.4c: 能力可见（该智能体可用的工具/技能/环节）
+  plugins: string[];
+  skills: string[];
+  stage_affinity: string[];
 }
 
 export async function listProjectAgents(

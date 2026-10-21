@@ -45,6 +45,51 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
+/** 能力徽章: 该智能体可用的工具/技能/环节（白名单护栏可视化 V1.4c） */
+function CapabilityBadges({ agent }: { agent: AgentInstanceInfo }) {
+  return (
+    <div data-testid={`capability-${agent.id}`} style={{ maxWidth: 340 }}>
+      {(agent.plugins ?? []).map((p) => (
+        <span key={`p-${p}`} title={`工具: ${p}`} style={{
+          display: 'inline-block', padding: '1px 6px', margin: 1,
+          borderRadius: 8, fontSize: 11,
+          background: '#e6f4ff', color: '#1677ff', whiteSpace: 'nowrap',
+        }}>
+          🔧 {p}
+        </span>
+      ))}
+      {(agent.skills ?? []).length > 0
+        ? agent.skills.map((sk) => (
+            <span key={`s-${sk}`} title={`技能: ${sk}`} style={{
+              display: 'inline-block', padding: '1px 6px', margin: 1,
+              borderRadius: 8, fontSize: 11,
+              background: '#f6ffed', color: '#52c41a', whiteSpace: 'nowrap',
+            }}>
+              ⚡ {sk}
+            </span>
+          ))
+        : (
+            <span title="skills=None——安装的 skill 按任务内容自动选择" style={{
+              display: 'inline-block', padding: '1px 6px', margin: 1,
+              borderRadius: 8, fontSize: 11,
+              background: '#f6ffed', color: '#52c41a', whiteSpace: 'nowrap',
+            }}>
+              ⚡ 全局自动选
+            </span>
+          )}
+      {(agent.stage_affinity ?? []).map((st) => (
+        <span key={`st-${st}`} title={`环节: ${st}`} style={{
+          display: 'inline-block', padding: '1px 6px', margin: 1,
+          borderRadius: 8, fontSize: 11,
+          background: '#f5f5f5', color: '#595959', whiteSpace: 'nowrap',
+        }}>
+          📍{st}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 /** 上下文压力条: 三段变色 <60% 绿 / 60-90% 黄 / ≥90% 红（§9） */
 function ContextBar({ used, threshold }: { used: number; threshold: number }) {
   if (!threshold) {
@@ -132,6 +177,7 @@ function InstancesView({
             <th style={{ padding: 6 }}>实例</th>
             <th style={{ padding: 6 }}>状态</th>
             <th style={{ padding: 6 }}>当前任务</th>
+            <th style={{ padding: 6 }}>可用能力</th>
             <th style={{ padding: 6 }}>上下文压力</th>
             <th style={{ padding: 6 }}>失败计数</th>
             <th style={{ padding: 6 }}>操作</th>
@@ -157,6 +203,9 @@ function InstancesView({
                 ) : (
                   <span style={{ color: '#bfbfbf' }}>—</span>
                 )}
+              </td>
+              <td style={{ padding: 6 }}>
+                <CapabilityBadges agent={a} />
               </td>
               <td style={{ padding: 6 }}>
                 <ContextBar

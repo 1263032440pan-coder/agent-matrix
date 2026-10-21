@@ -63,6 +63,10 @@ def _inst_serialize(i: AgentInstance, d: AgentDefinition | None) -> dict:
         "fail_count": i.fail_count,
         "context_tokens": i.context_tokens,
         "context_threshold": i.context_threshold,
+        # UI 能力可见（V1.4c）: 该智能体可用的工具/技能/环节
+        "plugins": (d.plugins if d else None) or [],
+        "skills": (d.skills if d else None) or [],
+        "stage_affinity": (d.stage_affinity if d else None) or [],
     }
 
 
