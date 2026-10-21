@@ -136,10 +136,20 @@ class DynamicPlanner:
             }
         )
 
+        # V1.4b 修1: task_type 三源优先级链——环节词贯通
+        # stage（LLM 抽取标注）> source_skill_stage（skill 骨架阶段）
+        # > workstream（归组——skill 骨架路径本就=阶段名, LLM 路径是
+        # default/generic 兜底）> generic
+        task_type = (
+            ws.get("stage")
+            or ws.get("source_skill_stage")
+            or ws.get("workstream")
+            or "generic"
+        )
         req = CreateTaskRequest(
             project_id=project_id,
             name=ws["name"],
-            task_type=ws.get("workstream", "generic"),
+            task_type=task_type,
         )
         task = await self._mgr.create_task(req)
         task.playbook_ref = playbook_ref

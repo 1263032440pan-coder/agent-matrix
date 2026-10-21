@@ -201,6 +201,8 @@ def map_nodes_to_stages(
         ws = {
             "name": st["name"],
             "workstream": st["name"],
+            # V1.4b 修1: 显式阶段词（Planner task_type 优先级链第 2 源）
+            "source_skill_stage": st["name"],
             "activities": (
                 "；".join(n.name for n in assigned)
                 if assigned

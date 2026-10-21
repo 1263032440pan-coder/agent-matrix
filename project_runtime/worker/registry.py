@@ -16,6 +16,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from project_runtime.event.models import RuntimeEvent  # noqa: F401
 from project_runtime.worker.agent_models import (
     AgentDefinition,
     AgentInstance,
@@ -133,7 +134,7 @@ class AgentFSM:
     ) -> None:
         """生命周期事件（§3.3 七类——best-effort，绝不打断主链）。"""
         try:
-            from project_runtime.event import EventEngine, RuntimeEventType
+            from project_runtime.event import RuntimeEventType
 
             evt = {
                 AgentStatus.CREATED: None,  # 创建时直接发 AGENT_CREATED
@@ -146,21 +147,26 @@ class AgentFSM:
                 evt = RuntimeEventType.AGENT_RECOVERED
             if evt is None:
                 return
-            await EventEngine().record(
-                evt,
+            # V1.4b: RH-03 铁律——持写事务组件埋事件同事务直插
+            # （独立 EventEngine session 在并发 runner 下跨连接拖锁）
+            import json as _json
+
+            self._session.add(RuntimeEvent(
+                event_type=evt.value,
                 project_id=instance.project_id,
-                phase="AGENT_LIFECYCLE",
-                message=f"agent#{instance.id} {prev.value}→{to.value} ({actor})"
-                        + (f": {reason[:80]}" if reason else ""),
+                phase="AGENT_FSM",
+                message=(
+                    f"Agent#{instance.id} {prev.value}->{to.value}"
+                    f" ({actor}: {reason[:60]})"
+                ),
                 actor=actor,
-                payload={
-                    "agent_instance_id": instance.id,
-                    "definition_id": instance.definition_id,
+                payload=_json.dumps({
+                    "instance_id": instance.id,
                     "from": prev.value,
                     "to": to.value,
                     "reason": reason[:200],
-                },
-            )
+                }, ensure_ascii=False),
+            ))
         except Exception:  # noqa: BLE001
             logger.debug("agent lifecycle event failed", exc_info=True)
 
@@ -175,6 +181,28 @@ STANDARD_STAGES = (
 STAGE_ALIASES = {
     # 英文 task_type（keyword 路径/外部调用方）→ 中文环节
     "development": "开发实现",
+    # 英文九阶段名（V1.4b 修3——LLM 抽取英文文档的阶段词归一）
+    "project understanding": "项目理解",
+    "understanding": "项目理解",
+    "method identification": "项目理解",
+    "requirements": "需求基线",
+    "requirement baseline": "需求基线",
+    "solution": "解决方案",
+    "proposal": "解决方案",
+    "prototype": "原型设计",
+    "development design": "架构设计",
+    "system design": "架构设计",
+    "implementation": "开发实现",
+    "worker execution": "开发实现",
+    "verification": "测试验证",
+    "delivery": "交付打包",
+    "packaging": "交付打包",
+    "user guide": "使用文档",
+    "manual": "使用文档",
+    "task planning": "架构设计",
+    "playbook": "架构设计",
+    "gate": "测试验证",
+    "project completion": "使用文档",
     "coding": "开发实现",
     "testing": "测试验证",
     "test": "测试验证",
@@ -204,13 +232,20 @@ STAGE_ALIASES = {
 
 
 def normalize_stage(task_type: str | None) -> str:
-    """归一化三步（§6.1）: 精确等值 → 别名表 → misc。"""
+    """归一化三步（§6.1）: 精确等值 → 别名表 → misc。
+
+    V1.4b: 大小写不敏感（LLM 抽取英文文档产出 Project Understanding
+    等首字母大写形态——精确匹配恒 miss 落 misc）。
+    """
     if not task_type:
         return "misc"
     t = task_type.strip()
     if t in STANDARD_STAGES:
         return t
-    return STAGE_ALIASES.get(t, "misc")
+    lower = t.lower()
+    if lower in STANDARD_STAGES:
+        return lower
+    return STAGE_ALIASES.get(t) or STAGE_ALIASES.get(lower, "misc")
 
 
 class WorkerRegistry:
@@ -279,17 +314,24 @@ class WorkerRegistry:
         self._session.add(inst)
         await self._session.flush()
         try:
-            from project_runtime.event import EventEngine, RuntimeEventType
+            import json as _json
 
-            await EventEngine().record(
-                RuntimeEventType.AGENT_CREATED,
+            from project_runtime.event.models import RuntimeEventType
+
+            # V1.4b: 同事务直插（RH-03——独立 session 并发拖锁）
+            self._session.add(RuntimeEvent(
+                event_type=RuntimeEventType.AGENT_CREATED.value,
                 project_id=project_id,
                 phase="AGENT_LIFECYCLE",
-                message=f"agent instance #{inst.id} created (def={definition_id})",
+                message=(
+                    f"agent instance #{inst.id} created (def={definition_id})"
+                ),
                 actor="SYSTEM",
-                payload={"agent_instance_id": inst.id,
-                         "definition_id": definition_id},
-            )
+                payload=_json.dumps({
+                    "agent_instance_id": inst.id,
+                    "definition_id": definition_id,
+                }, ensure_ascii=False),
+            ))
         except Exception:  # noqa: BLE001
             logger.debug("agent created event failed", exc_info=True)
         return inst
@@ -407,10 +449,14 @@ class AgentProvisioner:
     async def provision(
         self, project_id: int, task_types: list[str | None]
     ) -> list[AgentInstance]:
-        """task_types = 任务图的 task_type 集合。"""
-        # 归一化 → 环节集合
+        """task_types = 任务图的 task_type 集合。
+
+        V1.4b 修2: misc 不再丢弃——无模板环节（含 misc）走
+        Controller 派生链兜底（ensure_controller_template 含双闸:
+        签名幂等 + 数量 ≤ 环节数+2——"防乱建"由闸承接不靠丢弃）。
+        """
+        # 归一化 → 环节集合（保留 misc——统一派生兜底）
         stages = {normalize_stage(t) for t in task_types}
-        stages.discard("misc")
         if not stages:
             return []
         # 环节 → 模板（匹配 stage_affinity）
@@ -431,11 +477,26 @@ class AgentProvisioner:
                 None,
             )
             if d is None:
-                logger.warning(
-                    "no template for stage %s — skip (Controller 批次2 补)",
-                    stage,
-                )
-                continue
+                # V1.4b 修2: 无模板环节 → Controller 派生链兜底
+                # （misc/新环节——基线 or 环节上限推导, 双闸防爆炸）
+                try:
+                    from project_runtime.worker.derive import (
+                        ensure_controller_template,
+                    )
+
+                    d = await ensure_controller_template(
+                        self._session, project_id, stage, None
+                    )
+                except Exception:  # noqa: BLE001 — 派生失败跳过该环节
+                    logger.debug(
+                        "derive fallback for stage %s failed",
+                        stage, exc_info=True,
+                    )
+                if d is None:
+                    logger.info(
+                        "no template for stage %s — skip", stage
+                    )
+                    continue
             # 已有活跃实例则复用（同模板同项目唯一）
             existing = (
                 await self._session.execute(

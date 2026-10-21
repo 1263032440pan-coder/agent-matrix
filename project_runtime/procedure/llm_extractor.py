@@ -33,12 +33,17 @@ _PROMPT = """你是项目流程分析器。从下面的方法资料中抽取流�
 3. 资料中表述含糊、有多种解读的字段填 "AMBIGUOUS"。
 4. dependencies 字段填上游节点的 name（必须在列表中存在），无依赖填 "UNKNOWN"。
 5. 节点粒度：以资料中的阶段/工作流为单位，不要把每个小标题都拆成节点；通常 3-10 个节点为宜。
+6. stage 字段（V1.4b）: 该节点在软件交付流程中所属的标准阶段。九选一:
+   "项目理解"/"需求基线"/"解决方案"/"原型设计"/"架构设计"/"开发实现"/"测试验证"/"交付打包"/"使用文档"。
+   资料明示阶段归属时按资料（中英文均可，如 Project Understanding=项目理解、
+   Testing=测试验证）；资料完全无阶段语义填 "UNKNOWN"。
 
 输出格式（仅输出 JSON，不要任何其他文字）：
 {{
   "nodes": [
     {{
       "name": "节点名",
+      "stage": "项目理解",
       "inputs": "...",
       "activities": "...",
       "outputs": "...",
@@ -94,14 +99,21 @@ class LLMExtractor:
         prompt = _PROMPT.format(text=text[:12000], source_name=source_name)
         # 流式调用（CoT UI）：reasoning/content 分通道增量收集，
         # 思考过程边收边发 LLM_THINKING_CHUNK 事件供界面实时显示
-        result = await llm_acomplete(
+        # V1.4b P4: 外层 wait_for——网关断流（aiostream 挂死）时
+        # litellm 自身 timeout 不生效, 605s 强制解除（/plan 不再永久挂起）
+        import asyncio as _asyncio
+
+        result = await _asyncio.wait_for(
+            llm_acomplete(
             model=model,
             api_base=self._cfg.base_url,
             api_key=self._cfg.api_key,
             messages=[{"role": "user", "content": prompt}],
             max_tokens=16000,
-            timeout=600,  # 推理型模型思考+生成长文档抽取——实测 104s+，600s 上限
-            stream=True,
+                timeout=600,  # 推理型模型思考+生成长文档抽取——实测 104s+，600s 上限
+                stream=True,
+            ),
+            timeout=605,
         )
         if not result.get("ok"):
             # LLM 已配置但调用失败必须抛错（用户决策 2026-09-25——
@@ -153,9 +165,16 @@ class LLMExtractor:
         return nodes if isinstance(nodes, list) else []
 
     def _normalize_node(self, n: dict, source_name: str) -> dict:
+        # V1.4b 修1c: stage 字段落 workstream 列（环节贯通——
+        # normalizer → ProcedureNode.workstream → builder ws → planner
+        # task_type 三源链的源头。UNKNOWN/缺失不写（落 None 走归组兜底）
+        stage = str(n.get("stage") or "").strip()
         node = {
             "name": str(n.get("name") or "未命名"),
-            "workstream": None,
+            "workstream": (
+                stage if stage and stage not in ("UNKNOWN", "AMBIGUOUS")
+                else None
+            ),
             "readiness_status": "MISSING",
             "source_ref": source_name,
         }
