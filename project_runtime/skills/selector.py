@@ -61,6 +61,14 @@ class SkillSelector:
         if skill_type is not None:
             stmt = stmt.where(SkillDefinition.skill_type == skill_type)
         rows = list((await self._session.execute(stmt)).scalars().all())
+        # V1.5a-1: 同 skill_id 多版本去重——只留最新（1.0.0 与 1.1.0 并存时
+        # 旧版先入池会遮挡新版; Pin 绑定不受影响——绑定精确到版本）
+        latest: dict = {}
+        for r in rows:
+            prev = latest.get(r.skill_id)
+            if prev is None or (r.version or '') > (prev.version or ''):
+                latest[r.skill_id] = r
+        rows = list(latest.values())
         if self._allowed_skill_ids is not None:
             rows = [r for r in rows if r.skill_id in self._allowed_skill_ids]
         return rows

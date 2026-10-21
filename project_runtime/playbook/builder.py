@@ -95,6 +95,19 @@ class PlaybookBuilder:
                 )
         if workstreams is None:
             workstreams = self._build_workstreams(nodes, assets, gaps)
+
+        # V1.5a-1 序5: 材料关键词兜底——skill 未声明而用户材料明确要求
+        # 源码类交付物时置 code_stage（三行最小条款的材料驱动版;
+        # 主通道是 skill 1.1.0 的 stages 结构化声明——此处仅兜底）
+        if not any(ws.get("code_stage") for ws in workstreams):
+            if self._material_requires_code(assets):
+                for ws in workstreams:
+                    if "开发" in (ws.get("source_skill_stage") or ws.get("name") or ""):
+                        ws["code_stage"] = True
+                        ws.setdefault("stage_outputs", [])
+                        for o in ("入口文件", "功能模块", "测试文件", "README"):
+                            if o not in ws["stage_outputs"]:
+                                ws["stage_outputs"].append(o)
         for ws in workstreams:
             related = [r for r in research_refs if self._research_relates(r, ws)]
             if related:
@@ -207,6 +220,23 @@ class PlaybookBuilder:
             workstreams.append(ws)
 
         return workstreams
+
+    @staticmethod
+    @staticmethod
+    def _material_requires_code(assets) -> bool:
+        """用户材料明确要求源码类交付物（兜底识别——V1.5a-1 序5）。"""
+        import re
+
+        kws = re.compile(
+            r"项目源码|可运行|可本地启动|编译启动|源代码"
+        )
+        for a in assets or []:
+            try:
+                if kws.search(a.content or ""):
+                    return True
+            except Exception:  # noqa: BLE001
+                continue
+        return False
 
     @staticmethod
     def _method_deficient(nodes: list[ProcedureNode]) -> bool:

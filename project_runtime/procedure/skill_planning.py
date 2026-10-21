@@ -122,10 +122,24 @@ async def read_skill_stages(
                 raw = None
             if isinstance(raw, list):
                 for st in raw:
-                    stages.append(
-                        {"name": st if isinstance(st, str) else str(st)}
-                    )
-        if sk.expected_outputs:
+                    # V1.5a-1 补强B: 双形态——旧 zip 字符串列表照旧,
+                    # 新形态 dict（name + outputs）取结构化字段
+                    if isinstance(st, dict):
+                        entry = {
+                            "name": str(st.get("name") or "").strip(),
+                        }
+                        outs = st.get("outputs")
+                        if isinstance(outs, list) and outs:
+                            entry["expected_outputs"] = [
+                                str(o) for o in outs
+                            ]
+                        if entry["name"]:
+                            stages.append(entry)
+                    elif isinstance(st, str) and st.strip():
+                        stages.append({"name": st.strip()})
+        if sk.expected_outputs and not any(
+            st.get('expected_outputs') for st in stages
+        ):
             try:
                 outs = json.loads(sk.expected_outputs)
                 if isinstance(outs, list) and stages:
@@ -138,9 +152,16 @@ async def read_skill_stages(
                 pass
         if not stages:
             return None
+        # V1.5a-1 序4: code_stage 标记——outputs 含源码类关键词
+        # （透传给 Planner/Worker——契约携带纪律/软提醒消费它）
+        _code_kws = ("源码", "入口文件", "代码", "工程")
         for st in stages:
             st["skill_id"] = sk.skill_id
             st["skill_version"] = sk.version
+            outs = [str(o) for o in (st.get("expected_outputs") or [])]
+            st["code_stage"] = any(
+                any(k in o for k in _code_kws) for o in outs
+            )
         return stages
     except Exception:  # noqa: BLE001
         logger.debug("skill stages load failed", exc_info=True)
@@ -203,6 +224,9 @@ def map_nodes_to_stages(
             "workstream": st["name"],
             # V1.4b 修1: 显式阶段词（Planner task_type 优先级链第 2 源）
             "source_skill_stage": st["name"],
+            # V1.5a-1 序4: code_stage 透传 + 阶段产出物（Planner 契约用）
+            "code_stage": bool(st.get("code_stage")),
+            "stage_outputs": list(st.get("expected_outputs") or []),
             "activities": (
                 "；".join(n.name for n in assigned)
                 if assigned
