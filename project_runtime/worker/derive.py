@@ -121,6 +121,8 @@ def controller_template_signature(
 
 async def _name_by_llm(
     stage: str, task_contract: str | None,
+    project_goal: str | None = None,
+    task_names: list[str] | None = None,
 ) -> str | None:
     """LLM 依据环节+任务上下文生成职责化名称（用户要求——AI 起名）。
 
@@ -134,10 +136,22 @@ async def _name_by_llm(
         if not (cfg.base_url and cfg.api_key and cfg.model):
             return None
         contract_snip = (task_contract or "")[:600]
+        # V1.4f: 上下文升级——provision 场景无契约时用项目 goal+任务名
+        context_parts = []
+        if contract_snip:
+            context_parts.append(f"任务契约摘要: {contract_snip}")
+        if project_goal:
+            context_parts.append(f"项目目标: {project_goal[:200]}")
+        if task_names:
+            names = "、".join(task_names[:6])
+            context_parts.append(f"它将执行的任务: {names}")
+        if not context_parts:
+            context_parts.append(f"环节: {stage}")
+        context = "；".join(context_parts)
         prompt = (
-            "为一个智能体起中文名（2-8字，以“智能体”结尾，不加引号）。"
-            f"它的环节归属: {stage}；"
-            f"它将执行的任务契约摘要: {contract_snip}"
+            "为一个智能体起中文名（2-8字，以“智能体”结尾，不加引号，"
+            "名称必须体现职责而非泛称——禁止“通用”“综合”“辅助”等空词）。"
+            f"{context}"
             "\n只输出名称本身，不要任何其他文字。"
         )
         result = await asyncio.wait_for(
@@ -152,17 +166,40 @@ async def _name_by_llm(
             timeout=35,
         )
         if not result.get("ok"):
-            return None
-        resp = result["response"]
-        text = (resp.choices[0].message.content or "").strip()
-        for ch in " \u201c\u201d'\"\n\r":
-            text = text.replace(ch, "")
-        text = text.strip()
-        if 2 <= len(text) <= 12:
-            return text
-        return None
+            result = None
+        name = _clean_llm_name(result["response"]) if result else None
+        if name:
+            return name
+        # V1.4f: 重试一次（首轮失败/输出被清洗拒）
+        result = await asyncio.wait_for(
+            llm_complete(
+                model=cfg.model,
+                api_base=cfg.base_url,
+                api_key=cfg.api_key,
+                messages=[{
+                    "role": "user",
+                    "content": prompt + "\n（重新起一个更具体的名称）",
+                }],
+                max_tokens=60,
+                timeout=30,
+            ),
+            timeout=35,
+        )
+        return _clean_llm_name(result["response"]) if result.get("ok") else None
     except Exception:  # noqa: BLE001 — 命名失败走兜底
         return None
+
+
+def _clean_llm_name(resp) -> str | None:
+    """清洗 LLM 命名输出; 泛称拒收（用户红线——禁"通用任务智能体"类空名）。"""
+    text = (resp.choices[0].message.content or "").strip()
+    for ch in " \u201c\u201d'\"\n":
+        text = text.replace(ch, "")
+    text = text.strip()
+    vague = ("通用", "综合", "辅助", "杂项")
+    if 2 <= len(text) <= 12 and not any(v in text for v in vague):
+        return text
+    return None
 
 
 async def ensure_controller_template(
@@ -170,6 +207,8 @@ async def ensure_controller_template(
     project_id: int,
     stage: str,
     task_contract: str | None,
+    project_goal: str | None = None,
+    task_names: list[str] | None = None,
 ) -> AgentDefinition | None:
     """route-miss 时派生 CONTROLLER_GENERATED 模板（§2.2 派生链）。
 
@@ -231,7 +270,10 @@ async def ensure_controller_template(
         )
 
         # 命名（用户要求: AI 生成职责化名称——不再叫 "派生-misc"）
-        llm_name = await _name_by_llm(norm_stage, task_contract)
+        llm_name = await _name_by_llm(
+            norm_stage, task_contract,
+            project_goal=project_goal, task_names=task_names,
+        )
         name = llm_name or _STAGE_FALLBACK_NAMES.get(
             norm_stage, f"{norm_stage}智能体"
         )

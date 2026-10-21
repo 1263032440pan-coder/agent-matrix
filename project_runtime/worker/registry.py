@@ -435,6 +435,17 @@ async def seed_builtin_templates(session: AsyncSession) -> int:
     return count
 
 
+async def _project_goal_of(session, project_id: int) -> str | None:
+    """项目目标（V1.4f——AI 命名上下文: provision 场景无契约时用）。"""
+    try:
+        from project_runtime.project_state.models import Project
+
+        p = await session.get(Project, project_id)
+        return (p.goal if p else None) or (p.name if p else None)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 class AgentProvisioner:
     """规划完成后自动创建项目 Agent（§2.2 路径 1 主路径）。
 
@@ -485,7 +496,10 @@ class AgentProvisioner:
                     )
 
                     d = await ensure_controller_template(
-                        self._session, project_id, stage, None
+                        self._session, project_id, stage, None,
+                        project_goal=await _project_goal_of(
+                            self._session, project_id
+                        ),
                     )
                 except Exception:  # noqa: BLE001 — 派生失败跳过该环节
                     logger.debug(
