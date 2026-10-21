@@ -52,6 +52,8 @@ _DIRECT_TABLES = [
     "event",
     "human_decision",
     "constraint",
+    # 20号规范批次1 表（V1.4e 补——此前缺失致删除事务 FK 断链回滚）
+    "agent_instance",
 ]
 
 _INDIRECT = {
@@ -70,6 +72,14 @@ _INDIRECT = {
     "delivery_item": (
         'contract_id IN (SELECT id FROM "delivery_contract" '
         'WHERE project_id = :pid)'
+    ),
+    # 20号规范: ACP 消息经 agent_instance 间接引用 project——
+    # from/to 两向都清（任一端是本项目实例即删）
+    "acp_message": (
+        'from_agent_instance_id IN '
+        '(SELECT id FROM agent_instance WHERE project_id = :pid) '
+        'OR to_agent_instance_id IN '
+        '(SELECT id FROM agent_instance WHERE project_id = :pid)'
     ),
 }
 
