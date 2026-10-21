@@ -386,6 +386,7 @@ class TestWorkerToolLoop:
     async def test_tool_rounds_cap(self, monkeypatch):
         """4 轮上限: 连续 tool_call → 第 4 轮后强收。"""
         from project_runtime.worker import llm_worker as lw
+        from project_runtime.worker.llm_worker import _TOOL_ROUNDS
 
         w = _make_worker()
         calls = {"n": 0}
@@ -427,8 +428,11 @@ class TestWorkerToolLoop:
             skill_context = None
 
         out = await w._execute_llm(_WP())
-        assert calls["n"] == 4, "应恰好 4 轮后强收"
-        assert "轮4产出" in out or "轮" in out
+        assert calls["n"] == _TOOL_ROUNDS, (
+            f"应恰好 {_TOOL_ROUNDS} 轮后强收（V1.4h: 4→12——11 工具面下"
+            "模型需摸环境+干活+收敛的完整工作流预算）"
+        )
+        assert "轮12产出" in out or "轮" in out
 
     @pytest.mark.asyncio
     async def test_gateway_tools_unsupported_fallback(self, monkeypatch):

@@ -30,7 +30,9 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_TOOL_ROUNDS = 4  # 工具循环上限（规范 19 §4.5）
+_TOOL_ROUNDS = 12  # 工具循环上限（19号定 4=单搜索工具语义; 20号工具面
+                   # 扩到 11 个后语义变了——模型需摸环境 2-4 轮 + 干活
+                   # 2-4 轮 + 收敛写作 2-4 轮; opencode 同款循环上限数十轮）
 
 
 class LLMWorkerAdapter(WorkerAdapter):
@@ -252,6 +254,8 @@ class LLMWorkerAdapter(WorkerAdapter):
         tool_wl = getattr(wp, "tool_whitelist", None)
         tools = self._search_tools(whitelist=tool_wl)
         content = ""
+        # V1.4h: 工具历史（强收时拼摘要——防"垃圾成功"空话产物）
+        tool_history: list[tuple[str, bool, int]] = []
         for round_no in range(1, _TOOL_ROUNDS + 1):
             try:
                 result = await llm_acomplete(
@@ -355,15 +359,39 @@ class LLMWorkerAdapter(WorkerAdapter):
                     task_id, tc["name"], tc["arguments"], round_no,
                     whitelist=tool_wl,
                 )
+                tool_history.append((
+                    tc["name"], ok, len(result_text)
+                ))
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc["id"] or f"call_{i}",
                     "content": result_text,
                 })
+            # V1.4h 软收敛: 预算过半提醒一次（软引导非硬约束）
+            if round_no == _TOOL_ROUNDS - 4:
+                messages.append({
+                    "role": "user",
+                    "content": (
+                        f"【系统提醒】工具调用已进行 {round_no} 轮"
+                        f"（共 {_TOOL_ROUNDS} 轮上限）。"
+                        "如果已有足够信息，请直接输出最终交付内容"
+                        "（markdown 格式），不要再调用工具。"
+                    ),
+                })
             # 继续下一轮（模型基于搜索结果继续推理/产出）
-        # 4 轮用尽强收（防搜索上瘾，规范 19 §4.5）
+        # 12 轮用尽强收（防失控）—— V1.4h: 带工具操作摘要
         if not content.strip():
-            content = "（工具循环达上限，未能产出最终内容）"
+            if tool_history:
+                ok_n = sum(1 for _, ok, _ in tool_history if ok)
+                names = sorted({n for n, _, _ in tool_history})
+                names_str = "、".join(names[:8])
+                content = (
+                    f"（工具循环达上限——已执行 {len(tool_history)} 次"
+                    f"工具调用（{ok_n} 次成功），涉及工具: {names_str}。"
+                    "未能收敛出最终交付内容。）"
+                )
+            else:
+                content = "（工具循环达上限，未能产出最终内容）"
         return await self._archive_session(
             task_id, wp, session_store, content, context_stats
         )
