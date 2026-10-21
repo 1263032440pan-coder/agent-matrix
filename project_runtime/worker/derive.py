@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -50,6 +51,15 @@ _CONTRACT_PLUGIN_KEYWORDS: list[tuple[str, str]] = [
 
 # 数量闸（§2.2——每项目派生模板上限）
 CONTROLLER_TEMPLATE_CAP = 11  # 九环节 + 2
+
+# 兜底命名（LLM 不可用时——按环节语义命名，替代机械"派生-"前缀）
+_STAGE_FALLBACK_NAMES: dict[str, str] = {
+    "项目理解": "项目分析智能体", "需求基线": "需求分析智能体",
+    "解决方案": "方案设计智能体", "原型设计": "原型设计智能体",
+    "架构设计": "架构设计智能体", "开发实现": "开发实现智能体",
+    "测试验证": "测试验证智能体", "交付打包": "交付打包智能体",
+    "使用文档": "文档编写智能体", "misc": "通用任务智能体",
+}
 
 
 def derive_controller_whitelist(
@@ -107,6 +117,52 @@ def controller_template_signature(
             words.append(plugin)
     raw = f"{stage}|{'+'.join(sorted(set(words)))}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+async def _name_by_llm(
+    stage: str, task_contract: str | None,
+) -> str | None:
+    """LLM 依据环节+任务上下文生成职责化名称（用户要求——AI 起名）。
+
+    best-effort: 失败返回 None（走兜底名）——命名绝不阻断派生。
+    """
+    try:
+        from project_runtime.llm import load_llm_settings
+        from project_runtime.llm.provider import llm_complete
+
+        cfg = load_llm_settings()
+        if not (cfg.base_url and cfg.api_key and cfg.model):
+            return None
+        contract_snip = (task_contract or "")[:600]
+        prompt = (
+            "为一个智能体起中文名（2-8字，以“智能体”结尾，不加引号）。"
+            f"它的环节归属: {stage}；"
+            f"它将执行的任务契约摘要: {contract_snip}"
+            "\n只输出名称本身，不要任何其他文字。"
+        )
+        result = await asyncio.wait_for(
+            llm_complete(
+                model=cfg.model,
+                api_base=cfg.base_url,
+                api_key=cfg.api_key,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=60,
+                timeout=30,
+            ),
+            timeout=35,
+        )
+        if not result.get("ok"):
+            return None
+        resp = result["response"]
+        text = (resp.choices[0].message.content or "").strip()
+        for ch in " \u201c\u201d'\"\n\r":
+            text = text.replace(ch, "")
+        text = text.strip()
+        if 2 <= len(text) <= 12:
+            return text
+        return None
+    except Exception:  # noqa: BLE001 — 命名失败走兜底
+        return None
 
 
 async def ensure_controller_template(
@@ -174,12 +230,19 @@ async def ensure_controller_template(
             norm_stage, task_contract, ceiling_plugins
         )
 
+        # 命名（用户要求: AI 生成职责化名称——不再叫 "派生-misc"）
+        llm_name = await _name_by_llm(norm_stage, task_contract)
+        name = llm_name or _STAGE_FALLBACK_NAMES.get(
+            norm_stage, f"{norm_stage}智能体"
+        )
+        naming_src = "AI" if llm_name else "规则兜底"
+
         # 建模板（scope=PROJECT——§2.2 门: 升 GLOBAL 须用户 UI 确认）
         d = AgentDefinition(
             agent_id=f"controller-{sig}-{norm_stage}",
-            name=f"派生-{norm_stage}",
+            name=name,
             role_description=(
-                f"Controller 派生（环节: {norm_stage}）——"
+                f"Controller 派生（环节: {norm_stage}；命名: {naming_src}）——"
                 f"上限继承自 {ceiling_name or '基线'}"
             ),
             plugins=plugins,
