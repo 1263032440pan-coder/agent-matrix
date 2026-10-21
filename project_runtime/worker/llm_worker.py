@@ -34,6 +34,39 @@ _TOOL_ROUNDS = 12  # 工具循环上限（19号定 4=单搜索工具语义; 20�
                    # 扩到 11 个后语义变了——模型需摸环境 2-4 轮 + 干活
                    # 2-4 轮 + 收敛写作 2-4 轮; opencode 同款循环上限数十轮）
 
+def _repair_arguments(raw: str) -> str | None:
+    """tool_calls.arguments 流式拼装完整性校验与尾部修复（V1.4i 防线1）。
+
+    长 content 的 arguments 由几十个流式分片拼成——任何分片丢失/乱序
+    都会拼出断裂 JSON（实测: 模型 write 数千字文档时必触发）。
+    修复策略: 尾部截断（最主要形态）尝试补闭合符; 中段丢块无法猜——
+    返回 None（调用层给模型可理解的错误文案让其自救）。
+    """
+    text = (raw or "").strip()
+    if not text:
+        return "{}"
+    try:
+        json.loads(text)
+        return text  # 完整——直接用
+    except ValueError:
+        pass
+    # 尾部截断形态: 补闭引号/闭括号（按命中率排序）
+    for suffix in ('"}', '"}', '"}', '}', '"'):
+        try:
+            json.loads(text + suffix)
+            return text + suffix
+        except ValueError:
+            continue
+    # 特殊形态: 字符串值中间截断且含转义——补闭引号前剥离悬挂反斜杠
+    if text.endswith(chr(92)):
+        try:
+            json.loads(text[:-1] + '"}')
+            return text[:-1] + '"}'
+        except ValueError:
+            pass
+    return None  # 中段丢块——无法修复
+
+
 
 class LLMWorkerAdapter(WorkerAdapter):
     """Real worker: executes tasks via LLM (LiteLLM)."""
@@ -612,7 +645,20 @@ class LLMWorkerAdapter(WorkerAdapter):
         try:
             args = _json.loads(arguments or "{}")
         except ValueError:
-            args = {"query": str(arguments)[:200]}
+            # V1.4i 防线3: 流式拼装断裂——先尝试尾部修复（防线1）
+            repaired = _repair_arguments(arguments)
+            if repaired is not None:
+                try:
+                    args = _json.loads(repaired)
+                except ValueError:
+                    repaired = None
+            if repaired is None:
+                # 无法修复——返回可理解错误（模型可自救: 重试/拆短）
+                return (
+                    "工具调用参数传输不完整（长内容在流式传输中被截断）。"
+                    "请重试该写入——建议将长内容拆分为多次较短的写入，"
+                    "或分多个文件落盘。", False,
+                )
         query = str(args.get("query", ""))[:300]
         # 审计: 调用事件
         try:
