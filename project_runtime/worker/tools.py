@@ -123,7 +123,9 @@ class FileRwProvider:
             except OSError as e:
                 return {"ok": False, "error": f"读取失败: {e}"}
             return {"ok": True, "path": str(resolved),
-                    "content": content[:_OUTPUT_LIMIT]}
+                    "content": content[:_OUTPUT_LIMIT],
+                    # 分发层取 stdout——模型必须能看到文件内容
+                    "stdout": content[:_OUTPUT_LIMIT]}
         if action == "list":
             if not resolved.is_dir():
                 return {"ok": False, "error": f"目录不存在: {path}"}
@@ -131,8 +133,28 @@ class FileRwProvider:
                 f.name + ("/" if f.is_dir() else "")
                 for f in sorted(resolved.iterdir())
             ][:100]
-            return {"ok": True, "path": str(resolved), "items": items}
-        return {"ok": False, "error": f"未知 action: {action}（批次 1 只读）"}
+            return {"ok": True, "path": str(resolved), "items": items,
+                    "stdout": "目录 " + resolved.name + "/: " +
+                            ", ".join(items[:30]) if items else "（空目录）"}
+        if action == "write":
+            content = payload.get("content")
+            if content is None or not str(content).strip():
+                return {"ok": False, "error": "write 需要 content"}
+            content = str(content)
+            try:
+                resolved.parent.mkdir(parents=True, exist_ok=True)
+                resolved.write_text(content, encoding="utf-8")
+            except OSError as e:
+                return {"ok": False, "error": f"写入失败: {e}"}
+            return {
+                "ok": True, "path": str(resolved),
+                # 确认文本——工具循环喂回模型（可见自己写了什么）
+                "stdout": (
+                    f"已写入 {resolved.name}: {len(content)} 字符。"
+                ),
+                "bytes": len(content.encode("utf-8")),
+            }
+        return {"ok": False, "error": f"未知 action: {action}"}
 
     @staticmethod
     def _resolve(path: str) -> Path:
