@@ -165,18 +165,22 @@ DOING
 | SYS-070 | 软提醒一次性：code_stage + 零测试 + 有代码三条件 → 喂回一次，二次放行 | Worker 钩子 | V1.5a-1 序7 | _soft_nudge_tests | project_runtime/worker/llm_worker.py | tests/test_harvest_nudge.py | DONE（`5d887e6`；V1.6 序3 将泛化并入自查钩子） |
 | SYS-071 | 硬门草案文档化保存（强制 test_runner 2 次修复循环——待用户拍板启用） | 文档 | V1.5a-1 序8 | 附录-硬门草案-V1.5a-1.md | docs/project-spec/20-tracking/ | — | DONE（草案；启用待拍板） |
 | SYS-072 | UI 文件树：任务产物按 logical_id 路径深度缩进展示 | Desktop UI | V1.5a-1 序6 | Dashboard 产物列表 | apps/desktop/src/components/Dashboard.tsx | vitest 前端 25 passed | DONE（`5d887e6`） |
-| SYS-073 | file_rw 任务级禁闭：WorkPackage.workspace_root 注入，write 锁 data/tasks/{pid}/{tid}（越界返回指引文案，read/list 维持全域） | Worker 工具安全 | V1.6 序0 | __ws_root 内部参数 | worker/tools.py + adapter.py + service.py + llm_worker.py | tests/test_delivery_hooks.py（计划） | TODO |
-| SYS-074 | planner 补默认 stage_outputs 四件套（入口文件/功能模块/测试文件/README——skill 透传优先） | Planner | V1.6 序0 | playbook_ref stage_outputs | project_runtime/planner/planner.py | tests/test_delivery_hooks.py（计划） | TODO |
-| SYS-075 | skill 截取窗口 2000→3000 + code_stage 追加开发实现阶段细则段 | Worker Prompt | V1.6 序0 | skill_body[:3000] | project_runtime/worker/llm_worker.py | tests/test_delivery_hooks.py（计划） | TODO |
-| SYS-076 | 语义判定器：LLM 判 SOFTWARE_DEV/NOT_SOFTWARE（正则兜底/双失败保守），落 Project.delivery_profile | Delivery Profile | V1.6 序1 | delivery_classifier + migration | project_runtime/procedure/delivery_classifier.py（新） | tests/test_delivery_hooks.py（计划） | TODO |
-| SYS-077 | skill 1.1.2《交付基线》节：三件清单+质量标准在 skill 正文（PPT≥6页非空/代码三要素/测试报告含结论），阶段归属 AI 自主 | Skill Asset | V1.6 序2 | software-project-delivery@1.1.2 | skill 包 + llm_extractor.py 条件注入 | 断言基线节在 3000 窗口内 | TODO |
-| SYS-078 | 收工自查钩子：delivery_tags 任务收工注入自查消息（工作区文件树+契约清单），计入 12 轮预算，一次性；_soft_nudge_tests 并入泛化 | Worker 钩子 | V1.6 序3 | delivery_tags 驱动 | project_runtime/worker/llm_worker.py | tests/test_delivery_hooks.py（计划） | TODO |
-| SYS-079 | slide_generator 事实返回：生成后返回页数/非空页数/含标题元数据（判定归模型） | Worker 工具 | V1.6 序4 | pptx 元数据 | project_runtime/worker/tools.py | tests/test_delivery_hooks.py（计划） | TODO |
+| SYS-073 | file_rw 任务级禁闭：WorkPackage.workspace_root 注入，write 锁 data/tasks/{pid}/{tid}（越界返回指引文案，read/list 维持全域） | Worker 工具安全 | V1.6 序0 | __ws_root 内部参数 | worker/tools.py + adapter.py + service.py + llm_worker.py | tests/test_worker_tools.py 20 passed（含禁闭回归） | DOING（代码完成+测试绿，未提交） |
+| SYS-074 | planner 补默认 stage_outputs 四件套（入口文件/功能模块/测试文件/README——skill 透传优先） | Planner | V1.6 序0 | playbook_ref stage_outputs | project_runtime/planner/planner.py | tests/test_planner.py 15 passed | DOING（代码完成+测试绿，未提交） |
+| SYS-075 | skill 截取窗口 2000→3000 + code_stage 追加开发实现阶段细则段 | Worker Prompt | V1.6 序0 | skill_body[:3000] | project_runtime/worker/llm_worker.py | tests/test_harvest_nudge.py 6 passed | DOING（窗口扩容完成；阶段细则追加段未做，随序7测试补） |
+| SYS-076 | 语义判定器：LLM 判 SOFTWARE_DEV/NOT_SOFTWARE（正则兜底/双失败保守），落 Project.delivery_profile | Delivery Profile | V1.6 序1 | delivery_classifier + migration b7c4d9e1f2a3（已 upgrade 开发库）+ /plan 链 _normalize 接线 | project_runtime/procedure/delivery_classifier.py + apps/runtime/api/projects.py | tests/test_delivery_hooks.py（计划——判定器正反用例） | DOING（代码完成，专属测试随序7） |
+| SYS-077 | skill 1.1.2《交付基线》节：三件清单+质量标准在 skill 正文（PPT≥6页非空/代码三要素/测试报告含结论），阶段归属 AI 自主 | Skill Asset | V1.6 序2 | software-project-delivery@1.1.2 已导入开发库（1.1.0+1.1.2 并存，selector 取最新）；基线节位置 1813 字符（3000 窗口内 ✓） | skill 包 + llm_extractor.py 条件注入（delivery_profile 参数链: _normalize 判定先行 → with_llm 透传） | 断言用例随序7 | DOING（包+注入完成，断言随序7） |
+| SYS-078 | 收工自查钩子：delivery_tags 任务收工注入自查消息（工作区文件树+契约清单），计入 12 轮预算，一次性；_soft_nudge_tests 并入泛化 | Worker 钩子 | V1.6 序3 | delivery_tags 驱动（planner 词表归一 → playbook_ref → service._delivery_tags_of → WorkPackage） | worker/llm_worker.py _delivery_self_check + planner.py + service.py | tests/test_harvest_nudge.py 6 passed（更新至新钩子语义） | DOING（代码完成+测试绿，未提交） |
+| SYS-079 | slide_generator 事实返回：生成后返回页数/非空页数/含标题元数据（判定归模型） | Worker 工具 | V1.6 序4 | pptx 元数据（slides/non_empty_slides/has_title_text + stdout 提示语） | project_runtime/worker/tools.py | tests/test_worker_tools.py 20 passed | DOING（代码完成+测试绿，未提交） |
 | SYS-080 | 项目收口对账钩子：末任务 ACCEPTED + SOFTWARE_DEV → 三件 vs artifact 全集喂既有 ReconciliationLoop，缺件补建任务；新增 RuntimeEventType.RECONCILIATION_GAP 枚举 | 对账循环 | V1.6 序5 | RECONCILIATION_GAP 事件 | service.py + controller.py + event/models.py | tests/test_delivery_hooks.py（计划） | TODO |
 | SYS-081 | UI：项目卡片"软件开发需求"标识 + NOT_SOFTWARE 重新判定入口 + 三件状态行 | Desktop UI | V1.6 序6 | delivery_profile + 三件状态 API | Dashboard.tsx / api.ts | 前端 vitest（计划） | TODO |
 
 ### 本批追踪说明
 
-- SYS-065~072（V1.5a-1 八项）已交付并有 commit/测试锚点，状态 DONE；SYS-070 标注 V1.6 序 3 泛化去向。
-- SYS-073~081（V1.6 序 0-6）状态 TODO，按设计单 V1.6 实施清单顺序开发，Gate PASS 后逐行更新。
+- SYS-065~072（V1.5a-1 八项）已交付并有 commit/测试锚点，状态 DONE；SYS-070 已按设计标注 V1.6 序 3 泛化去向（_soft_nudge_tests → _delivery_self_check，已完成）。
+- SYS-073~079（V1.6 序 0-4）**代码完成、既有测试全绿、ruff 绿，本地未提交**（当前分支 panyuchi）——状态 DOING，待序 5-7 完成统一提交后转 DONE。
+- SYS-080（序 5 收口对账）施工中：RECONCILIATION_GAP 枚举插入点已定位（event/models.py MANIFEST_CHECK 行后），钩子未落码。
+- SYS-081（序 6 UI）未开始。
+- 序 7（tests/test_delivery_hooks.py + 迷你待办 CLI 全链实测 + 全量回归）未开始——SYS-073~079 的"计划"测试文件统一在此落。
 - SYS-071 硬门：启用决策权在用户（自觉率 25% 数据已交），拍板后新增追踪项。
+- 更新时间：2026-10-22（V1.6 序 0-4 完成时点）。
