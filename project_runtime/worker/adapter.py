@@ -50,6 +50,10 @@ class WorkPackage:
     skill_whitelist: list[str] | None = None
     # V1.5a-1: 代码交付阶段标记（skill stages/材料兜底透传——软提醒消费）
     code_stage: bool = False
+    # V1.6 序0: 任务工作区根（file_rw 写禁闭——安全机制）
+    workspace_root: str | None = None
+    # V1.6 序3: 交付物标记（ppt/code/test_report——收工自查钩子消费）
+    delivery_tags: list[str] | None = None
 
 
 @dataclass

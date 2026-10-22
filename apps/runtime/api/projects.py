@@ -395,9 +395,25 @@ async def run_planning(project_id: int):
         project = await session.get(Project, project_id)
         if project is None:
             raise HTTPException(404, "Project not found")
-        normalizer = ProcedureNormalizer.with_llm(session, project_id=project_id)
+        # V1.6 序1: 交付画像语义判定先行（best-effort——失败不阻断规划,
+        # 双失败保守 NOT_SOFTWARE, UI 手动重判兜底）
+        profile = None
+        try:
+            from project_runtime.procedure.delivery_classifier import (
+                DeliveryClassifier,
+            )
+
+            profile = await DeliveryClassifier(session).classify_and_store(
+                project_id
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("delivery classify failed", exc_info=True)
+        # V1.6 序2: profile 透传 extractor（SOFTWARE_DEV → prompt 基线约定）
+        normalizer = ProcedureNormalizer.with_llm(
+            session, project_id=project_id, delivery_profile=profile,
+        )
         model = await normalizer.normalize(project_id)
-        return {"model_id": model.id}
+        return {"model_id": model.id, "delivery_profile": profile}
 
     async def _assess(session: AsyncSession):
         model = await _stage_last_model(session, project_id)
@@ -522,6 +538,8 @@ async def list_projects(session: AsyncSession = Depends(get_session)):
             "status": p.status.value,
             "automation_mode": p.automation_mode.value,
             "created_at": p.created_at.isoformat() if p.created_at else None,
+            # V1.6 序6: 交付画像（UI 标识 + 重新判定入口数据源）
+            "delivery_profile": p.delivery_profile,
         }
         for p in projects
     ]
@@ -581,6 +599,25 @@ async def delete_project(project_id: int):
         except ProjectDeletionError as e:
             raise HTTPException(404, str(e)) from e
     return result
+
+
+@router.post("/{project_id}/reclassify-delivery", status_code=200)
+async def reclassify_delivery(project_id: int):
+    """V1.6 序6: 手动重新判定交付画像（P2-3——误判兜底通道）。
+
+    重跑 delivery_classifier 并落库; 判定后由下次 /plan 生效注入。
+    """
+    from project_runtime.procedure.delivery_classifier import DeliveryClassifier
+
+    async with AsyncSession(engine) as session:
+        project = await session.get(Project, project_id)
+        if project is None:
+            raise HTTPException(404, "Project not found")
+        profile = await DeliveryClassifier(session).classify_and_store(
+            project_id
+        )
+        await session.commit()
+    return {"project_id": project_id, "delivery_profile": profile}
 
 
 @router.post("/batch-delete", status_code=200)
@@ -750,6 +787,24 @@ async def project_dashboard(project_id: int, session: AsyncSession = Depends(get
         "worker_status": {
             "running": sum(1 for t in tasks if t.status.value == "RUNNING"),
             "ready": sum(1 for t in tasks if t.status.value == "READY"),
+        },
+        # V1.6 序6: 交付画像 + 三件状态（事实汇总——UI 状态行）
+        "delivery_profile": project.delivery_profile,
+        "delivery_status": {
+            "ppt": any(
+                (a.name or "").lower().endswith(".pptx") for a in artifacts
+            ),
+            "code": any(
+                (a.name or "").lower().endswith((".py", ".js", ".ts"))
+                for a in artifacts
+            ) and any(
+                (a.name or "").lower().startswith("readme")
+                for a in artifacts
+            ),
+            "test_report": any(
+                "测试" in (a.name or "") and (a.name or "").lower().endswith(".md")
+                for a in artifacts
+            ),
         },
         "artifacts": [
             {

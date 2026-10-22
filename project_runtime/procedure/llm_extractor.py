@@ -73,10 +73,14 @@ class LLMExtractor:
     """LiteLLM-backed extractor. Conforms to NormalizerExtractor protocol."""
 
     def __init__(self, llm_config, fallback: KeywordExtractor | None = None,
-                 project_id: int | None = None):
+                 project_id: int | None = None,
+                 delivery_profile: str | None = None):
         self._cfg = llm_config
         self._fallback = fallback or KeywordExtractor()
         self._project_id = project_id  # CoT 事件归属（None=全局）
+        # V1.6 序2: SOFTWARE_DEV → prompt 注入《交付基线》约定（仅 WHAT
+        # 不约束 WHERE——阶段归属 AI 自主; 不复制 skill 正文）
+        self._delivery_profile = delivery_profile
 
     async def extract(self, text: str, source_name: str) -> list[dict]:
         from project_runtime.llm import test_llm_connection  # noqa: F401 — config guard
@@ -102,6 +106,15 @@ class LLMExtractor:
             model = f"openai/{model}"
 
         prompt = _PROMPT.format(text=text[:12000], source_name=source_name)
+        if self._delivery_profile == "SOFTWARE_DEV":
+            prompt += (
+                chr(10) + chr(10) +
+                "【交付基线约定】本项目为软件开发需求，最终交付必然包含三件："
+                "①项目方案介绍 PPT ②可运行的代码（多文件组织+README+依赖清单）"
+                "③测试报告。三件在流程的哪个阶段、哪个任务产生，由你根据材料"
+                "自行安排——本约定只约束交付完整性，不约束流程设计。"
+                "承载任务的 outputs 请体现对应产物。"
+            )
         # 流式调用（CoT UI）：reasoning/content 分通道增量收集，
         # 思考过程边收边发 LLM_THINKING_CHUNK 事件供界面实时显示
         # V1.4b P4: 外层 wait_for——网关断流（aiostream 挂死）时

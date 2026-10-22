@@ -49,6 +49,11 @@ class Project(Base):
     status: Mapped[ProjectStatus] = mapped_column(
         Enum(ProjectStatus), nullable=False, default=ProjectStatus.CREATED
     )
+    # V1.6 序1: 交付画像（delivery_classifier 语义判定结果——纯事实记录，
+    # 决定 skill《交付基线》注入与否；NULL=未判定，语义同 NOT_SOFTWARE）
+    delivery_profile: Mapped[str | None] = mapped_column(
+        String(32), nullable=True
+    )
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )

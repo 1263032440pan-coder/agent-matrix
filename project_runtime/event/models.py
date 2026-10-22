@@ -65,6 +65,7 @@ class RuntimeEventType(str, enum.Enum):
     AGENT_TERMINATED = "AGENT_TERMINATED"
     AGENT_CONTEXT_COMPRESSED = "AGENT_CONTEXT_COMPRESSED"  # 会话压缩发生（§7.3 审计）
     MANIFEST_CHECK = "MANIFEST_CHECK"               # Controller 清单对账（规范 20 §3.4）
+    RECONCILIATION_GAP = "RECONCILIATION_GAP"       # V1.6 序5: 收口对账缺件
 
 
 class RuntimeEvent(Base):

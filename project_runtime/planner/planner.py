@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,6 +23,32 @@ _MANDATORY = "MANDATORY"
 _RECOMMENDED = "RECOMMENDED"
 _OPTIONAL = "OPTIONAL"
 _PROPOSED = "PROPOSED"
+
+
+# V1.6 序3: delivery_tags 归一词表（机制——行为标准在 skill 层）
+_TAG_PPT = re.compile(r"ppt|pptx|演示|汇报|幻灯|slides?")
+_TAG_CODE = re.compile(r"源码|代码|实现|入口文件|功能模块|README")
+_TAG_TEST = re.compile(r"测试报告|测试文件|测试")
+
+
+def _delivery_tags_of_ws(
+    ws: dict, stage_outputs: list, task_type: str,
+) -> list:
+    """workstream → delivery_tags（ppt/code/test_report）。"""
+    text = " ".join(
+        str(x) for x in [
+            task_type, ws.get("name"), ws.get("workstream"),
+            *(stage_outputs or []),
+        ] if x
+    )
+    tags: list = []
+    if _TAG_PPT.search(text):
+        tags.append("ppt")
+    if _TAG_CODE.search(text):
+        tags.append("code")
+    if _TAG_TEST.search(text):
+        tags.append("test_report")
+    return tags
 
 
 class DynamicPlanner:
@@ -139,6 +166,11 @@ class DynamicPlanner:
         code_stage_flag = bool(ws.get("code_stage")) or task_type in (
             "开发实现", "测试验证",
         )
+        # V1.6 序0: code_stage 且 stage_outputs 空 → 补默认四件套
+        # （与 skill 1.1.0 开发实现阶段 outputs 同构; skill 透传优先不覆盖）
+        stage_outputs = list(ws.get("stage_outputs") or [])
+        if code_stage_flag and not stage_outputs:
+            stage_outputs = ["入口文件", "功能模块", "测试文件", "README"]
         playbook_ref = json.dumps(
             {
                 "workstream_name": ws.get("workstream") or ws["name"],
@@ -148,7 +180,10 @@ class DynamicPlanner:
                 "acceptance_criteria": ws.get("acceptance_criteria"),
                 # V1.5a-1: code_stage + 阶段产出物透传（Worker 软提醒消费）
                 "code_stage": code_stage_flag,
-                "stage_outputs": ws.get("stage_outputs") or [],
+                "stage_outputs": stage_outputs,
+                # V1.6 序3: delivery_tags 归一（词表命中——机制不进 LLM）
+                "delivery_tags": _delivery_tags_of_ws(
+                    ws, stage_outputs, task_type),
                 # WP-007: Task 可引用 Playbook / Research（有则带上）
                 "research_enrichments": ws.get("research_enrichments") or [],
             }

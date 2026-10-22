@@ -352,6 +352,42 @@ export function Dashboard({ projectId, paused }: { projectId: number; paused?: b
             </p>
           </section>
 
+          {/* V1.6 序6: 交付画像标识 + 三件状态行 + 重新判定入口 */}
+          <section data-testid="delivery-status" style={card}>
+            <h3 style={{ marginTop: 0 }}>交付基线</h3>
+            {data.delivery_profile === 'SOFTWARE_DEV' ? (
+              <p>
+                <span data-testid="dev-badge">🏷️ 软件开发需求</span>
+              </p>
+            ) : (
+              <p>
+                <small style={{ color: '#999' }}>未识别为软件开发需求</small>{' '}
+                <button
+                  data-testid="reclassify-btn"
+                  onClick={async () => {
+                    try {
+                      await reclassifyDelivery(data.project.id);
+                      const d2 = await fetchDashboard(data.project.id);
+                      setData(d2);
+                    } catch {
+                      /* best-effort */
+                    }
+                  }}
+                  style={{ fontSize: 12, marginLeft: 6 }}
+                >
+                  重新判定
+                </button>
+              </p>
+            )}
+            {data.delivery_status && (
+              <p style={{ fontSize: 14 }}>
+                方案PPT {data.delivery_status.ppt ? '✅' : '❌'} |{' '}
+                可运行代码 {data.delivery_status.code ? '✅' : '❌'} |{' '}
+                测试报告 {data.delivery_status.test_report ? '✅' : '❌'}
+              </p>
+            )}
+          </section>
+
           <section data-testid="artifacts" style={card}>
             <h3 style={{ marginTop: 0 }}>Artifacts</h3>
             {data.artifacts.length === 0 && <p style={{ color: '#999' }}>暂无产物</p>}

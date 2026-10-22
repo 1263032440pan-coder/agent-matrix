@@ -161,15 +161,19 @@ class ProcedureNormalizer:
 
     @classmethod
     def with_llm(
-        cls, session: AsyncSession, project_id: int | None = None
+        cls, session: AsyncSession, project_id: int | None = None,
+        delivery_profile: str | None = None,
     ) -> "ProcedureNormalizer":
         """LLM-first normalizer: uses configured LLM, keyword fallback."""
         from project_runtime.llm import load_llm_settings
         from project_runtime.procedure.llm_extractor import LLMExtractor
 
         cfg = load_llm_settings()
+        # V1.6 序2: delivery_profile 由调用方传入（/plan 链 _normalize
+        # 先判定落库, 再经此参数注入——SOFTWARE_DEV → prompt 基线约定）
         extractor = (
-            LLMExtractor(cfg, project_id=project_id)
+            LLMExtractor(cfg, project_id=project_id,
+                         delivery_profile=delivery_profile)
             if (cfg.base_url and cfg.api_key and cfg.model)
             else None
         )

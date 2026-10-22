@@ -8,6 +8,9 @@ export interface DashboardData {
   tasks: Array<{ id: number; name: string; status: string; depends_on?: number[] }>;
   current_task: { id: number; name: string } | null;
   worker_status: { running: number; ready: number };
+  // V1.6 序6: 交付画像 + 三件状态
+  delivery_profile?: string | null;
+  delivery_status?: { ppt: boolean; code: boolean; test_report: boolean };
   artifacts: Array<{
     id: number;
     name: string;
@@ -57,6 +60,20 @@ export async function fetchExecutionEvents(
     `${API_BASE}/api/executions/${executionId}/events?after_id=${afterId}`
   );
   if (!resp.ok) throw new Error(`Events fetch failed: ${resp.status}`);
+  return resp.json();
+}
+
+// V1.6 序6: 手动重新判定交付画像（P2-3 误判兜底）
+export async function reclassifyDelivery(
+  projectId: number
+): Promise<{ project_id: number; delivery_profile: string }> {
+  const resp = await fetch(
+    `${API_BASE}/api/projects/${projectId}/reclassify-delivery`,
+    { method: 'POST' }
+  );
+  if (!resp.ok) {
+    throw new Error(`Reclassify failed: ${resp.status}`);
+  }
   return resp.json();
 }
 

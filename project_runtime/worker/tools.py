@@ -111,10 +111,13 @@ class FileRwProvider:
         path = str(payload.get("path") or "")
         if not path:
             return {"ok": False, "error": "path 必填"}
-        try:
-            resolved = self._resolve(path)
-        except ValueError as e:
-            return {"ok": False, "error": str(e)}
+        # V1.6 序0: write 的禁闭判定在 write 分支内自管（__ws_root 任务级
+        # 优先, 相对路径如 src/main.py 合法）——开头 resolve 只服务 read/list
+        if action != "write":
+            try:
+                resolved = self._resolve(path)
+            except ValueError as e:
+                return {"ok": False, "error": str(e)}
         if action == "read":
             if not resolved.is_file():
                 return {"ok": False, "error": f"文件不存在: {path}"}
@@ -141,7 +144,35 @@ class FileRwProvider:
             if content is None or not str(content).strip():
                 return {"ok": False, "error": "write 需要 content"}
             content = str(content)
+            # V1.6 序0: 任务级写禁闭——调用方注入 __ws_root 时,
+            # resolved 必须落在该任务工作区内（防写到相邻目录逃逸 harvest）
+            ws_root_raw = payload.get("__ws_root")
             try:
+                if ws_root_raw:
+                    ws_root = Path(str(ws_root_raw)).resolve()
+                    # 相对路径语义: src/main.py → 拼进任务工作区;
+                    # 但带 ../ 或 data/tasks 前缀的（试图指别的目录）
+                    # 按 cwd 解析再禁闭——两种都逃不出 startswith 检查
+                    p_ = Path(path)
+                    if p_.is_absolute():
+                        resolved = p_.resolve()
+                    elif '..' in p_.parts or str(p_).replace(
+                        chr(92), '/'
+                    ).startswith('data/tasks'):
+                        resolved = (Path.cwd() / p_).resolve()
+                    else:
+                        resolved = (ws_root / p_).resolve()
+                    if not str(resolved).startswith(str(ws_root)):
+                        return {
+                            "ok": False,
+                            "error": (
+                                f"路径越界: {path}——本任务只允许写入 "
+                                f"{ws_root} 内。请用相对路径如 "
+                                f"src/main.py、tests/test_x.py、README.md"
+                            ),
+                        }
+                else:
+                    resolved = self._resolve(path)
                 resolved.parent.mkdir(parents=True, exist_ok=True)
                 resolved.write_text(content, encoding="utf-8")
             except OSError as e:
@@ -470,11 +501,44 @@ class SlideGeneratorProvider:
             prs.save(str(out_path))
             return count
 
+        def _meta() -> dict:
+            """V1.6 序4: 读回 pptx 元数据（事实返回——判定归模型/skill）。"""
+            from pptx import Presentation as _Pres
+
+            m = _Pres(str(out_path))
+            slides = list(m.slides)
+            non_empty = sum(
+                1 for sl in slides
+                if any(sh.has_text_frame and sh.text_frame.text.strip()
+                       for sh in sl.shapes)
+            )
+            has_title = bool(
+                slides and any(
+                    sh.has_text_frame and sh.text_frame.text.strip()
+                    for sh in slides[0].shapes
+                )
+            )
+            return {"slides": len(slides),
+                    "non_empty_slides": non_empty,
+                    "has_title_text": has_title}
+
         try:
-            count = await asyncio.to_thread(_blocking)
+            await asyncio.to_thread(_blocking)
+            meta = await asyncio.to_thread(_meta)
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "error": f"生成失败: {e}"}
-        return {"ok": True, "path": str(out_path), "slides": count}
+        # V1.6 序4: 元数据随结果返回（stdout 提示语——标准在 skill《交付基线》）
+        return {
+            "ok": True, "path": str(out_path),
+            "slides": meta["slides"],
+            "non_empty_slides": meta["non_empty_slides"],
+            "has_title_text": meta["has_title_text"],
+            "stdout": (
+                f"已生成 {out_path.name}: {meta['slides']} 页"
+                f"（{meta['non_empty_slides']} 页有内容）——"
+                "请对照交付基线自查页数与内容要求"
+            ),
+        }
 
 
 # ── 注册（组合根——与 search providers 同模式）─────────────────────

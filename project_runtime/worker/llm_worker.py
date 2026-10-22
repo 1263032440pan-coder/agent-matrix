@@ -86,6 +86,8 @@ class LLMWorkerAdapter(WorkerAdapter):
         # V1.5a-1 序6/7: 工作区快照/软提醒状态
         self._current_task_id: int | None = None
         self._nudged_tasks: set[int] = set()
+        # V1.6 序0: 任务工作区根（file_rw 写禁闭）
+        self._workspace_root: str | None = None
         self._db_lock = asyncio.Lock()
 
     async def assign(self, wp: WorkPackage) -> ExecutionResult:
@@ -104,6 +106,7 @@ class LLMWorkerAdapter(WorkerAdapter):
                     f"Worker cannot start task in status {task.status.value}. Must be READY."
                 )
             self._current_task_id = task.id
+            self._workspace_root = getattr(wp, "workspace_root", None)
             await self._fsm.transition_task(task, TaskStatus.RUNNING)
             await commit_with_retry(self._session, context="llm_worker.phase1")
 
@@ -122,7 +125,7 @@ class LLMWorkerAdapter(WorkerAdapter):
         # V1.5a-1 序7: 软提醒（一次性——code_stage 零测试文件时附加提示）
         if success:
             try:
-                output = await self._soft_nudge_tests(wp, output)
+                output = await self._delivery_self_check(wp, output)
             except Exception:  # noqa: BLE001 — 软提醒绝不阻断
                 pass
 
@@ -245,38 +248,53 @@ class LLMWorkerAdapter(WorkerAdapter):
             )
         return Path(f"data/tasks/0/{self._current_task_id or 0}")
 
-    async def _soft_nudge_tests(
+    async def _delivery_self_check(
         self, wp, output: str,
     ) -> str:
-        """V1.5a-1 序7: 软提醒（一次性）——code_stage 任务零测试文件。
+        """V1.6 序3: 收工自查钩子（一次性）——delivery_tags 驱动。
 
-        条件全中才提醒: code_stage 标记 + 工作区测试文件为零
-        + 产物含代码文件。第二次收工放行（本方法只在首次触发——
-        由 _nudged_tasks 集合记已提醒过）。
+        泛化取代 V1.5a-1 _soft_nudge_tests（三条件特例）:
+        - 触发: delivery_tags 非空 或 code_stage（旧语义并入）
+        - 注入: 工作区文件树事实 + 契约交付清单 + 对照 skill《交付基线》
+        - 一次性: 同任务第二次收工放行（_nudged_tasks 复用）
+        - 防死循环=预算制（自查回合计入 12 轮工具预算——设计单 §三③）
         """
-        if not getattr(wp, "code_stage", False):
+        tags = list(getattr(wp, "delivery_tags", None) or [])
+        if getattr(wp, "code_stage", False) and "code" not in tags:
+            tags.append("code")  # 旧三条件特例并入
+        if not tags:
             return output
         if getattr(wp, "task_id", None) in self._nudged_tasks:
-            return output  # 已提醒过——放行
+            return output  # 已自查过——放行
+        # 工作区事实（文件树——机制只呈现事实, 判定归 skill）
         root = self._task_ws_root()
-        has_tests = any(
-            p.is_file() and (
-                p.name.startswith("test_")
-                or p.suffix in (".py", ".js") and "test" in p.name.lower()
-            )
-            for p in root.rglob("*")
-        ) if root.exists() else False
-        has_code = any(
-            p.suffix in (".py", ".js", ".ts", ".html", ".css")
-            for p in root.rglob("*") if p.is_file()
-        ) if root.exists() else False
-        if has_tests or not has_code:
-            return output  # 有测试 or 没代码——不提醒
+        files_desc = "（空）"
+        if root.exists():
+            files = [
+                f"{p.relative_to(root)}（{p.stat().st_size}B）"
+                for p in sorted(root.rglob("*")) if p.is_file()
+            ][:30]
+            files_desc = "\n".join(files) if files else "（空）"
+        # 契约交付清单
+        stage_outputs = []
+        try:
+            import json as _json
+
+            ref = getattr(wp, "playbook_ref", None)
+            if ref:
+                stage_outputs = _json.loads(ref).get("stage_outputs") or []
+        except (ValueError, AttributeError, TypeError):
+            pass
+        tag_names = {"ppt": "项目方案介绍 PPT", "code": "可运行的代码",
+                     "test_report": "测试报告"}
+        tag_list = "、".join(tag_names.get(t, t) for t in tags)
         self._nudged_tasks.add(wp.task_id)
         return (
-            f"{output}\n\n【系统提醒】本任务标记为代码交付阶段，"
-            "契约要求测试文件——当前工作区未检测到任何测试文件。"
-            "请补写测试（tests/ 目录，可用 file_rw 落盘）后重新交付。"
+            f"{output}\n\n【收工自查】本任务契约要求交付：{tag_list}"
+            f"（阶段产出物：{'、'.join(stage_outputs) or '未声明'}）。"
+            f"\n当前工作区文件清单：\n{files_desc}\n"
+            "请对照 skill《交付基线》自查：缺什么补什么"
+            "（可用 file_rw / slide_generator），齐了才输出最终交付。"
         )
 
     async def cancel(self, task_id: int) -> None:
@@ -318,7 +336,7 @@ class LLMWorkerAdapter(WorkerAdapter):
         if wp.contract:
             prompt_parts.append(f"契约：{wp.contract}")
         if wp.skill_context:
-            prompt_parts.append(f"方法指导：\n{wp.skill_context.skill_body[:2000]}")
+            prompt_parts.append(f"方法指导：\n{wp.skill_context.skill_body[:3000]}")
         prompt_parts.append(
             "\n请完成上述任务，输出具体的交付内容（markdown 格式）。"
             "不要输出思考过程，直接给出结果。"
@@ -701,7 +719,12 @@ class LLMWorkerAdapter(WorkerAdapter):
         for info in shared_registry().list_providers(CapabilityType.TOOL):
             if info.name == name and info.enabled:
                 try:
-                    return await info.provider.invoke(args)
+                    payload = dict(args)
+                    # V1.6 序0: file_rw 写禁闭——注入任务工作区根
+                    # （__ 前缀=内部参数, schema 不暴露, Provider 侧剥离）
+                    if name == "tool:file_rw" and self._workspace_root:
+                        payload["__ws_root"] = self._workspace_root
+                    return await info.provider.invoke(payload)
                 except Exception as e:  # noqa: BLE001 — 降级不炸循环
                     return {"ok": False, "error": str(e)[:300]}
         return None

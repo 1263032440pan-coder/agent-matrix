@@ -124,14 +124,17 @@ class TestSoftNudge:
         class _WP:
             task_id = 7
             code_stage = True
-        out = await w._soft_nudge_tests(_WP(), "原产出")
-        assert "测试文件" in out and "系统提醒" in out
+            delivery_tags = None
+            playbook_ref = None
+        out = await w._delivery_self_check(_WP(), "原产出")
+        assert "收工自查" in out and "交付基线" in out
         # 第二次放行（一次性）
-        out2 = await w._soft_nudge_tests(_WP(), "原产出")
+        out2 = await w._delivery_self_check(_WP(), "原产出")
         assert out2 == "原产出"
 
     @pytest.mark.asyncio
-    async def test_no_nudge_when_tests_exist(self, dbengine, monkeypatch):
+    async def test_self_check_lists_files_when_tests_exist(self, dbengine, monkeypatch):
+        """V1.6 序3 泛化: code_stage 有测试也注入自查（文件树事实呈现）——判定归模型。"""
         eng, tmp = dbengine
         w = self._worker(tmp, monkeypatch, {
             "src/main.py": "print(1)",
@@ -141,19 +144,24 @@ class TestSoftNudge:
         class _WP:
             task_id = 7
             code_stage = True
-        out = await w._soft_nudge_tests(_WP(), "原产出")
-        assert out == "原产出"  # 有测试——不提醒
+            delivery_tags = None
+            playbook_ref = None
+        out = await w._delivery_self_check(_WP(), "原产出")
+        assert "收工自查" in out
+        assert "test_a.py" in out.replace(chr(92), "/")
 
     @pytest.mark.asyncio
-    async def test_no_nudge_when_not_code_stage(self, dbengine, monkeypatch):
+    async def test_no_check_when_no_tags(self, dbengine, monkeypatch):
         eng, tmp = dbengine
         w = self._worker(tmp, monkeypatch, {"src/main.py": "print(1)"})
 
         class _WP:
             task_id = 7
             code_stage = False
-        out = await w._soft_nudge_tests(_WP(), "原产出")
-        assert out == "原产出"  # 非 code_stage——不提醒
+            delivery_tags = None
+            playbook_ref = None
+        out = await w._delivery_self_check(_WP(), "原产出")
+        assert out == "原产出"  # 无 tags 非 code_stage——不触发
 
 
 class TestCodeStagePassthrough:
