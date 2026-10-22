@@ -354,12 +354,22 @@ async def run_planning(project_id: int):
             )
         if exec_ids:
             exlist = ",".join(str(e) for e in exec_ids)
-            for table in ("artifact", "event", "runtime_event"):
+            # runtime_event 有 execution_id 列; artifact/event 只有 task_id
+            # （execution 间接引用）——按各表实有列删（V1.5a-1 集成实测
+            # 修复: 曾统一用 execution_id IN (...) 对三表删除, 项目带
+            # 历史 execution 时 no such column: execution_id 直接 502）
+            await session.execute(
+                _text(
+                    f'DELETE FROM "runtime_event" '
+                    f'WHERE execution_id IN ({exlist}) '
+                    f'OR task_id IN ({idlist})'
+                )
+            )
+            for table in ("artifact", "event"):
                 await session.execute(
                     _text(
                         f'DELETE FROM "{table}" '
-                        f'WHERE execution_id IN ({exlist}) '
-                        f'OR task_id IN ({idlist})'
+                        f'WHERE task_id IN ({idlist})'
                     )
                 )
         else:

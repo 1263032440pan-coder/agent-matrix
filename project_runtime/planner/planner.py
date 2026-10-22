@@ -121,24 +121,6 @@ class DynamicPlanner:
         else:
             pass  # included
 
-        playbook_ref = json.dumps(
-            {
-                # WP022-TD02: workstream_name = 归属流（builder 的
-                # ws["workstream"]，V0.1 来自文档 h1）——traceability
-                # ARCHITECTURE 关联靠它；task 名另存 task_name
-                "workstream_name": ws.get("workstream") or ws["name"],
-                "task_name": ws["name"],
-                "authority": authority,
-                "source_type": (ws.get("source") or {}).get("type", "UNKNOWN"),
-                "acceptance_criteria": ws.get("acceptance_criteria"),
-                # V1.5a-1: code_stage + 阶段产出物透传（Worker 软提醒消费）
-                "code_stage": bool(ws.get("code_stage")),
-                "stage_outputs": ws.get("stage_outputs") or [],
-                # WP-007: Task 可引用 Playbook / Research（有则带上）
-                "research_enrichments": ws.get("research_enrichments") or [],
-            }
-        )
-
         # V1.4b 修1: task_type 三源优先级链——环节词贯通
         # stage（LLM 抽取标注）> source_skill_stage（skill 骨架阶段）
         # > workstream（归组——skill 骨架路径本就=阶段名, LLM 路径是
@@ -148,6 +130,28 @@ class DynamicPlanner:
             or ws.get("source_skill_stage")
             or ws.get("workstream")
             or "generic"
+        )
+        # V1.5a-1 补强: task_type 命中开发实现/测试验证环节 = 代码任务。
+        # 用户方法路径（非 skill 骨架）的 workstream 不带 code_stage
+        # 标记（builder 兜底只看材料关键词），但 LLM 标注的环节本身就
+        # 是代码信号——直接归一判定，覆盖「真流程文档走 _build_workstreams」
+        # 的主场景（skill 1.1.0 结构化 stages 只在骨架路径生效）。
+        code_stage_flag = bool(ws.get("code_stage")) or task_type in (
+            "开发实现", "测试验证",
+        )
+        playbook_ref = json.dumps(
+            {
+                "workstream_name": ws.get("workstream") or ws["name"],
+                "task_name": ws["name"],
+                "authority": authority,
+                "source_type": (ws.get("source") or {}).get("type", "UNKNOWN"),
+                "acceptance_criteria": ws.get("acceptance_criteria"),
+                # V1.5a-1: code_stage + 阶段产出物透传（Worker 软提醒消费）
+                "code_stage": code_stage_flag,
+                "stage_outputs": ws.get("stage_outputs") or [],
+                # WP-007: Task 可引用 Playbook / Research（有则带上）
+                "research_enrichments": ws.get("research_enrichments") or [],
+            }
         )
         req = CreateTaskRequest(
             project_id=project_id,
