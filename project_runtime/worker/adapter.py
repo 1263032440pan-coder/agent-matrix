@@ -48,6 +48,8 @@ class WorkPackage:
     # None=不限 / list=白名单（fail-closed）
     tool_whitelist: list[str] | None = None
     skill_whitelist: list[str] | None = None
+    # V1.5a-1: 代码交付阶段标记（skill stages/材料兜底透传——软提醒消费）
+    code_stage: bool = False
 
 
 @dataclass

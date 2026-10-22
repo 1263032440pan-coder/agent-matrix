@@ -131,6 +131,9 @@ class DynamicPlanner:
                 "authority": authority,
                 "source_type": (ws.get("source") or {}).get("type", "UNKNOWN"),
                 "acceptance_criteria": ws.get("acceptance_criteria"),
+                # V1.5a-1: code_stage + 阶段产出物透传（Worker 软提醒消费）
+                "code_stage": bool(ws.get("code_stage")),
+                "stage_outputs": ws.get("stage_outputs") or [],
                 # WP-007: Task 可引用 Playbook / Research（有则带上）
                 "research_enrichments": ws.get("research_enrichments") or [],
             }

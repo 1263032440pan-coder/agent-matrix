@@ -16,6 +16,7 @@ import asyncio
 import datetime
 import json
 import logging
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -82,6 +83,9 @@ class LLMWorkerAdapter(WorkerAdapter):
         self._mgr = TaskGraphManager(session)
         self._artifact_mgr = artifact_mgr
         self._max_tokens = max_tokens
+        # V1.5a-1 序6/7: 工作区快照/软提醒状态
+        self._current_task_id: int | None = None
+        self._nudged_tasks: set[int] = set()
         self._db_lock = asyncio.Lock()
 
     async def assign(self, wp: WorkPackage) -> ExecutionResult:
@@ -99,8 +103,12 @@ class LLMWorkerAdapter(WorkerAdapter):
                 raise ValueError(
                     f"Worker cannot start task in status {task.status.value}. Must be READY."
                 )
+            self._current_task_id = task.id
             await self._fsm.transition_task(task, TaskStatus.RUNNING)
             await commit_with_retry(self._session, context="llm_worker.phase1")
+
+        # V1.5a-1 序6: 工作区快照（收工 diff 用——新增文件登记 Artifact）
+        ws_snapshot = self._workspace_snapshot()
 
         # Execute via LLM (zero DB transaction held — network call)
         try:
@@ -110,6 +118,24 @@ class LLMWorkerAdapter(WorkerAdapter):
             logger.error("LLM execution failed for task %d: %s", wp.task_id, e)
             output = f"LLM execution failed: {e}"
             success = False
+
+        # V1.5a-1 序7: 软提醒（一次性——code_stage 零测试文件时附加提示）
+        if success:
+            try:
+                output = await self._soft_nudge_tests(wp, output)
+            except Exception:  # noqa: BLE001 — 软提醒绝不阻断
+                pass
+
+        # V1.5a-1 序6: 快照 diff 在官方产物落盘**前**算好——
+        # create_artifact 会把 {任务名}_output.md 写进工作区，diff 若在
+        # 其后算会把官方产物再登记一遍（双登记，e2e 4≠3 的根因）。
+        # 文件系统操作不进 Phase 2 锁——顺带缩小锁窗口。
+        harvested_files: list[Path] = []
+        if success:
+            try:
+                harvested_files = self._workspace_diff(ws_snapshot)
+            except Exception:  # noqa: BLE001
+                logger.debug("workspace diff failed", exc_info=True)
 
         # Phase 2 (short tx): re-fetch task (Phase-1 commit expired it),
         # EXECUTION_DONE/FAILED + TaskRun + Artifact, then commit.
@@ -159,6 +185,18 @@ class LLMWorkerAdapter(WorkerAdapter):
                 await self._session.flush()
                 artifact_id = artifact.id
 
+            # V1.5a-1 序6: 工作区 harvest——快照 diff 新增文件全量登记
+            # （diff 已在官方产物落盘前算好——防双登记）
+            if success and self._artifact_mgr is not None and harvested_files:
+                try:
+                    await self._artifact_mgr.batch_register_from_workspace(
+                        project_id=task.project_id,
+                        task_id=task.id,
+                        files=harvested_files,
+                    )
+                except Exception:  # noqa: BLE001 — harvest 绝不阻断收工
+                    logger.debug("workspace harvest failed", exc_info=True)
+
             await commit_with_retry(self._session, context="llm_worker.phase2")
 
         return ExecutionResult(
@@ -175,6 +213,70 @@ class LLMWorkerAdapter(WorkerAdapter):
             actual_skill_content_hash=(
                 wp.skill_context.skill_content_hash if wp.skill_context else None
             ),
+        )
+
+    # ── V1.5a-1 序6/7: 工作区快照 + diff + 软提醒 ─────────────────
+
+    def _workspace_snapshot(self) -> set[str]:
+        """任务开始时的工作区文件集（相对路径字符串）。"""
+        root = self._task_ws_root()
+        if not root.exists():
+            return set()
+        return {
+            str(p.relative_to(root))
+            for p in root.rglob("*") if p.is_file()
+        }
+
+    def _workspace_diff(self, snapshot: set[str]) -> list[Path]:
+        """收工时的新增/变更文件（快照里没有的 = 新增）。"""
+        root = self._task_ws_root()
+        if not root.exists():
+            return []
+        return [
+            p for p in root.rglob("*")
+            if p.is_file() and str(p.relative_to(root)) not in snapshot
+        ]
+
+    def _task_ws_root(self) -> Path:
+        """本任务的工作区根（artifact_mgr 的 workspace_root/{task_id}）。"""
+        if self._artifact_mgr is not None:
+            return Path(self._artifact_mgr._workspace_root) / str(  # noqa: SLF001
+                self._current_task_id or ""
+            )
+        return Path(f"data/tasks/0/{self._current_task_id or 0}")
+
+    async def _soft_nudge_tests(
+        self, wp, output: str,
+    ) -> str:
+        """V1.5a-1 序7: 软提醒（一次性）——code_stage 任务零测试文件。
+
+        条件全中才提醒: code_stage 标记 + 工作区测试文件为零
+        + 产物含代码文件。第二次收工放行（本方法只在首次触发——
+        由 _nudged_tasks 集合记已提醒过）。
+        """
+        if not getattr(wp, "code_stage", False):
+            return output
+        if getattr(wp, "task_id", None) in self._nudged_tasks:
+            return output  # 已提醒过——放行
+        root = self._task_ws_root()
+        has_tests = any(
+            p.is_file() and (
+                p.name.startswith("test_")
+                or p.suffix in (".py", ".js") and "test" in p.name.lower()
+            )
+            for p in root.rglob("*")
+        ) if root.exists() else False
+        has_code = any(
+            p.suffix in (".py", ".js", ".ts", ".html", ".css")
+            for p in root.rglob("*") if p.is_file()
+        ) if root.exists() else False
+        if has_tests or not has_code:
+            return output  # 有测试 or 没代码——不提醒
+        self._nudged_tasks.add(wp.task_id)
+        return (
+            f"{output}\n\n【系统提醒】本任务标记为代码交付阶段，"
+            "契约要求测试文件——当前工作区未检测到任何测试文件。"
+            "请补写测试（tests/ 目录，可用 file_rw 落盘）后重新交付。"
         )
 
     async def cancel(self, task_id: int) -> None:

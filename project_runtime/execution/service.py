@@ -150,6 +150,7 @@ class ExecutionRunner:
             task_select_content = _task_select_content(task)
             task_type_snapshot = task.task_type
             task_contract_snapshot = task.contract
+            task_playbook_ref_snapshot = task.playbook_ref
             await session.commit()
 
         await _emit(
@@ -365,6 +366,8 @@ class ExecutionRunner:
                     skill_whitelist=(
                         agent_binding.skill_whitelist if agent_binding else None
                     ),
+                    # V1.5a-1: code_stage 透传（playbook_ref 解析——软提醒用）
+                    code_stage=_code_stage_of(task_playbook_ref_snapshot),
                 )
             )
             await worker_session.commit()
@@ -655,6 +658,18 @@ class ExecutionService:
         # Background: runs beyond HTTP request lifecycle (ADR-041)
         asyncio.create_task(self._runner.run(execution_id))
         return execution_id
+
+
+def _code_stage_of(playbook_ref: str | None) -> bool:
+    """playbook_ref 里的 code_stage 标记（V1.5a-1——Worker 软提醒消费）。"""
+    if not playbook_ref:
+        return False
+    try:
+        import json as _json
+
+        return bool(_json.loads(playbook_ref).get("code_stage"))
+    except (ValueError, AttributeError):
+        return False
 
 
 def _task_select_content(task) -> str:

@@ -75,6 +75,68 @@ class ArtifactManager:
         logger.info("Artifact created: %s v%d sha256=%s", logical_id, version, sha256[:12])
         return artifact
 
+    async def batch_register_from_workspace(
+        self,
+        project_id: int,
+        task_id: int,
+        files: list[Path],
+    ) -> list[Artifact]:
+        """V1.5a-1 序6: 工作区文件批量登记（harvest）。
+
+        files = 快照 diff 出的新增/变更文件（调用方算好）。
+        文件已存在于磁盘（模型 file_rw 写的）——只登记不重写。
+        logical_id = task-{tid}-{相对路径}——路径结构天然构成文件树。
+        已登记过的（同 logical_id 同 sha256）跳过（幂等）。
+        """
+        registered: list[Artifact] = []
+        for f in files:
+            if not f.is_file():
+                continue
+            try:
+                ws_root = Path(self._workspace_root).resolve().parent
+                rel = f.resolve().relative_to(ws_root)
+            except ValueError:
+                rel = Path(f.name)
+            logical_id = f"task-{task_id}-{rel}".replace(chr(92), "/")
+            try:
+                content = f.read_bytes()
+            except OSError:
+                continue
+            sha = hashlib.sha256(content).hexdigest()
+            # 幂等: 同 logical_id 同 hash 已登记 → 跳过
+            existing = (
+                await self._session.execute(
+                    select(Artifact).where(
+                        Artifact.logical_artifact_id == logical_id,
+                        Artifact.sha256 == sha,
+                    )
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                continue
+            name = rel.name
+            for ch in '<>:"/\\|?*':
+                name = name.replace(ch, "_")
+            artifact = Artifact(
+                logical_artifact_id=logical_id,
+                project_id=project_id,
+                task_id=task_id,
+                artifact_type=ArtifactType.FILE,
+                name=name,
+                version=1,
+                path=str(f.resolve()),
+                sha256=sha,
+            )
+            self._session.add(artifact)
+            registered.append(artifact)
+        if registered:
+            await self._session.flush()
+            logger.info(
+                "Workspace harvest: %d files registered (task %d)",
+                len(registered), task_id,
+            )
+        return registered
+
     async def list_by_task(self, task_id: int) -> list[Artifact]:
         stmt = select(Artifact).where(Artifact.task_id == task_id)
         result = await self._session.execute(stmt)

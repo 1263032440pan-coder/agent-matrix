@@ -297,7 +297,15 @@ export function Dashboard({ projectId, paused }: { projectId: number; paused?: b
                         该任务暂无产物
                       </span>
                     ) : (
-                      taskArts.map((a) => (
+                      taskArts.map((a) => {
+                        // V1.5a-1: 文件树缩进——logical_id 路径深度
+                        const lid =
+                          (a as any).logical_artifact_id || a.name || '';
+                        const depth = Math.max(
+                          0, (lid.match(/\//g) || []).length - 1
+                        );
+                        const shortName = lid.split('/').pop() || a.name;
+                        return (
                         <button
                           key={a.id}
                           onClick={() => setViewingArtifact(a.id)}
@@ -305,7 +313,7 @@ export function Dashboard({ projectId, paused }: { projectId: number; paused?: b
                             display: 'block',
                             width: '100%',
                             textAlign: 'left',
-                            padding: '6px 10px',
+                            padding: `6px 10px 6px ${10 + depth * 16}px`,
                             marginBottom: 4,
                             border: '1px solid #d9d9d9',
                             borderRadius: 4,
@@ -314,12 +322,13 @@ export function Dashboard({ projectId, paused }: { projectId: number; paused?: b
                             fontSize: 13,
                           }}
                         >
-                          📄 {a.name} v{a.version}{' '}
+                          📄 {shortName} v{a.version}{' '}
                           <span style={{ color: '#999' }}>
-                            ({a.sha256 ? a.sha256.slice(0, 8) : ''}…) 点击查看
+                            ({a.sha256 ? a.sha256.slice(0, 8) : ''}) 点击查看
                           </span>
                         </button>
-                      ))
+                        );
+                      })
                     )}
                   </div>
                 );
