@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
 import {
   agentLifecycle,
+  fetchAgentThinking,
   listAgentDefinitions,
   listProjectAgents,
   type AgentDefinitionInfo,
   type AgentInstanceInfo,
+  type AgentThinkingEvent,
 } from '../api';
 
 /** 六态徽章色（20号规范 §9——BUSY/IDLE/DEGRADED 各有展示语义） */
@@ -238,6 +240,128 @@ function InstancesView({
           ))}
         </tbody>
       </table>
+      <AgentThinkingStream projectId={projectId} agents={agents} />
+    </div>
+  );
+}
+
+/** 返修单 B: 每个智能体的实时思维链（2s 增量拉取, 按实例过滤） */
+function AgentThinkingStream({
+  projectId,
+  agents,
+}: {
+  projectId: number;
+  agents: AgentInstanceInfo[];
+}) {
+  const [lines, setLines] = useState<
+    Record<number, AgentThinkingEvent[]>
+  >({});
+  const [expanded, setExpanded] = useState<number | null>(null);
+  const [lastId, setLastId] = useState(0);
+
+  useEffect(() => {
+    let alive = true;
+    let afterId = 0;
+    const load = async () => {
+      try {
+        const data = await fetchAgentThinking(projectId, afterId);
+        if (!alive) return;
+        if (data.events.length > 0) {
+          setLines((prev) => {
+            const next = { ...prev };
+            for (const ev of data.events) {
+              const key = ev.agent_instance_id ?? 0;
+              next[key] = [...(next[key] ?? []), ev].slice(-50);
+            }
+            return next;
+          });
+          afterId = data.last_event_id;
+          setLastId(data.last_event_id);
+        }
+      } catch {
+        /* best-effort — 显示链路不影响面板 */
+      }
+    };
+    load();
+    const timer = setInterval(load, 2000);
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
+  }, [projectId]);
+
+  const busy = agents.filter((a) => a.status === 'BUSY');
+  const withThoughts = agents.filter(
+    (a) => (lines[a.id]?.length ?? 0) > 0
+  );
+  const shown = busy.length > 0 ? busy : withThoughts;
+  if (shown.length === 0) return null;
+
+  return (
+    <div style={{ marginTop: 12 }} data-testid='agent-thinking'>
+      <div style={{ fontSize: 12, color: '#8c8c8c', marginBottom: 4 }}>
+        实时思维链（last_event #{lastId}）
+      </div>
+      {shown.map((a) => {
+        const mine = lines[a.id] ?? [];
+        const open = expanded === a.id || a.status === 'BUSY';
+        return (
+          <div
+            key={a.id}
+            data-testid={`agent-think-${a.id}`}
+            style={{
+              border: '1px solid #f0f0f0',
+              borderRadius: 6,
+              padding: 8,
+              marginBottom: 6,
+            }}
+          >
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'space-between',
+                cursor: 'pointer',
+              }}
+              onClick={() =>
+                setExpanded(open && expanded === a.id ? null : a.id)
+              }
+            >
+              <strong style={{ fontSize: 13 }}>
+                🧠 {a.name ?? a.agent_id ?? `#${a.id}`}
+                <span style={{ color: '#8c8c8c' }}> #{a.id}</span>
+                {a.status === 'BUSY' && (
+                  <span style={{ color: '#1677ff' }}> · 工作中</span>
+                )}
+              </strong>
+              <span style={{ color: '#bfbfbf', fontSize: 11 }}>
+                {mine.length} 段 {open ? '▲' : '▼'}
+              </span>
+            </div>
+            {open && (
+              <div
+                style={{
+                  marginTop: 6,
+                  maxHeight: 180,
+                  overflowY: 'auto',
+                  fontSize: 12,
+                  color: '#595959',
+                  background: '#fafafa',
+                  padding: 8,
+                  borderRadius: 4,
+                  whiteSpace: 'pre-wrap',
+                }}
+              >
+                {mine.length === 0
+                  ? '（等待思维链…）'
+                  : mine
+                      .slice(-15)
+                      .map((ev) => ev.text ?? '')
+                      .join('')}
+              </div>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

@@ -27,6 +27,34 @@ async def lifespan(app: FastAPI):
     await _check_migration_version()
     await _seed_agent_templates()
     yield
+    # 返修单v2 P5: 遗言日志——进程退出原因落盘（死要有尸体）
+    import atexit
+    import signal as _signal
+    import traceback as _tb
+
+    def _last_words(where: str = "exit") -> None:
+        try:
+            with open("data/runtime_last_words.log", "a", encoding="utf-8") as f:
+                import datetime as _dt
+
+                f.write(
+                    f"{_dt.datetime.now().isoformat()} runtime exiting "
+                    f"({where})\n{_tb.format_stack(limit=5)}\n"
+                )
+        except Exception:  # noqa: BLE001 — 遗言本身不能炸
+            pass
+
+    atexit.register(_last_words)
+
+    def _on_term(signum, frame):
+        _last_words(f"signal {signum}")
+        raise SystemExit(128 + signum)
+
+    try:
+        _signal.signal(_signal.SIGTERM, _on_term)
+        _signal.signal(_signal.SIGINT, _on_term)
+    except (ValueError, OSError):
+        pass  # 非主线程/平台不支持——atexit 兜底
 
 
 async def _seed_agent_templates() -> None:

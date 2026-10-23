@@ -42,6 +42,32 @@ export interface DashboardData {
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:9100';
 
+// 返修单 B: Agent 实时思维链事件（项目级流, 按 instance 过滤）
+export interface AgentThinkingEvent {
+  event_id: number;
+  task_id: number | null;
+  timestamp: string | null;
+  text: string | null;
+  agent_instance_id: number | null;
+  agent_name: string | null;
+}
+
+export async function fetchAgentThinking(
+  projectId: number,
+  afterId = 0
+): Promise<{
+  events: AgentThinkingEvent[];
+  last_event_id: number;
+}> {
+  const resp = await fetch(
+    `${API_BASE}/api/projects/${projectId}/agent-thinking?after_id=${afterId}`
+  );
+  if (!resp.ok) {
+    throw new Error(`Agent thinking fetch failed: ${resp.status}`);
+  }
+  return resp.json();
+}
+
 export interface RuntimeEvent {
   event_id: number;
   event_type: string;

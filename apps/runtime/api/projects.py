@@ -620,6 +620,59 @@ async def reclassify_delivery(project_id: int):
     return {"project_id": project_id, "delivery_profile": profile}
 
 
+@router.get("/{project_id}/agent-thinking")
+async def agent_thinking_stream(
+    project_id: int, after_id: int = 0, limit: int = 100,
+):
+    """返修单 B: 项目级 Agent 实时思维链事件流（AgentPanel 消费）。
+
+    LLM_THINKING_CHUNK 按 id 增量拉取; payload 带 agent_instance_id/
+    agent_name（Worker 侧归属）——前端按实例过滤。
+    """
+    from project_runtime.event.models import RuntimeEvent
+
+    async with AsyncSession(engine) as session:
+        stmt = (
+            select(RuntimeEvent)
+            .where(
+                RuntimeEvent.project_id == project_id,
+                RuntimeEvent.event_type == "LLM_THINKING_CHUNK",
+                RuntimeEvent.id > after_id,
+            )
+            .order_by(RuntimeEvent.id.desc())
+            .limit(limit)
+        )
+        events = list(
+            (await session.execute(stmt)).scalars().all()
+        )
+        return {
+            "events": [
+                {
+                    "event_id": e.id,
+                    "task_id": e.task_id,
+                    "timestamp": (
+                        e.timestamp.isoformat() if e.timestamp else None
+                    ),
+                    "text": (
+                        (json.loads(e.payload) or {}).get("text")
+                        if e.payload else None
+                    ),
+                    "agent_instance_id": (
+                        (json.loads(e.payload) or {}).get(
+                            "agent_instance_id"
+                        ) if e.payload else None
+                    ),
+                    "agent_name": (
+                        (json.loads(e.payload) or {}).get("agent_name")
+                        if e.payload else None
+                    ),
+                }
+                for e in reversed(events)
+            ],
+            "last_event_id": events[0].id if events else after_id,
+        }
+
+
 @router.post("/batch-delete", status_code=200)
 async def batch_delete_projects(req: dict):
     """批量级联删除。body: {"project_ids": [1,2,3]}"""

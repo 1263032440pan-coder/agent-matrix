@@ -112,6 +112,8 @@ class ManualActionType(str, enum.Enum):
     APPLY_REPLAN = "APPLY_REPLAN"
     FINAL_DELIVERY = "FINAL_DELIVERY"
     EXTERNAL_WRITE = "EXTERNAL_WRITE"
+    # 返修单v2 P2: Gate 连续 FAIL 防死循环熔断——人工出口三选一
+    GATE_FAIL_ESCALATION = "GATE_FAIL_ESCALATION"
 
 
 class DeliveryContractStatus(str, enum.Enum):

@@ -153,7 +153,42 @@ class FileRwProvider:
                     # 相对路径语义: src/main.py → 拼进任务工作区;
                     # 但带 ../ 或 data/tasks 前缀的（试图指别的目录）
                     # 按 cwd 解析再禁闭——两种都逃不出 startswith 检查
-                    p_ = Path(path)
+                    # 返修单v2 P4: 剥离路径中重复的任务前缀（'1/8/pom.xml'
+                    # / 'data/tasks/1/8/pom.xml' 这类把任务路径再拼一层
+                    # 的形态——实例: 任务8 落盘 data/tasks/1/8/1/8/pom.xml）
+                    p_ = Path(str(path).replace(chr(92), "/"))
+                    _parts = list(p_.parts)
+                    while _parts and _parts[0] in (".",):
+                        _parts.pop(0)
+                    if _parts[:2] == ["data", "tasks"]:
+                        _parts = _parts[2:]
+                    _ws_tail = [str(x) for x in ws_root.parts[-2:]]
+                    while (
+                        len(_parts) >= 2
+                        and [str(_parts[0]), str(_parts[1])] == _ws_tail
+                    ):
+                        _parts = _parts[2:]
+                    p_ = Path(*_parts) if _parts else Path(path)
+                    # 形态4 修正: 'data/tasks' 前缀先做域内检查——
+                    # 剥前缀只对【本任务自己的】路径合法化, 别的任务的
+                    # data/tasks/{pid}/{tid} 保持越界判定
+                    _norm = str(path).replace(chr(92), "/")
+                    if _norm.startswith("data/tasks"):
+                        _candidate = (Path.cwd() / _norm).resolve()
+                        _in_ws = str(_candidate).startswith(str(ws_root))
+                        if not _in_ws:
+                            # 不在本任务工作区 → 保持原路径按 cwd 判界
+                            resolved = _candidate
+                            if not str(resolved).startswith(str(ws_root)):
+                                return {
+                                    "ok": False,
+                                    "error": (
+                                        f"路径越界: {path}——本任务只允许"
+                                        f"写入 {ws_root} 内。请用相对路径如"
+                                        f" src/main.py、tests/test_x.py、"
+                                        f"README.md"
+                                    ),
+                                }
                     if p_.is_absolute():
                         resolved = p_.resolve()
                     elif '..' in p_.parts or str(p_).replace(

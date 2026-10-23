@@ -88,6 +88,8 @@ class LLMWorkerAdapter(WorkerAdapter):
         self._nudged_tasks: set[int] = set()
         # V1.6 序0: 任务工作区根（file_rw 写禁闭）
         self._workspace_root: str | None = None
+        # 返修单 B: 当前 Agent 归属（实时思维链事件 payload）
+        self._current_agent: dict | None = None
         self._db_lock = asyncio.Lock()
 
     async def assign(self, wp: WorkPackage) -> ExecutionResult:
@@ -314,6 +316,41 @@ class LLMWorkerAdapter(WorkerAdapter):
             return "healthy"
         return "llm_not_configured"
 
+    # ── 返修单 A 层①②: 断流重连单元（网关长流偶发掐断的客户端韧性）──
+
+    _STREAM_RETRY_EXC = (
+        "APIConnectionError",
+        "MidStreamFallbackError",
+        "TimeoutError",
+        "ConnectionError",
+    )
+
+    @staticmethod
+    def _is_stream_failure(e: Exception) -> bool:
+        """网关断流类异常判定（按类名——litellm 异常跨版本稳定面）。"""
+        name = type(e).__name__
+        return any(k in name for k in (
+            "APIConnection", "MidStream", "Timeout",
+        )) or isinstance(e, (TimeoutError, ConnectionError))
+
+    async def _stream_round(
+        self, cfg, model: str, messages: list, tools,
+    ):
+        """单轮 LLM 调用（流式）——返回 result dict。"""
+        from project_runtime.llm.provider import llm_acomplete
+
+        return await llm_acomplete(
+            model=model,
+            api_base=cfg.base_url,
+            api_key=cfg.api_key,
+            messages=messages,
+            max_tokens=self._max_tokens,
+            timeout=600,
+            stream=True,
+            **({"tools": tools} if tools else {}),
+            **({"tool_choice": "auto"} if tools else {}),
+        )
+
     async def _execute_llm(self, wp: WorkPackage) -> str:
         from project_runtime.llm import (
             load_llm_settings,
@@ -373,6 +410,23 @@ class LLMWorkerAdapter(WorkerAdapter):
             if inst is not None:
                 session_store = SessionStore.from_json(inst.session_ref)
                 assembler = ContextAssembler(model)
+                # 返修单 B: 实时思维链事件的 Agent 归属（AgentPanel 过滤键）
+                try:
+                    from project_runtime.worker.agent_models import (
+                        AgentDefinition,
+                    )
+
+                    _d = await self._session.get(
+                        AgentDefinition, inst.definition_id
+                    )
+                    self._current_agent = {
+                        "instance_id": inst.id,
+                        "name": _d.name if _d is not None else None,
+                    }
+                except Exception:  # noqa: BLE001 — 归属是显示增强
+                    self._current_agent = {
+                        "instance_id": inst.id, "name": None,
+                    }
         except Exception:  # noqa: BLE001 — 会话记忆是增强不是依赖
             session_store = None
             assembler = None
@@ -409,19 +463,56 @@ class LLMWorkerAdapter(WorkerAdapter):
         content = ""
         # V1.4h: 工具历史（强收时拼摘要——防"垃圾成功"空话产物）
         tool_history: list[tuple[str, bool, int]] = []
+        # 返修单 A 层②: 已产出内容救援槽（断流续写的喂回源）
+        _rescue_parts: dict[str, list[str]] = {
+            "content": [], "reasoning": [],
+        }
         for round_no in range(1, _TOOL_ROUNDS + 1):
             try:
-                result = await llm_acomplete(
-                    model=model,
-                    api_base=cfg.base_url,
-                    api_key=cfg.api_key,
-                    messages=messages,
-                    max_tokens=self._max_tokens,
-                    timeout=600,
-                    stream=True,
-                    **({"tools": tools} if tools else {}),
-                    **({"tool_choice": "auto"} if tools else {}),
-                )
+                # 第二次断流升级续写（已产出内容喂回 messages）
+                _sf_key = f"_stream_fails_{wp.task_id}"
+                _stream_failures = getattr(self, _sf_key, 0)
+                result = None
+                for _attempt in range(1, 4):
+                    try:
+                        result = await self._stream_round(
+                            cfg, model, messages, tools
+                        )
+                        if not result.get("ok"):
+                            # 网关返回错误体（非断流）——不重试直接走原降级逻辑
+                            break
+                        break
+                    except Exception as _se:  # noqa: BLE001 — 断流判定
+                        if not self._is_stream_failure(_se) or _attempt == 3:
+                            raise
+                        _stream_failures += 1
+                        setattr(self, _sf_key, _stream_failures)
+                        logger.warning(
+                            "stream broken (attempt %d, task %d): %s "
+                            "— reconnecting in %ds",
+                            _attempt, wp.task_id, type(_se).__name__,
+                            5 * _attempt,
+                        )
+                        await asyncio.sleep(5 * _attempt)
+                        if _stream_failures >= 2:
+                            # 层②: 已产出内容喂回——续写而非重来
+                            _partial = "".join(
+                                _rescue_parts.get("content", [])
+                            ) if _rescue_parts else ""
+                            if _partial.strip():
+                                messages = messages + [
+                                    {"role": "assistant", "content": _partial},
+                                    {"role": "user", "content": (
+                                        "网络中断。请从你刚才停止的地方继续"
+                                        "输出，不要重复已输出内容，直接续写。"
+                                    )},
+                                ]
+                                logger.info(
+                                    "resume-with-partial injected (task %d, "
+                                    "%d chars)", wp.task_id, len(_partial),
+                                )
+                if result is None:
+                    raise RuntimeError("LLM stream retry exhausted")
                 if not result.get("ok"):
                     raise RuntimeError(result.get("error", "LLM failed"))
                 stream = result["response"]
@@ -462,10 +553,14 @@ class LLMWorkerAdapter(WorkerAdapter):
                     reasoning_parts.append(rc)
                     think_buf += rc
                     if len(think_buf) >= 120 or "\n" in think_buf:
-                        await _emit_cot(task_id, "thinking", think_buf)
+                        await _emit_cot(
+                            task_id, "thinking", think_buf,
+                            agent=self._current_agent,
+                        )
                         think_buf = ""
                 if cc:
                     content_parts.append(cc)
+                    _rescue_parts["content"].append(cc)
                 # 工具调用增量拼装（流式下分片到达）
                 for tc in tcs:
                     idx = tc.index or 0
@@ -480,7 +575,10 @@ class LLMWorkerAdapter(WorkerAdapter):
                     if tc.function and tc.function.arguments:
                         tool_calls[idx]["arguments"] += tc.function.arguments
             if think_buf:
-                await _emit_cot(task_id, "thinking", think_buf)
+                await _emit_cot(
+                            task_id, "thinking", think_buf,
+                            agent=self._current_agent,
+                        )
 
             content = "".join(content_parts)
             if not tool_calls:
@@ -507,6 +605,40 @@ class LLMWorkerAdapter(WorkerAdapter):
                 ],
             }
             messages.append(assistant_msg)
+            # 返修单 A 层③: 工具轮边界周期落盘（进程级韧性——
+            # 断流/重启后 session_ref 可恢复本轮对话历史）
+            if session_store is not None:
+                try:
+                    from project_runtime.worker.context import TaskRecord
+
+                    _inflight = TaskRecord(
+                        task_id=wp.task_id,
+                        task_name=wp.task_name,
+                        messages=list(messages),
+                        summary_card=(
+                            f"进行中 r{round_no}: "
+                            + (content[:200] if content else "工具循环中")
+                        ),
+                    )
+                    session_store.tasks = [
+                        t for t in session_store.tasks
+                        if t.task_id != wp.task_id
+                    ] + [_inflight]
+                    from sqlalchemy import update as _upd
+
+                    from project_runtime.worker.agent_models import (
+                        AgentInstance as _AgentInst,
+                    )
+
+                    await self._session.execute(
+                        _upd(_AgentInst)
+                        .where(_AgentInst.current_task_id == wp.task_id)
+                        .values(session_ref=session_store.to_json())
+                    )
+                    await self._session.commit()
+                except Exception:  # noqa: BLE001 — 落盘是增强
+                    logger.debug("inflight session checkpoint failed",
+                                 exc_info=True)
             for i, tc in enumerate(tool_calls):
                 result_text, ok = await self._run_search_tool(
                     task_id, tc["name"], tc["arguments"], round_no,
@@ -902,8 +1034,15 @@ class LLMWorkerAdapter(WorkerAdapter):
         return []
 
 
-async def _emit_cot(task_id: int | None, phase: str, text: str) -> None:
-    """思维链/答案增量 → 事件（best-effort，绝不打断执行）。"""
+async def _emit_cot(
+    task_id: int | None, phase: str, text: str,
+    agent: dict | None = None,
+) -> None:
+    """思维链/答案增量 → 事件（best-effort，绝不打断执行）。
+
+    返修单 B: agent 归属（instance_id/name）进 payload——
+    AgentPanel 按 agent_instance_id 过滤出每个智能体的实时思维链。
+    """
     try:
         from project_runtime.event import EventEngine, RuntimeEventType
 
@@ -912,13 +1051,20 @@ async def _emit_cot(task_id: int | None, phase: str, text: str) -> None:
             if phase == "thinking"
             else RuntimeEventType.LLM_ANSWER_CHUNK
         )
+        payload = {"text": text}
+        if agent:
+            payload["agent_instance_id"] = agent.get("instance_id")
+            if agent.get("name"):
+                payload["agent_name"] = agent["name"]
         await EventEngine().record(
             evt,
             task_id=task_id,
             phase=f"LLM_{phase.upper()}",
             message=text[-128:],
-            actor="LLM",
-            payload={"text": text},
+            actor=(
+                agent.get("name") or "LLM"
+            ) if agent else "LLM",
+            payload=payload,
         )
     except Exception:  # noqa: BLE001 — 显示链路绝不影响执行
         pass

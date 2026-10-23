@@ -481,6 +481,54 @@ class ExecutionRunner:
             payload={"skill_id": skill_id, "skill_version": skill_version},
         )
 
+        # 返修单 A 层③b: 断流类失败自动重试（60s 后重提交, 上限 2 次
+        # ——attempt 计数在 task_run; 超限如实 FAILED 留 UI 手动通道）
+        if not success and error:
+            _stream_err = any(
+                k in (error or "")
+                for k in ("APIConnection", "MidStream", "Timeout")
+            )
+            if _stream_err:
+                from sqlalchemy import select as _select
+
+                from project_runtime.project_state.models import (
+                    TaskRun as _TaskRun,
+                )
+
+                try:
+                    async with AsyncSession(engine) as _s:
+                        _n = (
+                            await _s.execute(
+                                _select(_TaskRun.id).where(
+                                    _TaskRun.task_id == task_id
+                                )
+                            )
+                        )
+                        _attempts = len(_n.scalars().all())
+                    if _attempts <= 3:  # 原始 + 自动重试 2 次
+                        import asyncio as _aio
+
+                        async def _auto_retry():
+                            await _aio.sleep(60)
+                            try:
+                                await ExecutionService().submit(
+                                    project_id, task_id
+                                )
+                                logger.info(
+                                    "auto-retry submitted for task %d "
+                                    "(stream failure, attempt %d)",
+                                    task_id, _attempts,
+                                )
+                            except Exception:  # noqa: BLE001
+                                logger.debug(
+                                    "auto-retry failed for task %d",
+                                    task_id, exc_info=True,
+                                )
+
+                        _aio.get_event_loop().create_task(_auto_retry())
+                except Exception:  # noqa: BLE001 — 自动重试是增强
+                    logger.debug("auto-retry check failed", exc_info=True)
+
         # WP-034: fire worker.after_execute (observers/policy — advisory)
         try:
             await hook_executor.notify(
@@ -637,13 +685,15 @@ class ExecutionRunner:
                     submitted, project_id,
                 )
 
-            # V1.6 序5: 项目收口对账——无残留进行中任务 + SOFTWARE_DEV 时,
-            # 三件基线 vs artifact 全集校验, 缺件补建（best-effort 不阻断）
-            if not ids:
-                try:
-                    await _delivery_closeout_check(project_id)
-                except Exception:  # noqa: BLE001 — 收口 best-effort
-                    logger.debug("delivery closeout failed", exc_info=True)
+            # V1.6 序5 + 返修单v2 P1: 项目收口对账——每次 advance 尾部
+            # 无条件触发（不只无 READY 时——补建任务 ACCEPTED 后的最后一跳
+            # 曾因 ids 快照时序漏检）。幂等安全: 二次收口若还缺件,
+            # '同名任务存在不再建' 直接短路, 只发 RECONCILIATION_GAP
+            # 事件 + UI 标红, 不再造任务（防死循环——v2 §一接线）。
+            try:
+                await _delivery_closeout_check(project_id)
+            except Exception:  # noqa: BLE001 — 收口 best-effort
+                logger.debug("delivery closeout failed", exc_info=True)
         except Exception:  # noqa: BLE001 — auto-advance is best-effort
             logger.debug("auto-advance failed", exc_info=True)
 
@@ -732,6 +782,11 @@ async def _delivery_closeout_check(project_id: int) -> None:
                 )
             )).scalars().all()
         }
+        task_type_map = {
+            "ppt": "交付打包",
+            "code": "开发实现",
+            "test_report": "测试验证",
+        }
         facts = {
             "ppt": "项目 artifact 无 .pptx 文件",
             "code": "项目 artifact 无代码文件或 README",
@@ -787,6 +842,19 @@ async def _delivery_closeout_check(project_id: int) -> None:
                 "请按 skill《交付基线》完成该交付物——"
                 "PPT 用 slide_generator，代码用 file_rw 落盘 src/ tests/ README。"
             )
+            # 返修单v2 P3: 补建任务 provision——按 task_type 保证有
+            # 环节匹配实例（交付打包→releaser/开发实现→coder/
+            # 测试验证→tester）, 思维链事件带归属, AgentPanel 可见
+            try:
+                from project_runtime.worker.lifecycle import (
+                    provision_after_plan,
+                )
+
+                await provision_after_plan(
+                    session, project_id, [task_type_map[tag]]
+                )
+            except Exception:  # noqa: BLE001 — provision best-effort
+                logger.debug("backfill provision failed", exc_info=True)
             try:
                 await mgr.promote_to_ready(t.id)
             except (ValueError, Exception):  # noqa: B001 — 无依赖可 READY
