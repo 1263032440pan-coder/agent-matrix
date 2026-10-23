@@ -121,7 +121,17 @@ class DeliveryClassifier:
             return None
 
     async def classify_and_store(self, project_id: int) -> str:
-        """判定并落库 Project.delivery_profile。"""
+        """判定并落库 Project.delivery_profile。
+
+        返修单-V1.6-判定器锁竞争: 落库必须**立即 commit**（不能只 flush）。
+        SQLAlchemy flush 即开写事务持 SQLite 写锁直到 commit——此前
+        flush 的锁跨越 /plan 链 _normalize 整个 LLM 抽取流（5-30 分钟），
+        THINKING_CHUNK 事件全部 database is locked（思维链不显示的
+        根因），并发 API 请求同被锁（create_project 500）。
+        判定是独立事实: commit 释放锁 + UI 立即可见（不等规划跑完）。
+        调用方 _normalize 已用返回值（内存值）传 extractor——commit
+        后 session 里的事务状态由 _stage() 的范式消化, 不影响后续。
+        """
         text = await self._project_text(project_id)
         profile = await self.classify(text)
         from sqlalchemy import update
@@ -133,7 +143,7 @@ class DeliveryClassifier:
             .where(Project.id == project_id)
             .values(delivery_profile=profile)
         )
-        await self._session.flush()
+        await self._session.commit()
         logger.info(
             "delivery profile: project %d → %s", project_id, profile,
         )
