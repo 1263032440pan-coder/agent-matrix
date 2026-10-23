@@ -74,7 +74,10 @@ class DeliveryClassifier:
         if callable(self._llm_fn):
             return await self._llm_fn(text)
         # 真 LLM: 按需加载（绝不在测试里读全局配置——with_llm 纪律）
-        from project_runtime.llm import load_llm_settings
+        from project_runtime.llm import (
+            load_llm_settings,
+            normalize_model_for_gateway,
+        )
         from project_runtime.llm.provider import llm_acomplete
 
         cfg = load_llm_settings()
@@ -87,7 +90,23 @@ class DeliveryClassifier:
             "注意: 纯需求调研、软件选型评估、操作手册、流程规范类文档不是开发需求。\n"
             "只输出 JSON，不要其他内容。\n\n材料（截取）:\n" + text[:3000]
         )
-        return await llm_acomplete(prompt)
+        # 返修单 V1.6-判定器: llm_acomplete 是 kwargs-only 签名（provider.py:107）
+        # ——必须关键字传参（位置参数 TypeError, 主通道曾 100% 失败走兜底）
+        result = await llm_acomplete(
+            model=normalize_model_for_gateway(cfg.model, cfg.base_url),
+            api_base=cfg.base_url,
+            api_key=cfg.api_key,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=200,   # 判定只要一个 JSON——防推理模型思考链拉长
+            timeout=60,       # 轻调用——不陪跑网关慢流（extractor 605s 是长文场景）
+        )
+        if not result.get("ok"):
+            raise RuntimeError(result.get("error", "LLM failed"))
+        # acompletion 非流式 → ChatCompletion; 取 content, 取不到落兜底
+        try:
+            return result["response"].choices[0].message.content
+        except (AttributeError, IndexError):
+            return None
 
     @staticmethod
     def _parse(answer: str) -> str | None:

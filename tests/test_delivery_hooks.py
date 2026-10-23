@@ -515,3 +515,32 @@ def test_reconciliation_gap_enum_exists():
     from project_runtime.event import RuntimeEventType
 
     assert RuntimeEventType.RECONCILIATION_GAP.value == "RECONCILIATION_GAP"
+
+
+# ═══ 契约防御（返修单 V1.6-判定器）══════════════════════════════
+
+def test_llm_acomplete_kwargs_only():
+    """Provider 签名必须 kwargs-only——加位置参数时提醒全库调用方核对。"""
+    import inspect
+
+    from project_runtime.llm.provider import llm_acomplete
+
+    sig = inspect.signature(llm_acomplete)
+    kinds = [p.kind for p in sig.parameters.values()]
+    assert all(
+        k == inspect.Parameter.VAR_KEYWORD for k in kinds
+    ), "llm_acomplete 只允许 **kwargs（位置参数禁止）"
+
+
+def test_classifier_calls_with_messages_kw():
+    """判定器调用 llm_acomplete 必须带 messages= 关键字（位置调用形态禁止）。"""
+    import inspect
+
+    from project_runtime.procedure.delivery_classifier import (
+        DeliveryClassifier,
+    )
+
+    src = inspect.getsource(DeliveryClassifier)
+    assert "llm_acomplete(" not in src or "messages=" in src, (
+        "delivery_classifier 调用 llm_acomplete 缺 messages= 关键字"
+    )
