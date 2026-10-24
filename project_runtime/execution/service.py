@@ -552,6 +552,17 @@ class ExecutionRunner:
                     gate = GateCore(session)
                     result = await gate.evaluate(task_id)
                     gate_status = result.status.value
+                    if gate_status == "FAIL":
+                        # 返修单-闭环接线 P0-1 修正: FAIL 落 REWORK 后同样
+                        # 触发 advance——REWORK 自动接线（60s 冷却+轮次闸）
+                        # 在 _auto_advance 里, FAIL 路径不经过则成死代码
+                        # （实测: 补建任务 FAIL 躺平 4 分钟无人拉起暴露）
+                        try:
+                            await self._auto_advance(project_id)
+                        except Exception:  # noqa: BLE001
+                            logger.debug(
+                                "post-FAIL advance failed", exc_info=True,
+                            )
                     if gate_status == "PASS":
                         # Unblock HARD-dependent downstream tasks (ACCEPTED
                         # satisfies HARD deps) so the chain keeps flowing.
