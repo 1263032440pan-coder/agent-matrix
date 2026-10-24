@@ -478,10 +478,17 @@ class SlideGeneratorProvider:
         filename = str(payload.get("filename") or "slides.pptx")
         if not markdown.strip():
             return {"ok": False, "error": "markdown 必填"}
-        try:
-            out_dir = FileRwProvider._resolve(str(workspace))
-        except ValueError as e:
-            return {"ok": False, "error": str(e)}
+        # 返修单-slide_generator落点逃逸: 任务级禁闭——__ws_root 注入时
+        # 输出目录强制= 任务工作区, workspace 参数被忽略（与 file_rw 同构;
+        # 实测 5 个 pptx 散落工位外, harvest 收割不到 → Gate 误判死循环）
+        ws_root_raw = payload.get("__ws_root")
+        if ws_root_raw:
+            out_dir = Path(str(ws_root_raw)).resolve()
+        else:
+            try:
+                out_dir = FileRwProvider._resolve(str(workspace))
+            except ValueError as e:
+                return {"ok": False, "error": str(e)}
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / re.sub(r'[<>:"/\\|?*]', "_", filename)
 

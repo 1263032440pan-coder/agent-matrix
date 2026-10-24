@@ -244,3 +244,50 @@ class TestRegistration:
             "tool:webfetch", "tool:file_rw", "tool:shell",
             "tool:code_search", "tool:slide_generator",
         }
+
+
+# ═══ 返修单-slide_generator落点逃逸 专项 ════════════════════════
+
+class TestSlideGenConfinement:
+    @pytest.mark.asyncio
+    async def test_ws_root_forces_task_workspace(self, tmp_path,
+                                                 monkeypatch):
+        """__ws_root 注入: workspace 参数被忽略, PPT 必落任务工作区。"""
+        monkeypatch.chdir(tmp_path)
+        from project_runtime.worker.tools import SlideGeneratorProvider
+
+        prov = SlideGeneratorProvider()
+        r = await prov.invoke({
+            "markdown": "# T\n## 内容\n- a",
+            "workspace": "data/tasks/2",          # 模型猜的错路径
+            "filename": "方案.pptx",
+            "__ws_root": "data/tasks/2/18",        # 真实任务工作区
+        })
+        assert r["ok"] is True, r
+        assert (tmp_path / "data/tasks/2/18/方案.pptx").exists()
+        # 错误路径不该有文件
+        assert not (tmp_path / "data/tasks/2/方案.pptx").exists()
+
+    @pytest.mark.asyncio
+    async def test_no_ws_root_legacy(self, tmp_path, monkeypatch):
+        """无 __ws_root: 维持全域语义（向后兼容）。"""
+        monkeypatch.chdir(tmp_path)
+        from project_runtime.worker.tools import SlideGeneratorProvider
+
+        prov = SlideGeneratorProvider()
+        r = await prov.invoke({
+            "markdown": "# T\n## 内容\n- a",
+            "workspace": "data/tasks/x",
+            "filename": "y.pptx",
+        })
+        assert r["ok"] is True
+        assert (tmp_path / "data/tasks/x/y.pptx").exists()
+
+    def test_schema_says_ignored(self):
+        """schema 契约: workspace 描述含'已忽略'（不引导模型猜路径）。"""
+        from project_runtime.worker.tool_schemas import SLIDE_SCHEMA
+
+        desc = SLIDE_SCHEMA["parameters"]["properties"]["workspace"][
+            "description"
+        ]
+        assert "已忽略" in desc

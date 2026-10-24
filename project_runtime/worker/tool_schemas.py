@@ -91,13 +91,15 @@ SLIDE_SCHEMA = {
     "description": (
         "把 markdown 大纲生成 .pptx 演示文稿（python-pptx，标题页/"
         "目录/内容/要点/结尾版式）。制作方案评审、原型说明、里程碑"
-        "汇报材料时使用。参数: markdown（大纲）, workspace, filename。"
+        "汇报材料时使用。参数: markdown（大纲）, filename（workspace 已忽略——自动存任务工作区）。"
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "markdown": {"type": "string", "description": "幻灯片大纲"},
-            "workspace": {"type": "string"},
+            "workspace": {"type": "string", "description": (
+                "已忽略——PPT 自动保存到当前任务工作区（无需传路径）"
+            )},
             "filename": {"type": "string", "description": "输出文件名"},
         },
         "required": ["markdown"],

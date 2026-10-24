@@ -854,7 +854,9 @@ class LLMWorkerAdapter(WorkerAdapter):
                     payload = dict(args)
                     # V1.6 序0: file_rw 写禁闭——注入任务工作区根
                     # （__ 前缀=内部参数, schema 不暴露, Provider 侧剥离）
-                    if name == "tool:file_rw" and self._workspace_root:
+                    if name in (
+                        "tool:file_rw", "tool:slide_generator",
+                    ) and self._workspace_root:
                         payload["__ws_root"] = self._workspace_root
                     return await info.provider.invoke(payload)
                 except Exception as e:  # noqa: BLE001 — 降级不炸循环
