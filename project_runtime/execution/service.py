@@ -684,6 +684,7 @@ class ExecutionRunner:
                 # FSM 合法转移 REWORK→READY（fsm.py:29 此前无调用方,
                 # 强制门打回后躺平靠手动拉）。轮次闸: gate FAIL >= 3 不拉
                 # （ManualAction 熔断已兜底）; 冷却: 打回 60s 内不抖动重跑
+                import datetime as _dt
                 import time as _time
 
                 from project_runtime.project_state.models import (
@@ -716,9 +717,14 @@ class ExecutionRunner:
                     ).scalar() or 0
                     if _fails >= 3:
                         continue  # 熔断已发生——留给 ManualAction
+                    # 时区修正: DB 的 updated_at 存 UTC naive——
+                    # timestamp() 按本地时区解析会把 UTC 当本地, _age
+                    # 为负（未来 8h）→ 冷却永远跳过（实测任务8 躺平根因）
                     _updated = _rt.updated_at
                     try:
-                        _age = _now - _updated.timestamp()
+                        _age = _now - _updated.replace(
+                            tzinfo=_dt.timezone.utc
+                        ).timestamp()
                     except (AttributeError, OSError):
                         _age = 999
                     if _age < 60:
