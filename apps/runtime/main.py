@@ -23,6 +23,13 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     setup_logging()
+    # 返修单-闭环接线 P0-3: 原生崩溃观测——faulthandler 在段错误/致命
+    # 信号时直接写栈到文件（绕过 atexit 失效的硬杀场景——runtime 两次
+    # 死因不明的解）
+    import faulthandler
+
+    _fh = open('data/runtime_faulthandler.log', 'a', encoding='utf-8')
+    faulthandler.enable(file=_fh, all_threads=True)
     await check_db()
     await _check_migration_version()
     await _seed_agent_templates()

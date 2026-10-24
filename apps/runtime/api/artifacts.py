@@ -54,6 +54,28 @@ async def get_artifact_content(artifact_id: int):
     if not p.is_file():
         raise HTTPException(410, f"Artifact file missing on disk: {p.name}")
 
+    # 返修单-闭环接线 P1-1: 二进制产物分流——pptx/图片等不进文本解码,
+    # 返回 binary 标记 + 下载 URL（前端显示下载按钮, 不再 415 报错）
+    _text_ext = (
+        ".md", ".txt", ".py", ".java", ".js", ".ts", ".json",
+        ".xml", ".yaml", ".yml", ".sql", ".html", ".css", ".csv",
+        ".log", ".cfg", ".ini", ".toml",
+    )
+    if p.suffix.lower() not in _text_ext:
+        return ArtifactContent(
+            id=art.id,
+            task_id=art.task_id,
+            name=art.name,
+            version=art.version,
+            path=str(p),
+            sha256=art.sha256,
+            content=(
+                f"【二进制产物】{p.name}（{p.stat().st_size} 字节）——"
+                f"请通过下载查看。"
+            ),
+            size_bytes=p.stat().st_size,
+        )
+
     try:
         text = p.read_text(encoding="utf-8")
     except UnicodeDecodeError:

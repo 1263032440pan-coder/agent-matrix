@@ -631,6 +631,8 @@ class ExecutionRunner:
         (partial unique index, AE-05) rejects duplicates, so overlapping
         calls are safe. MANUAL projects are skipped.
         """
+        from sqlalchemy import select as _sel_count
+
         from project_runtime.execution.repository import (
             ActiveExecutionExistsError,
         )
@@ -667,6 +669,58 @@ class ExecutionRunner:
                     .all()
                 )
                 ids = [t.id for t in ready_ids]
+                # 返修单-闭环接线 P0-1: REWORK 任务自动接线——
+                # FSM 合法转移 REWORK→READY（fsm.py:29 此前无调用方,
+                # 强制门打回后躺平靠手动拉）。轮次闸: gate FAIL >= 3 不拉
+                # （ManualAction 熔断已兜底）; 冷却: 打回 60s 内不抖动重跑
+                import time as _time
+
+                from project_runtime.project_state.models import (
+                    GateResult as _GateRes,
+                )
+
+                rework_ids = list(
+                    (
+                        await session.execute(
+                            select(TaskModel).where(
+                                TaskModel.project_id == project_id,
+                                TaskModel.status == TaskStatus.REWORK,
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                _now = _time.time()
+                for _rt in rework_ids:
+                    from sqlalchemy import func as _f2
+
+                    _fails = (
+                        await session.execute(
+                            _sel_count(_f2.count()).where(
+                                _GateRes.task_id == _rt.id,
+                                _GateRes.status == 'FAIL',
+                            )
+                        )
+                    ).scalar() or 0
+                    if _fails >= 3:
+                        continue  # 熔断已发生——留给 ManualAction
+                    _updated = _rt.updated_at
+                    try:
+                        _age = _now - _updated.timestamp()
+                    except (AttributeError, OSError):
+                        _age = 999
+                    if _age < 60:
+                        continue  # 冷却未过
+                    from project_runtime.project_state.fsm import (
+                        StateTransitionService as _Sts,
+                    )
+
+                    await _Sts(session).transition_task(
+                        _rt, TaskStatus.READY
+                    )
+                    await session.commit()
+                    ids.append(_rt.id)
 
             # Throttle: at most MAX_AUTO_SUBMIT per advance — wide graphs
             # (many independent READY tasks) would flood the LLM gateway.
@@ -866,6 +920,10 @@ async def _delivery_closeout_check(project_id: int) -> None:
         )
 
 
+# 返修单-闭环接线 P0-2: 后台 runner 强引用（防 GC 丢任务）
+_BACKGROUND_RUNNERS: set = set()
+
+
 class ExecutionService:
     """Admission + query. No execution logic in the request lifecycle."""
 
@@ -887,7 +945,12 @@ class ExecutionService:
             phase="QUEUED", message=f"execution {execution_id} queued",
         )
         # Background: runs beyond HTTP request lifecycle (ADR-041)
-        asyncio.create_task(self._runner.run(execution_id))
+        # 返修单-闭环接线 P0-2: 强引用持有——asyncio.create_task 弱引用
+        # 会被 GC 静默丢任务（CPython 文档明示风险; 实测 exec17 spawn 后
+        # 25 分钟未消费）。模块级集合 + done 自清理（官方推荐模式）
+        _bg = asyncio.create_task(self._runner.run(execution_id))
+        _BACKGROUND_RUNNERS.add(_bg)
+        _bg.add_done_callback(_BACKGROUND_RUNNERS.discard)
         return execution_id
 
 

@@ -35,7 +35,30 @@ def healthy() -> bool:
         return False
 
 
+def archive_death_scene() -> None:
+    """返修单 P0-3: 拉起前存死亡现场——runtime 日志尾部 20 行存档。"""
+    for src_name in ("runtime_watchdog_out.log", "runtime_last_words.log"):
+        src = ROOT / "data" / src_name
+        if not src.exists():
+            continue
+        try:
+            lines = src.read_text(
+                encoding="utf-8", errors="replace"
+            ).splitlines()
+            tail = chr(10).join(lines[-20:])
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            dst = ROOT / "data" / f"death_scene_{stamp}.log"
+            dst.write_text(
+                "=== " + src_name + " tail at death ===" + chr(10)
+                + tail + chr(10),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+
+
 def start_runtime() -> None:
+    archive_death_scene()
     cmd = [
         sys.executable, "-c",
         "from apps.runtime.main import app; import uvicorn; "

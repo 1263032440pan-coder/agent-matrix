@@ -1056,8 +1056,27 @@ async def _emit_cot(
             payload["agent_instance_id"] = agent.get("instance_id")
             if agent.get("name"):
                 payload["agent_name"] = agent["name"]
+        # P1-2 修复: project_id 必传——agent-thinking 端点按项目查,
+        # 缺失则 Worker 思维链对前端不可见（实测 2039 条全部 NULL）
+        project_id = None
+        if task_id is not None:
+            try:
+                from sqlalchemy import select as _sel
+
+                from infrastructure.database import engine as _eng
+                from project_runtime.project_state.models import Task as _Tk
+
+                async with AsyncSession(_eng) as _s:
+                    project_id = (
+                        await _s.execute(
+                            _sel(_Tk.project_id).where(_Tk.id == task_id)
+                        )
+                    ).scalar()
+            except Exception:  # noqa: BLE001 — 归属 best-effort
+                project_id = None
         await EventEngine().record(
             evt,
+            project_id=project_id,
             task_id=task_id,
             phase=f"LLM_{phase.upper()}",
             message=text[-128:],
