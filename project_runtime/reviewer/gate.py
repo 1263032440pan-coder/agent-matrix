@@ -43,23 +43,66 @@ class Validator(ABC):
 
 
 class FileValidator(Validator):
-    """Real check: artifact files exist on disk and SHA-256 matches."""
+    """Real check: artifact files exist on disk and SHA-256 matches.
+
+    返修单-REWORK轮sha256误拦: REWORK 链（gate_result 有 FAIL 史）上
+    文件被重写是修复行为本体——hash 不匹配降级 WARNING + 刷新工单
+    （工单格式 REFRESH:<abs_path>:<new_hash>, GateCore 消费）;
+    首轮/正常链维持 FAIL（防篡改语义不回退）。
+    Validator 不写 DB（SYS-063 契约）——刷新由 GateCore 落。
+    """
 
     name = "file"
 
     async def validate(self, task: Task, artifacts: list[Artifact]) -> ValidatorResult:
         if not artifacts:
             return ValidatorResult(GateStatus.FAIL, "no artifacts produced")
+        # REWORK 链判定: 该任务有过 FAIL 史（由 GateCore 注入——
+        # Validator 无 session, 经 artifacts 参数外的注入槽传）
+        in_rework_chain = bool(getattr(task, "_gate_fail_history", False))
+        refresh_orders: list[str] = []
         for a in artifacts:
             if not os.path.exists(a.path):
-                return ValidatorResult(GateStatus.FAIL, f"artifact file missing: {a.path}")
+                _rel = _relpath(a.path)
+                return ValidatorResult(
+                    GateStatus.FAIL, f"artifact file missing: {_rel}"
+                )
             if a.sha256:
-                actual = hashlib.sha256(open(a.path, "rb").read()).hexdigest()
+                actual = hashlib.sha256(
+                    open(a.path, "rb").read()
+                ).hexdigest()
                 if actual != a.sha256:
-                    return ValidatorResult(
-                        GateStatus.FAIL, f"sha256 mismatch for {a.path}"
-                    )
-        return ValidatorResult(GateStatus.PASS, f"{len(artifacts)} artifacts verified")
+                    _rel = _relpath(a.path)
+                    if in_rework_chain:
+                        refresh_orders.append(
+                            f"REFRESH:{a.path}:{actual}"
+                        )
+                    else:
+                        return ValidatorResult(
+                            GateStatus.FAIL,
+                            f"sha256 mismatch for {_rel}",
+                        )
+        if refresh_orders:
+            return ValidatorResult(
+                GateStatus.WARNING,
+                f"{len(artifacts)} verified; {len(refresh_orders)} file(s) "
+                f"rewritten in rework round (hash refresh due): "
+                + "; ".join(_relpath(o.split(":")[1]) for o in refresh_orders)
+                + " || " + "|".join(refresh_orders),
+            )
+        return ValidatorResult(
+            GateStatus.PASS, f"{len(artifacts)} artifacts verified"
+        )
+
+
+def _relpath(p: str) -> str:
+    """返修单连带项: Gate details 路径相对化（防截断丢关键信息）。"""
+    try:
+        from pathlib import Path as _Pth
+
+        return str(_Pth(p).resolve().relative_to(_Pth("data/tasks").resolve()))
+    except ValueError:
+        return p
 
 
 class BuildValidator(Validator):
@@ -207,14 +250,51 @@ class GateCore:
         # Run validators
         details: list[str] = []
         final = GateStatus.PASS
+        # 返修单-REWORK轮sha256误拦: REWORK 链判定注入（该任务 FAIL 史）
+        # ——经 task._gate_fail_history 槽传给 Validator（无 session 依赖）
+        from sqlalchemy import select as _sel
+
+        _fail_hist = (
+            await self._session.execute(
+                _sel(GateResult.id).where(
+                    GateResult.task_id == task.id,
+                    GateResult.status == GateStatus.FAIL,
+                )
+            )
+        ).first()
+        task._gate_fail_history = _fail_hist is not None
         for v in self._validators:
             r = await v.validate(task, artifacts)
             details.append(f"[{v.name}] {r.status.value}: {r.message}")
             if r.status == GateStatus.FAIL:
                 final = GateStatus.FAIL
                 break  # fail fast
+            # WARNING treated as PASS（ValidatorResult 契约）——
+            # 但 FileValidator 的 WARNING 尾随 hash 刷新工单, 收口消费
             if r.status == GateStatus.BLOCKED and final == GateStatus.PASS:
                 final = GateStatus.BLOCKED
+
+        # 返修单-REWORK轮sha256误拦: 消费 FileValidator 的刷新工单——
+        # WARNING/PASS 落定后, 对 mismatch 文件把 artifact.sha256 刷成
+        # 磁盘实际值（记账跟上现实; GateCore 有 session 有记账权）
+        import re as _re
+
+        for _line in details:
+            for _order in _re.findall(r"REFRESH:[^|;]+", _line):
+                try:
+                    _, _p, _h = _order.split(":", 2)
+                    from sqlalchemy import update as _upd
+
+                    await self._session.execute(
+                        _upd(Artifact)
+                        .where(Artifact.path == _p)
+                        .values(sha256=_h)
+                    )
+                    logger.info(
+                        "rework hash refresh: %s", _relpath(_p)
+                    )
+                except Exception:  # noqa: BLE001 — 刷新 best-effort
+                    logger.debug("hash refresh failed", exc_info=True)
 
         # Persist GateResult
         gate_result = GateResult(
@@ -229,7 +309,9 @@ class GateCore:
         # V1.11 FSM: EXECUTION_DONE → ACCEPTED | REWORK only.
         # BLOCKED / NEED_APPROVAL both land on REWORK (GateResult.status
         # preserves the distinction for downstream ManualAction).
-        if final == GateStatus.PASS:
+        if final in (GateStatus.PASS, GateStatus.WARNING):
+            # WARNING treated as PASS（REWORK 轮重写文件的合法放行——
+            # sha256 已由上面的工单消费刷新, 下轮校验自然干净）
             await self._fsm.transition_task(task, TaskStatus.ACCEPTED, actor=self.ACTOR)
         else:
             # 返修单v2 P2 防死循环接线（五闸②）: FAIL→REWORK 前查轮次——

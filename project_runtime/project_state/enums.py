@@ -95,6 +95,9 @@ class ConstraintType(str, enum.Enum):
 
 class GateStatus(str, enum.Enum):
     PASS = "PASS"
+    # 返修单-REWORK轮sha256误拦: WARNING = 放行但带告警（REWORK 链上
+    # 文件被合法重写, hash 刷新工单随 details 交 GateCore 消费）
+    WARNING = "WARNING"
     FAIL = "FAIL"
     BLOCKED = "BLOCKED"
     NEED_APPROVAL = "NEED_APPROVAL"

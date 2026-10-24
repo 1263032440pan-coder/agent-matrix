@@ -1,8 +1,11 @@
 """D13 Gate — tests for GateCore pipeline, validators, and FSM enforcement."""
 
+import hashlib
+
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
+import project_runtime.event.models  # noqa: F401 — fixture 建表需注册
 from project_runtime.artifact.manager import ArtifactManager
 from project_runtime.project_state.base import Base
 from project_runtime.project_state.enums import GateStatus, TaskStatus
@@ -196,3 +199,92 @@ async def test_execution_done_to_accepted_only_via_gate(dbsession, project):
     # ACCEPTED is terminal — no further transitions
     with pytest.raises(Exception):
         await fsm.transition_task(task, TaskStatus.RUNNING, actor="GATE")
+
+
+# ═══ 返修单-REWORK轮sha256误拦 专项 ═════════════════════════════
+
+class TestReworkHashRefresh:
+    """REWORK 链重写文件 → WARNING 放行 + 登记刷新; 首轮篡改仍 FAIL。"""
+
+    @staticmethod
+    def _mk_artifact(tmp_path, name="src/A.java", content="v1",
+                      sha=None, ws="data/tasks/9/1"):
+        import hashlib
+
+        ws_dir = tmp_path / ws
+        f = ws_dir / name
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(content, encoding="utf-8")
+        path = str(f)
+
+        class _A:
+            pass
+
+        a = _A()
+        a.path = path
+        a.sha256 = sha or hashlib.sha256(
+            content.encode()).hexdigest()
+        a.name = name.split("/")[-1]
+        return a
+
+    @pytest.mark.asyncio
+    async def test_rework_rewrite_warns(self, tmp_path, monkeypatch):
+        """REWORK 链: 磁盘重写（hash 变）→ WARNING + 工单, 非 FAIL。"""
+        monkeypatch.chdir(tmp_path)
+        from project_runtime.reviewer.gate import (
+            FileValidator,
+            GateStatus,
+        )
+
+        # 登记 hash = v1, 磁盘已重写为 v2
+        a = self._mk_artifact(tmp_path, content="version-2-rewritten",
+                              sha=hashlib.sha256(b"version-1").hexdigest())
+
+        class _T:
+            _gate_fail_history = True  # GateCore 注入的 REWORK 链标记
+            name = "任务X"
+
+        r = await FileValidator().validate(_T(), [a])
+        assert r.status == GateStatus.WARNING, r.message
+        assert "REFRESH:" in r.message
+
+    @pytest.mark.asyncio
+    async def test_first_tamper_still_fails(self, tmp_path, monkeypatch):
+        """首轮（无 FAIL 史）: 磁盘≠登记 → 仍 FAIL（防篡改不回退）。"""
+        monkeypatch.chdir(tmp_path)
+        from project_runtime.reviewer.gate import FileValidator, GateStatus
+
+        a = self._mk_artifact(tmp_path, content="tampered",
+                               sha=hashlib.sha256(b"original").hexdigest())
+
+        class _T:
+            _gate_fail_history = False
+            name = "任务Y"
+
+        r = await FileValidator().validate(_T(), [a])
+        assert r.status == GateStatus.FAIL
+        assert "sha256 mismatch" in r.message
+
+    @pytest.mark.asyncio
+    async def test_matching_hashes_pass(self, tmp_path, monkeypatch):
+        """hash 一致（含 REWORK 链）→ PASS。"""
+        monkeypatch.chdir(tmp_path)
+        from project_runtime.reviewer.gate import FileValidator, GateStatus
+
+        a = self._mk_artifact(tmp_path, content="same")
+
+        class _T:
+            _gate_fail_history = True
+            name = "任务Z"
+
+        r = await FileValidator().validate(_T(), [a])
+        assert r.status == GateStatus.PASS
+
+    def test_relpath_strips_prefix(self, tmp_path, monkeypatch):
+        """路径相对化: 绝对路径 → data/tasks 下相对（防 details 截断）。"""
+        monkeypatch.chdir(tmp_path)
+        from project_runtime.reviewer.gate import _relpath
+
+        p = str(tmp_path / "data/tasks/2/15/src/main/X.java")
+        out = _relpath(p)
+        assert "X.java" in out and "G:" not in out
