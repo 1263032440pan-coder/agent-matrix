@@ -948,7 +948,13 @@ class ExecutionService:
         self._runner = ExecutionRunner()
 
     async def submit(self, project_id: int, task_id: int) -> int:
-        """Create QUEUED Execution (committed), spawn background runner, return id."""
+        """Create QUEUED Execution (committed), spawn background runner, return id.
+
+        返修单-可靠性③: 后台 runner 挂在【调用方进程】——从临时脚本/
+        REPL 调用时进程一退 runner 即死（实测 exec11/12 教训）。
+        仅限 runtime 进程内调用（HTTP API / lifespan）; 外部编排请走
+        POST /api/projects/{id}/execute。
+        """
         from project_runtime.event import RuntimeEventType
 
         async with AsyncSession(engine) as session:

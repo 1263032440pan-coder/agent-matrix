@@ -19,6 +19,9 @@ from infrastructure.logging import setup_logging
 
 logger = logging.getLogger(__name__)
 
+# 返修单-可靠性①: 心跳任务强引用（防 GC）
+_BACKGROUND_HEARTBEATS: set = set()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -34,6 +37,84 @@ async def lifespan(app: FastAPI):
     await _check_migration_version()
     await _seed_agent_templates()
     yield
+    # 返修单-可靠性①: REWORK 心跳——60s 扫活跃项目跑 advance。
+    # 实测: FAIL 触发 advance 是一次性的, 冷却 60s 跳过后无后续触发,
+    # REWORK 任务躺平等下一个事件（两次手动拉起的根因）。
+    import asyncio as _aio
+
+    from sqlalchemy import select as _select
+
+    async def _advance_heartbeat():
+        from sqlalchemy import distinct
+
+        from infrastructure.database import engine
+        from project_runtime.execution.service import ExecutionRunner
+        from project_runtime.project_state.enums import TaskStatus
+        from project_runtime.project_state.models import Task as _Tk
+
+        while True:
+            await _aio.sleep(60)
+            try:
+                from sqlalchemy.ext.asyncio import AsyncSession as _Asess
+
+                async with _Asess(engine) as _s:
+                    pids = list((
+                        await _s.execute(
+                            _select(distinct(_Tk.project_id)).where(
+                                _Tk.status == TaskStatus.REWORK
+                            )
+                        )
+                    ).scalars())
+                for pid in pids:
+                    await ExecutionRunner()._auto_advance(pid)
+            except Exception:  # noqa: BLE001 — 心跳绝不炸主循环
+                pass
+
+    # 返修单-可靠性②: 僵尸 execution 恢复——runtime 重启后非终态
+    # execution 无人消费（实测 exec9 RUNNING 卡 39 分钟, run() 对非
+    # QUEUED 直接 return 救不活）。QUEUED 重新拉 runner, RUNNING
+    # 判死清场（任务回 READY 由心跳/用户重提交接管）
+    async def _orphan_recovery():
+        from sqlalchemy import select as _sel
+        from sqlalchemy.ext.asyncio import AsyncSession as _Asess2
+
+        from infrastructure.database import engine as _eng
+        from project_runtime.execution.models import Execution as _Ex
+        from project_runtime.execution.service import ExecutionRunner
+
+        async with _Asess2(_eng) as _s:
+            zombies = list((
+                await _s.execute(
+                    _sel(_Ex).where(
+                        _Ex.status.in_(["RUNNING", "QUEUED"])
+                    )
+                )
+            ).scalars().all())
+        if not zombies:
+            return
+        logger.info("orphan recovery: %d zombie execution(s)", len(zombies))
+        async with _Asess2(_eng) as _s:
+            for z in zombies:
+                if z.status == "QUEUED":
+                    # 未开跑——重新拉 runner
+                    _bg = _aio.get_event_loop().create_task(
+                        ExecutionRunner().run(z.id)
+                    )
+                    _BACKGROUND_HEARTBEATS.add(_bg)
+                    _bg.add_done_callback(_BACKGROUND_HEARTBEATS.discard)
+                else:
+                    # RUNNING 中断——标记失败清场, 任务留给心跳重拉
+                    z.status = "FAILED"
+                    z.error_code = "ORPHAN_RECOVERY"
+                    z.error_message = "runtime restart orphan"
+            await _s.commit()
+
+    _aio.get_event_loop().create_task(_orphan_recovery())
+
+    _hb = _aio.get_event_loop().create_task(_advance_heartbeat())
+    _BACKGROUND_HEARTBEATS.add(_hb)
+    _hb.add_done_callback(_BACKGROUND_HEARTBEATS.discard)
+
     # 返修单v2 P5: 遗言日志——进程退出原因落盘（死要有尸体）
     import atexit
     import signal as _signal
