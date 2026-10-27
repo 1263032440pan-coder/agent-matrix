@@ -210,7 +210,7 @@ class FileRwProvider:
                     resolved = self._resolve(path)
                 resolved.parent.mkdir(parents=True, exist_ok=True)
                 resolved.write_text(content, encoding="utf-8")
-            except OSError as e:
+            except (OSError, ValueError) as e:
                 return {"ok": False, "error": f"写入失败: {e}"}
             return {
                 "ok": True, "path": str(resolved),
@@ -330,12 +330,28 @@ class ShellProvider:
         parts = command.split(maxsplit=1)
         cmd_name = parts[0].lower()
         args = parts[1] if len(parts) > 1 else ""
-        if cmd_name not in _SHELL_WHITELIST:
+        # 返修V3 批C: skill 固定脚本绝对路径白名单（仍过 PATHTOKENS）
+        skill_script_ok = False
+        if cmd_name in ("python", "python3"):
+            try:
+                from project_runtime.skills.install_gates import (
+                    is_whitelisted_skill_script,
+                )
+                skill_script_ok = is_whitelisted_skill_script(command)
+            except Exception:  # noqa: BLE001
+                skill_script_ok = False
+        if cmd_name not in _SHELL_WHITELIST and not skill_script_ok:
             return {"ok": False,
                     "error": f"命令不在白名单: {cmd_name}（允许: "
                              f"{sorted(_SHELL_WHITELIST)[:8]}…）"}
-        pattern = _SHELL_WHITELIST[cmd_name]
-        if pattern == "PATHTOKENS":
+        pattern = _SHELL_WHITELIST.get(cmd_name)
+        if skill_script_ok:
+            # 白名单脚本: 第一参为绝对路径，其后仍禁 -flag
+            rest = " ".join(command.split()[2:])
+            if rest and not _path_tokens_ok(rest):
+                return {"ok": False,
+                        "error": f"skill 脚本参数禁 -flag: {rest[:60]}"}
+        elif pattern == "PATHTOKENS":
             if not _path_tokens_ok(args):
                 return {"ok": False,
                         "error": f"参数模式不合规（只准纯路径，禁 -flag）: {args[:60]}"}
@@ -492,56 +508,123 @@ class SlideGeneratorProvider:
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / re.sub(r'[<>:"/\\|?*]', "_", filename)
 
-        def _blocking() -> int:
+        def _blocking() -> tuple[int, int]:
+            """返修单 V3 批D-D1: 按节建页（对齐 md2pptx）。
+
+            建页单位=节（`##`）而非行；段落/表格/代码归并本页；
+            `#` 封面；`---` 显式分页；fence 行不建页。
+            返回 (slide_count, h2_section_count)。
+            """
             from pptx import Presentation
             from pptx.util import Pt
 
             prs = Presentation()
+            # 默认模板 layout[1]=标题+内容（官方 Title and Content）
+            content_layout = prs.slide_layouts[1]
+
+            h2_count = 0
             title_slide_added = False
-            current_title = None
-            bullets: list[str] = []
+            current_title: str | None = None
+            body_lines: list[str] = []
+            in_fence = False
 
-            def flush_bullets():
-                nonlocal bullets
-                if current_title and bullets:
-                    slide = prs.slides.add_slide(prs.slide_layouts[1])
-                    slide.shapes.title.text = current_title
-                    body = slide.placeholders[1]
-                    tf = body.text_frame
-                    for i, b in enumerate(bullets[:8]):
+            def flush_section(*, keep_title: str | None = None) -> None:
+                """把当前节刷成一页；keep_title 用于 --- 后续页无新 ##。"""
+                nonlocal current_title, body_lines
+                title = current_title
+                if title is None and not body_lines:
+                    return
+                slide = prs.slides.add_slide(content_layout)
+                if title and hasattr(slide.shapes, "title") and slide.shapes.title:
+                    slide.shapes.title.text = title
+                # 优先 placeholders[1]；否则跳过正文
+                body_ph = None
+                try:
+                    body_ph = slide.placeholders[1]
+                except (KeyError, IndexError):
+                    for sh in slide.shapes:
+                        if sh.has_text_frame and sh != getattr(
+                            slide.shapes, "title", None
+                        ):
+                            body_ph = sh
+                            break
+                if body_ph is not None and body_lines:
+                    tf = body_ph.text_frame
+                    tf.clear()
+                    for i, line in enumerate(body_lines[:24]):
                         p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
-                        p.text = b
+                        text = line
+                        if text.startswith(("- ", "* ")):
+                            text = text[2:]
+                            p.level = 0
+                        p.text = text[:500]
                         p.font.size = Pt(16)
-                    bullets = []
+                elif title and body_ph is not None and not body_lines:
+                    # 仅标题也算非空页（标题本身有字）
+                    pass
+                body_lines = []
+                current_title = keep_title
 
-            for line in markdown.splitlines():
-                stripped = line.strip()
+            for raw in markdown.splitlines():
+                stripped = raw.strip()
+                # fenced code: 整块归并，fence 行本身不建页
+                if stripped.startswith("```"):
+                    in_fence = not in_fence
+                    if current_title is not None or body_lines:
+                        body_lines.append(stripped[:200])
+                    continue
+                if in_fence:
+                    if current_title is not None or body_lines or title_slide_added:
+                        body_lines.append(stripped[:500] if stripped else "")
+                    continue
+
+                if stripped == "---":
+                    # 显式分页（Marp/md2pptx 语义）
+                    flush_section(keep_title=None)
+                    continue
+
                 if stripped.startswith("# ") and not stripped.startswith("## "):
-                    # 首页标题
+                    flush_section()
                     slide = prs.slides.add_slide(prs.slide_layouts[0])
-                    slide.shapes.title.text = stripped[2:]
-                    subtitle = slide.placeholders[1]
-                    subtitle.text = " autogenerated · Project Autonomous Agent"
+                    slide.shapes.title.text = stripped[2:].strip()
+                    try:
+                        slide.placeholders[1].text = (
+                            "autogenerated · Project Autonomous Agent"
+                        )
+                    except (KeyError, IndexError):
+                        pass
                     title_slide_added = True
-                elif stripped.startswith("## "):
-                    flush_bullets()
-                    current_title = stripped[3:]
-                    slide = prs.slides.add_slide(prs.slide_layouts[1])
-                    slide.shapes.title.text = current_title
-                elif stripped.startswith(("- ", "* ")):
-                    bullets.append(stripped[2:])
-                elif stripped and current_title:
-                    flush_bullets()
-                    slide = prs.slides.add_slide(prs.slide_layouts[1])
-                    slide.shapes.title.text = current_title
-                    body = slide.placeholders[1]
-                    body.text_frame.text = stripped[:500]
-            flush_bullets()
-            if not title_slide_added and prs.slides:
-                pass  # 无 # 标题也允许（首节页即首页）
-            count = len(prs.slides._sldIdLst)  # noqa: SLF001 — pptx 内部
+                    current_title = None
+                    body_lines = []
+                    continue
+
+                if stripped.startswith("## "):
+                    flush_section()
+                    h2_count += 1
+                    current_title = stripped[3:].strip()
+                    body_lines = []
+                    continue
+
+                if not stripped:
+                    continue
+
+                # 表格行 / 要点 / 普通段落 → 归并进当前节
+                if current_title is None and not title_slide_added:
+                    # 无封面无节时，隐式开一节
+                    current_title = "内容"
+                    h2_count += 1
+                if current_title is None and title_slide_added:
+                    # 封面后、--- 后的孤儿正文：开无标题续页
+                    current_title = ""
+                body_lines.append(stripped[:500])
+
+            flush_section()
+            if not title_slide_added and len(prs.slides._sldIdLst) == 0:  # noqa: SLF001
+                slide = prs.slides.add_slide(prs.slide_layouts[0])
+                slide.shapes.title.text = "演示文稿"
+            count = len(prs.slides._sldIdLst)  # noqa: SLF001
             prs.save(str(out_path))
-            return count
+            return count, h2_count
 
         def _meta() -> dict:
             """V1.6 序4: 读回 pptx 元数据（事实返回——判定归模型/skill）。"""
@@ -565,21 +648,27 @@ class SlideGeneratorProvider:
                     "has_title_text": has_title}
 
         try:
-            await asyncio.to_thread(_blocking)
+            _count, h2_count = await asyncio.to_thread(_blocking)
             meta = await asyncio.to_thread(_meta)
         except Exception as e:  # noqa: BLE001
             return {"ok": False, "error": f"生成失败: {e}"}
-        # V1.6 序4: 元数据随结果返回（stdout 提示语——标准在 skill《交付基线》）
+        # V1.6 序4 + 批D-D3: 元数据 + 页数偏斜归因（事实陈述，判定归模型）
+        stdout = (
+            f"已生成 {out_path.name}: {meta['slides']} 页"
+            f"（{meta['non_empty_slides']} 页有内容）——"
+            "请对照交付基线自查页数与内容要求"
+        )
+        if h2_count > 0 and meta["slides"] > 2 * h2_count:
+            stdout += (
+                "；可能未按一节一页格式，建议重生成"
+                f"（二级标题 {h2_count} vs 实际 {meta['slides']} 页）"
+            )
         return {
             "ok": True, "path": str(out_path),
             "slides": meta["slides"],
             "non_empty_slides": meta["non_empty_slides"],
             "has_title_text": meta["has_title_text"],
-            "stdout": (
-                f"已生成 {out_path.name}: {meta['slides']} 页"
-                f"（{meta['non_empty_slides']} 页有内容）——"
-                "请对照交付基线自查页数与内容要求"
-            ),
+            "stdout": stdout,
         }
 
 

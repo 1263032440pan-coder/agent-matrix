@@ -35,6 +35,60 @@ _TOOL_ROUNDS = 12  # 工具循环上限（19号定 4=单搜索工具语义; 20�
                    # 扩到 11 个后语义变了——模型需摸环境 2-4 轮 + 干活
                    # 2-4 轮 + 收敛写作 2-4 轮; opencode 同款循环上限数十轮）
 
+# V1.6b: Claude Stop 对齐——交付存在性硬闸独立返工轮次
+_DELIVERY_REPAIR_MAX = 3
+
+
+class DeliveryBaselineError(RuntimeError):
+    """交付基线校验失败（返工轮次用尽）——Worker 应 success=False → Task FAILED。"""
+
+
+def _delivery_tags_for_wp(wp) -> list[str]:
+    tags = list(getattr(wp, "delivery_tags", None) or [])
+    if getattr(wp, "code_stage", False) and "code" not in tags:
+        tags.append("code")
+    return tags
+
+
+def _check_delivery_workspace(ws_root: Path, tags: list[str]) -> list[str]:
+    """工作区存在性校验（与收口/BackfillValidator 同口径）。返回问题列表，空=通过。"""
+    names: list[str] = []
+    if ws_root.exists():
+        names = [p.name for p in ws_root.rglob("*") if p.is_file()]
+    problems: list[str] = []
+    for tag in tags:
+        if tag == "ppt":
+            if not any(n.lower().endswith(".pptx") for n in names):
+                problems.append(
+                    "方案PPT: 工作区无 .pptx——请用 slide_generator 生成"
+                    "（不少于 6 页，封面含项目名）"
+                )
+        elif tag == "code":
+            has_code = any(
+                n.lower().endswith((".py", ".js", ".ts", ".java"))
+                for n in names
+            )
+            has_readme = any(n.lower().startswith("readme") for n in names)
+            if not has_code:
+                problems.append(
+                    "可运行代码: 无代码文件——请用 file_rw 落盘源码"
+                )
+            if not has_readme:
+                problems.append(
+                    "README: 缺失——请用 file_rw 落盘 README.md"
+                    "（启动方式/依赖/目录结构）"
+                )
+        elif tag == "test_report":
+            if not any(
+                "测试" in n and n.lower().endswith(".md") for n in names
+            ):
+                problems.append(
+                    "测试报告: 无含「测试」的 md——"
+                    "请用 file_rw 落盘（范围/结果/统计/结论）"
+                )
+    return problems
+
+
 def _repair_arguments(raw: str) -> str | None:
     """tool_calls.arguments 流式拼装完整性校验与尾部修复（V1.4i 防线1）。
 
@@ -86,10 +140,13 @@ class LLMWorkerAdapter(WorkerAdapter):
         # V1.5a-1 序6/7: 工作区快照/软提醒状态
         self._current_task_id: int | None = None
         self._nudged_tasks: set[int] = set()
+        # V1.6b: 交付硬闸返工计数（task_id → 已注入次数）
+        self._delivery_repair_counts: dict[int, int] = {}
         # V1.6 序0: 任务工作区根（file_rw 写禁闭）
         self._workspace_root: str | None = None
         # 返修单 B: 当前 Agent 归属（实时思维链事件 payload）
         self._current_agent: dict | None = None
+        self._current_project_id: int | None = None
         self._db_lock = asyncio.Lock()
 
     async def assign(self, wp: WorkPackage) -> ExecutionResult:
@@ -99,10 +156,18 @@ class LLMWorkerAdapter(WorkerAdapter):
         # network call.
         from infrastructure.database.short_tx import commit_with_retry
 
-        async with self._db_lock:
+        async def _phase1_stage() -> None:
             task = await self._mgr.get_task(wp.task_id)
             if task is None:
                 raise ValueError(f"Task not found: {wp.task_id}")
+            # Cache project_id once — CoT emit used to SELECT per chunk.
+            self._current_project_id = task.project_id
+            if task.status == TaskStatus.RUNNING:
+                # Idempotent after lock-retry: transition already persisted or
+                # re-applied in this session.
+                self._current_task_id = task.id
+                self._workspace_root = getattr(wp, "workspace_root", None)
+                return
             if task.status != TaskStatus.READY:
                 raise ValueError(
                     f"Worker cannot start task in status {task.status.value}. Must be READY."
@@ -110,26 +175,33 @@ class LLMWorkerAdapter(WorkerAdapter):
             self._current_task_id = task.id
             self._workspace_root = getattr(wp, "workspace_root", None)
             await self._fsm.transition_task(task, TaskStatus.RUNNING)
-            await commit_with_retry(self._session, context="llm_worker.phase1")
+
+        async with self._db_lock:
+            await _phase1_stage()
+            await commit_with_retry(
+                self._session,
+                context="llm_worker.phase1",
+                on_retry=_phase1_stage,
+            )
 
         # V1.5a-1 序6: 工作区快照（收工 diff 用——新增文件登记 Artifact）
         ws_snapshot = self._workspace_snapshot()
 
         # Execute via LLM (zero DB transaction held — network call)
+        # V1.6b: 交付硬闸在工具循环内；用尽返工 → DeliveryBaselineError → FAILED
         try:
             output = await self._execute_llm(wp)
             success = True
+        except DeliveryBaselineError as e:
+            logger.error(
+                "Delivery baseline failed for task %d: %s", wp.task_id, e
+            )
+            output = str(e)
+            success = False
         except Exception as e:
             logger.error("LLM execution failed for task %d: %s", wp.task_id, e)
             output = f"LLM execution failed: {e}"
             success = False
-
-        # V1.5a-1 序7: 软提醒（一次性——code_stage 零测试文件时附加提示）
-        if success:
-            try:
-                output = await self._delivery_self_check(wp, output)
-            except Exception:  # noqa: BLE001 — 软提醒绝不阻断
-                pass
 
         # V1.5a-1 序6: 快照 diff 在官方产物落盘**前**算好——
         # create_artifact 会把 {任务名}_output.md 写进工作区，diff 若在
@@ -144,20 +216,26 @@ class LLMWorkerAdapter(WorkerAdapter):
 
         # Phase 2 (short tx): re-fetch task (Phase-1 commit expired it),
         # EXECUTION_DONE/FAILED + TaskRun + Artifact, then commit.
-        async with self._db_lock:
+        artifact_id: int | None = None
+        cancelled = False
+
+        async def _phase2_stage() -> None:
+            nonlocal artifact_id, cancelled
             task = await self._mgr.get_task(wp.task_id)
             if task is None:
                 raise ValueError(f"Task not found: {wp.task_id}")
             if task.status == TaskStatus.CANCELLED:
-                return ExecutionResult(task_id=wp.task_id, success=False, output="cancelled")
-
+                cancelled = True
+                return
+            # Idempotent: already terminal after a prior partial commit.
+            if task.status in (TaskStatus.EXECUTION_DONE, TaskStatus.FAILED):
+                return
             if success:
                 await self._fsm.transition_task(task, TaskStatus.EXECUTION_DONE)
             else:
                 await self._fsm.transition_task(task, TaskStatus.FAILED)
             await self._session.flush()
 
-            # TaskRun audit
             from project_runtime.project_state.models import TaskRun
 
             now = datetime.datetime.now(datetime.timezone.utc)
@@ -168,17 +246,14 @@ class LLMWorkerAdapter(WorkerAdapter):
                     "skill_version": wp.skill_context.skill_version,
                     "content_hash": wp.skill_context.skill_content_hash,
                 }
-            run = TaskRun(
+            self._session.add(TaskRun(
                 task_id=task.id,
                 attempt=1,
                 started_at=now,
                 finished_at=now,
                 result=json.dumps(run_payload, ensure_ascii=False),
-            )
-            self._session.add(run)
+            ))
 
-            # Artifact
-            artifact_id: int | None = None
             if success and self._artifact_mgr is not None:
                 artifact = await self._artifact_mgr.create_artifact(
                     project_id=task.project_id,
@@ -190,8 +265,6 @@ class LLMWorkerAdapter(WorkerAdapter):
                 await self._session.flush()
                 artifact_id = artifact.id
 
-            # V1.5a-1 序6: 工作区 harvest——快照 diff 新增文件全量登记
-            # （diff 已在官方产物落盘前算好——防双登记）
             if success and self._artifact_mgr is not None and harvested_files:
                 try:
                     await self._artifact_mgr.batch_register_from_workspace(
@@ -202,7 +275,17 @@ class LLMWorkerAdapter(WorkerAdapter):
                 except Exception:  # noqa: BLE001 — harvest 绝不阻断收工
                     logger.debug("workspace harvest failed", exc_info=True)
 
-            await commit_with_retry(self._session, context="llm_worker.phase2")
+        async with self._db_lock:
+            await _phase2_stage()
+            if cancelled:
+                return ExecutionResult(
+                    task_id=wp.task_id, success=False, output="cancelled"
+                )
+            await commit_with_retry(
+                self._session,
+                context="llm_worker.phase2",
+                on_retry=_phase2_stage,
+            )
 
         return ExecutionResult(
             task_id=wp.task_id,
@@ -250,6 +333,61 @@ class LLMWorkerAdapter(WorkerAdapter):
             )
         return Path(f"data/tasks/0/{self._current_task_id or 0}")
 
+    async def _delivery_stop_problems(self, wp) -> list[str]:
+        """V1.6c: 收工硬闸问题列表（空=可通过）。
+
+        优先 playbook_ref.deliverable_ids + Project.delivery_manifest；
+        否则回退 V1.6b delivery_tags 写死规则。
+        """
+        import json as _json
+
+        from project_runtime.procedure.delivery_manifest import (
+            check_deliverables,
+            map_legacy_tags_to_ids,
+            validate_manifest,
+            workspace_file_names,
+        )
+
+        ws = self._task_ws_root()
+        wr = getattr(wp, "workspace_root", None)
+        if wr:
+            ws = Path(wr)
+        names = workspace_file_names(ws)
+
+        ref: dict = {}
+        try:
+            raw_ref = getattr(wp, "playbook_ref", None)
+            if raw_ref:
+                ref = _json.loads(raw_ref)
+        except (ValueError, TypeError):
+            ref = {}
+        ids = list(ref.get("deliverable_ids") or [])
+        tags = _delivery_tags_for_wp(wp)
+
+        manifest = None
+        pid = getattr(self, "_current_project_id", None)
+        if pid is not None and self._session is not None:
+            try:
+                from project_runtime.project_state.models import Project
+
+                proj = await self._session.get(Project, pid)
+                if proj and proj.delivery_manifest:
+                    manifest = validate_manifest(proj.delivery_manifest)
+            except Exception:  # noqa: BLE001
+                logger.debug("load delivery_manifest failed", exc_info=True)
+                manifest = None
+
+        if manifest:
+            if not ids and tags:
+                ids = map_legacy_tags_to_ids(manifest, tags)
+            if ids:
+                return check_deliverables(names, manifest, ids)
+            return []
+
+        if tags:
+            return _check_delivery_workspace(ws, tags)
+        return []
+
     async def _delivery_self_check(
         self, wp, output: str,
     ) -> str:
@@ -290,13 +428,29 @@ class LLMWorkerAdapter(WorkerAdapter):
         tag_names = {"ppt": "项目方案介绍 PPT", "code": "可运行的代码",
                      "test_report": "测试报告"}
         tag_list = "、".join(tag_names.get(t, t) for t in tags)
+        # 返修V3 批C: PPT 双层兜底提示
+        ppt_hint = "slide_generator"
+        if "ppt" in tags:
+            from project_runtime.skills.ppt_fallback import resolve_ppt_backend
+
+            backend = resolve_ppt_backend(wp.skill_context)
+            ppt_hint = (
+                "ppt-master 脚本（失败则用 slide_generator）"
+                if backend == "ppt-master"
+                else "slide_generator"
+            )
+        tools_hint = "file_rw"
+        if "ppt" in tags:
+            tools_hint += f" / {ppt_hint}"
+        if "code" in tags or "test_report" in tags:
+            tools_hint += " / file_rw"
         self._nudged_tasks.add(wp.task_id)
         return (
             f"{output}\n\n【收工自查】本任务契约要求交付：{tag_list}"
             f"（阶段产出物：{'、'.join(stage_outputs) or '未声明'}）。"
             f"\n当前工作区文件清单：\n{files_desc}\n"
             "请对照 skill《交付基线》自查：缺什么补什么"
-            "（可用 file_rw / slide_generator），齐了才输出最终交付。"
+            f"（可用 {tools_hint}），齐了才输出最终交付。"
         )
 
     async def cancel(self, task_id: int) -> None:
@@ -555,7 +709,10 @@ class LLMWorkerAdapter(WorkerAdapter):
                     if len(think_buf) >= 120 or "\n" in think_buf:
                         await _emit_cot(
                             task_id, "thinking", think_buf,
-                            agent=self._current_agent,
+                            agent=getattr(self, "_current_agent", None),
+                            project_id=getattr(
+                                self, "_current_project_id", None
+                            ),
                         )
                         think_buf = ""
                 if cc:
@@ -577,14 +734,48 @@ class LLMWorkerAdapter(WorkerAdapter):
             if think_buf:
                 await _emit_cot(
                             task_id, "thinking", think_buf,
-                            agent=self._current_agent,
+                            agent=getattr(self, "_current_agent", None),
+                            project_id=getattr(
+                                self, "_current_project_id", None
+                            ),
                         )
 
             content = "".join(content_parts)
             if not tool_calls:
-                # 正常出口: 无工具调用 → 本轮即终稿
+                # 正常出口: 无工具调用 → 拟终稿
                 if not content.strip():
                     content = "".join(reasoning_parts)[-2000:]
+                # V1.6c Claude Stop: 清单 match 硬闸（兼容 legacy tags）
+                problems = await self._delivery_stop_problems(wp)
+                if problems:
+                    tid = int(getattr(wp, "task_id", 0) or 0)
+                    used = self._delivery_repair_counts.get(tid, 0)
+                    if used >= _DELIVERY_REPAIR_MAX:
+                        raise DeliveryBaselineError(
+                            "交付校验失败（已返工"
+                            f"{_DELIVERY_REPAIR_MAX}次仍缺）："
+                            + "；".join(problems)
+                        )
+                    self._delivery_repair_counts[tid] = used + 1
+                    if content.strip():
+                        messages.append({
+                            "role": "assistant", "content": content,
+                        })
+                    messages.append({
+                        "role": "user",
+                        "content": (
+                            "【收工校验未通过——须返工】"
+                            f"（第 {used + 1}/{_DELIVERY_REPAIR_MAX} 次）：\n"
+                            + "\n".join(f"- {p}" for p in problems)
+                            + "\n请立即用工具补齐缺失产物，齐了再输出最终交付。"
+                            "不要只口头承诺。"
+                        ),
+                    })
+                    logger.info(
+                        "delivery stop-gate repair %d/%d task=%s: %s",
+                        used + 1, _DELIVERY_REPAIR_MAX, tid, problems,
+                    )
+                    continue
                 return await self._archive_session(
                     task_id, wp, session_store, content, context_stats
                 )
@@ -1039,11 +1230,13 @@ class LLMWorkerAdapter(WorkerAdapter):
 async def _emit_cot(
     task_id: int | None, phase: str, text: str,
     agent: dict | None = None,
+    project_id: int | None = None,
 ) -> None:
     """思维链/答案增量 → 事件（best-effort，绝不打断执行）。
 
     返修单 B: agent 归属（instance_id/name）进 payload——
     AgentPanel 按 agent_instance_id 过滤出每个智能体的实时思维链。
+    project_id 应由调用方缓存传入；缺省才回查一次（避免每 chunk 开事务）。
     """
     try:
         from project_runtime.event import EventEngine, RuntimeEventType
@@ -1058,10 +1251,7 @@ async def _emit_cot(
             payload["agent_instance_id"] = agent.get("instance_id")
             if agent.get("name"):
                 payload["agent_name"] = agent["name"]
-        # P1-2 修复: project_id 必传——agent-thinking 端点按项目查,
-        # 缺失则 Worker 思维链对前端不可见（实测 2039 条全部 NULL）
-        project_id = None
-        if task_id is not None:
+        if project_id is None and task_id is not None:
             try:
                 from sqlalchemy import select as _sel
 

@@ -291,3 +291,139 @@ class TestSlideGenConfinement:
             "description"
         ]
         assert "已忽略" in desc
+
+
+# ═══ 返修单 V3 批D: PPT 按节建页 / Schema 方言 / 归因提示 ══════════
+
+_DOC_7_SECTIONS = """# 政务项目方案汇报
+
+## 背景与目标
+本项目面向市级政务服务平台改造。
+改造目标是统一入口与材料复用。
+
+## 现状问题
+- 多系统登录
+- 材料重复提交
+- 审批链路不透明
+
+## 总体方案
+采用统一身份认证与一件事编排。
+数据中台承接共享交换。
+
+## 建设内容
+| 模块 | 说明 |
+| --- | --- |
+| 门户 | 统一入口 |
+| 编排 | 一件事流程 |
+
+## 实施计划
+```
+阶段一 调研
+阶段二 建设
+阶段三 验收
+```
+按季度推进里程碑。
+
+## 风险与应对
+- 数据质量风险 → 治理专项
+- 部门协同风险 → 联席机制
+
+## 预期成效
+材料少交、流程少跑、结果可查。
+"""
+
+
+class TestSlideGeneratorV3BatchD:
+    """SYS-082/083/084: 节级分页 + 方言 schema + 页数归因。"""
+
+    @pytest.mark.asyncio
+    async def test_pages_equal_sections_plus_cover(self, providers, workspace):
+        """文档形态 md → 页数 = 二级标题节数 + 封面；零空壳。"""
+        out = workspace / "p1" / "t1"
+        r = await providers["slide"].invoke({
+            "markdown": _DOC_7_SECTIONS,
+            "workspace": str(out),
+            "filename": "方案.pptx",
+        })
+        assert r["ok"], r
+        # 1 封面 + 7 节 = 8；不得炸成数十页
+        assert r["slides"] == 8, r
+        assert r["non_empty_slides"] == 8, r
+        assert r.get("has_title_text") is True
+        from pptx import Presentation
+
+        prs = Presentation(r["path"])
+        assert len(list(prs.slides)) == 8
+        os.unlink(r["path"])
+
+    @pytest.mark.asyncio
+    async def test_plain_lines_merge_into_section(self, providers, workspace):
+        """非子弹普通行归并进当前节页，不得每行一页。"""
+        md = (
+            "# 封面\n\n"
+            "## 唯一一节\n"
+            "第一段说明文字。\n"
+            "第二段继续说明。\n"
+            "第三段还是说明。\n"
+            "- 要点甲\n"
+            "- 要点乙\n"
+        )
+        r = await providers["slide"].invoke({
+            "markdown": md,
+            "workspace": str(workspace),
+            "filename": "merge.pptx",
+        })
+        assert r["ok"], r
+        assert r["slides"] == 2  # 封面 + 1 节
+        os.unlink(r["path"])
+
+    @pytest.mark.asyncio
+    async def test_hr_is_explicit_page_break(self, providers, workspace):
+        """`---` 为显式分页符（对齐 Marp/md2pptx），不把 fence 当页。"""
+        md = (
+            "# 封面\n\n"
+            "## 甲\n"
+            "甲内容\n"
+            "\n---\n\n"
+            "续页无新二级标题也应成页\n"
+            "```\ncode block\n```\n"
+            "代码后段落\n"
+        )
+        r = await providers["slide"].invoke({
+            "markdown": md,
+            "workspace": str(workspace),
+            "filename": "hr.pptx",
+        })
+        assert r["ok"], r
+        # 封面 + 甲 + --- 后一页 = 3；代码块不另起页
+        assert r["slides"] == 3, r
+        os.unlink(r["path"])
+
+    @pytest.mark.asyncio
+    async def test_skew_hint_when_pages_explode(self, providers, workspace):
+        """页数相对二级标题偏差>2倍 → stdout 含归因提示。"""
+        # 用大量 --- 人为制造页数膨胀（转换器合法分页但仍偏斜）
+        body = "## 仅一节\n内容\n" + "\n---\n续\n" * 10
+        md = "# 封面\n\n" + body
+        r = await providers["slide"].invoke({
+            "markdown": md,
+            "workspace": str(workspace),
+            "filename": "skew.pptx",
+        })
+        assert r["ok"], r
+        assert r["slides"] > 2 * 1  # h2=1
+        assert "可能未按一节一页" in (r.get("stdout") or "")
+        os.unlink(r["path"])
+
+    def test_schema_teaches_slide_dialect(self):
+        """SYS-083: markdown 参数描述含 ## 方言与拒绝项。"""
+        from project_runtime.worker.tool_schemas import SLIDE_SCHEMA
+
+        md_desc = SLIDE_SCHEMA["parameters"]["properties"]["markdown"][
+            "description"
+        ]
+        top = SLIDE_SCHEMA["description"]
+        blob = md_desc + top
+        assert "##" in blob
+        assert "6" in blob and "12" in blob
+        assert "表格" in blob or "代码" in blob or "---" in blob

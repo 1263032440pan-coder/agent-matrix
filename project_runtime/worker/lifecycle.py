@@ -44,6 +44,8 @@ async def bind_agent(
     session: AsyncSession, project_id: int, task_id: int,
     task_type: str | None,
     task_contract: str | None = None,
+    *,
+    task_content: str = "",
 ) -> AgentBinding | None:
     """任务派发前: 路由选 Agent 实例 → BUSY。
 
@@ -54,7 +56,11 @@ async def bind_agent(
         from project_runtime.worker.registry import WorkerRegistry
 
         reg = WorkerRegistry(session)
-        inst = await reg.route(project_id, task_type)
+        # 返修V3 批A: 语义派活上下文（契约+显式内容）
+        content = (task_content or task_contract or "")[:4000]
+        inst = await reg.route(
+            project_id, task_type, task_content=content,
+        )
         if inst is None:
             # V1.4 §2.2 route-miss 派生链: 先尝试 Controller 派生模板
             # （双闸: 签名幂等 + 数量上限; 失败落老路径零回归）
@@ -75,7 +81,9 @@ async def bind_agent(
                     await AgentProvisioner(session).provision(
                         project_id, [task_type]
                     )
-                    inst = await reg.route(project_id, task_type)
+                    inst = await reg.route(
+                        project_id, task_type, task_content=content,
+                    )
             except Exception:  # noqa: BLE001 — 派生失败落老路径
                 logger.debug(
                     "controller derive on route-miss failed",

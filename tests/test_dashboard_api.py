@@ -149,3 +149,66 @@ async def test_dashboard_wp018_fields(client):
     # 非 PENDING 再操作 → 409
     resp3 = await c.post(f"/api/projects/manual-actions/{action_id}/confirm")
     assert resp3.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_dashboard_required_deliverables(client):
+    """V1.6c: 任务 playbook_ref + 项目 manifest → required_deliverables。"""
+    import json as _json
+
+    c, eng = client
+    async with AsyncSession(eng) as session:
+        man = {
+            "version": 1,
+            "deliverables": [
+                {
+                    "id": "d_ppt",
+                    "name": "方案PPT",
+                    "match": {"ext": [".pptx"], "min_count": 1},
+                },
+                {
+                    "id": "d_code",
+                    "name": "可运行代码",
+                    "match": {
+                        "ext": [".py"],
+                        "any_name_prefix": ["readme"],
+                        "min_count": 1,
+                    },
+                },
+            ],
+        }
+        p = Project(
+            name="req-deliv",
+            delivery_manifest=_json.dumps(man, ensure_ascii=False),
+        )
+        session.add(p)
+        await session.flush()
+        t = Task(
+            project_id=p.id,
+            name="做PPT",
+            status=TaskStatus.READY,
+            playbook_ref=_json.dumps({
+                "deliverable_ids": ["d_ppt"],
+                "stage_outputs": ["方案PPT"],
+            }),
+        )
+        session.add(t)
+        t2 = Task(
+            project_id=p.id,
+            name="理解",
+            status=TaskStatus.READY,
+            playbook_ref=_json.dumps({"stage_outputs": []}),
+        )
+        session.add(t2)
+        pid = p.id
+        await session.commit()
+
+    resp = await c.get(f"/api/projects/{pid}/dashboard")
+    assert resp.status_code == 200
+    tasks = {t["name"]: t for t in resp.json()["tasks"]}
+    req = tasks["做PPT"]["required_deliverables"]
+    assert len(req) == 1
+    assert req[0]["id"] == "d_ppt"
+    assert req[0]["name"] == "方案PPT"
+    assert req[0]["match"]["ext"] == [".pptx"]
+    assert tasks["理解"]["required_deliverables"] == []

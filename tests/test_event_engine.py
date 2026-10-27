@@ -188,9 +188,9 @@ async def test_event_write_is_short_tx(patched_engines, project_id, monkeypatch)
     calls = []
     real_retry = short_tx.commit_with_retry
 
-    async def spy_retry(session, *, context=""):
+    async def spy_retry(session, *, context="", on_retry=None):
         calls.append(context)
-        return await real_retry(session, context=context)
+        return await real_retry(session, context=context, on_retry=on_retry)
 
     monkeypatch.setattr(event_engine_mod.short_tx, "commit_with_retry", spy_retry)
 

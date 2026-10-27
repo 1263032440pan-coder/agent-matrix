@@ -171,11 +171,13 @@ class AgentFSM:
             logger.debug("agent lifecycle event failed", exc_info=True)
 
 
-# ── 九标准环节词表（§6.1 冻结——migration seed 同源）───────────────
+# ── 九标准环节词表（返修V3 批A: 降为默认种子——LLM 挂/语义派活失败时用）──
+# 不再是流程划分天花板；自由阶段名由 AI 临场合成，路由优先语义匹配。
 STANDARD_STAGES = (
     "项目理解", "需求基线", "解决方案", "原型设计", "架构设计",
     "开发实现", "测试验证", "交付打包", "使用文档", "misc",
 )
+DEFAULT_STAGE_SEED = STANDARD_STAGES  # 别名——验收文档用语
 
 # 别名表（§6.1 归一化第 2 步——seed 资产，扩词走 CR）
 STAGE_ALIASES = {
@@ -232,10 +234,10 @@ STAGE_ALIASES = {
 
 
 def normalize_stage(task_type: str | None) -> str:
-    """归一化三步（§6.1）: 精确等值 → 别名表 → misc。
+    """默认种子归一（返修V3 批A）: 精确等值 → 别名表 → misc。
 
-    V1.4b: 大小写不敏感（LLM 抽取英文文档产出 Project Understanding
-    等首字母大写形态——精确匹配恒 miss 落 misc）。
+    仅作语义派活失败/LLM 不可用时的亲和兜底——不再是主裁判。
+    V1.4b: 大小写不敏感。
     """
     if not task_type:
         return "misc"
@@ -249,10 +251,12 @@ def normalize_stage(task_type: str | None) -> str:
 
 
 class WorkerRegistry:
-    """Agent 实例注册与任务路由（§6.2 派发流程）。
+    """Agent 实例注册与任务路由（§6.2 + 返修V3 批A 语义派活）。
 
-    派发: 归一化 → stage_affinity 匹配 → IDLE 优先 → 插件需求过滤
-          → 无匹配返回 None（Controller 请求创建——批次 2）
+    派发: 语义 AI 从池内挑（role_description+plugins 自我介绍）
+          → 失败/AMBIGUOUS 退九词种子亲和
+          → IDLE 优先 → 插件需求过滤
+          → 无匹配返回 None（Controller 派生链承接）
     """
 
     def __init__(self, session: AsyncSession):
@@ -262,9 +266,10 @@ class WorkerRegistry:
     async def route(
         self, project_id: int, task_type: str | None,
         required_plugins: list[str] | None = None,
+        *,
+        task_content: str = "",
     ) -> AgentInstance | None:
-        """任务 → 候选 Agent（IDLE 优先；DEGRADED 冷却期满自动自愈）。"""
-        stage = normalize_stage(task_type)
+        """任务 → 候选 Agent（语义优先；种子亲和兜底）。"""
         stmt = (
             select(AgentInstance)
             .join(AgentDefinition, AgentInstance.definition_id == AgentDefinition.id)
@@ -276,31 +281,172 @@ class WorkerRegistry:
         instances = list(
             (await self._session.execute(stmt)).scalars().all()
         )
-        # DEGRADED 自愈尝试（冷却期满→IDLE——不影响本次路由判定）
         for inst in instances:
             if inst.status is AgentStatus.DEGRADED:
                 await self.fsm.try_recover(inst)
 
-        candidates: list[AgentInstance] = []
+        # 池内可用定义（插件过滤后）——语义派活候选集
+        pool: list[tuple[str, AgentInstance, AgentDefinition]] = []
         for inst in instances:
             d = await self._session.get(AgentDefinition, inst.definition_id)
             if d is None or not d.enabled:
                 continue
-            affinity = d.stage_affinity or []
-            if stage not in affinity and "misc" not in affinity:
-                continue
-            # 插件需求过滤（§6.2 第 3 步）
             if required_plugins:
                 have = set(d.plugins or [])
                 if not set(required_plugins).issubset(have):
                     continue
+            pool.append((d.agent_id, inst, d))
+
+        # 返修V3 批A-A2: 语义派活（只能挑池内；plugins 天花板在模板）
+        # 触发: ①自由阶段名归一成 misc（原「任务图构建」掉格）
+        #      ②调用方给了任务正文（执行链 bind 必带）
+        raw_tt = (task_type or "").strip()
+        seed_stage = normalize_stage(task_type)
+        need_semantic = bool(pool) and (
+            bool((task_content or "").strip())
+            or (
+                seed_stage == "misc"
+                and raw_tt not in ("", "default", "generic", "misc")
+            )
+        )
+        if need_semantic:
+            picked_id = await self._semantic_pick_agent(
+                pool, raw_tt, task_content,
+            )
+            if picked_id and picked_id != "AMBIGUOUS":
+                matched = [
+                    (inst, d) for aid, inst, d in pool if aid == picked_id
+                ]
+                if matched:
+                    idle = [
+                        (i, d) for i, d in matched
+                        if i.status in (AgentStatus.IDLE, AgentStatus.CREATED)
+                    ]
+                    return (idle or matched)[0][0]
+                # 幻觉 id — 决不编造，落入种子路径
+
+        # 默认种子亲和（九词表兜底）
+        stage = seed_stage
+        candidates: list[AgentInstance] = []
+        for _aid, inst, d in pool:
+            affinity = d.stage_affinity or []
+            if stage not in affinity and "misc" not in affinity:
+                continue
             candidates.append(inst)
         if not candidates:
             return None
-        # IDLE 优先（CREATED 其次——都算可用；BUSY/PAUSED/DEGRADED 不派）
-        idle = [c for c in candidates
-                if c.status in (AgentStatus.IDLE, AgentStatus.CREATED)]
-        return (idle or candidates)[0]
+        idle_c = [
+            c for c in candidates
+            if c.status in (AgentStatus.IDLE, AgentStatus.CREATED)
+        ]
+        return (idle_c or candidates)[0]
+
+    async def _semantic_pick_agent(
+        self,
+        pool: list[tuple[str, AgentInstance, AgentDefinition]],
+        task_type: str,
+        task_content: str,
+    ) -> str | None:
+        """AI 按任务内容+阶段语义从池内挑 agent_id；失败返回 None。
+
+        返回 "AMBIGUOUS" = 明确拿不准（A4——不硬选，交种子路径）。
+        """
+        try:
+            import asyncio
+
+            from project_runtime.llm import (
+                load_llm_settings,
+                normalize_model_for_gateway,
+            )
+            from project_runtime.llm.provider import llm_complete
+
+            cfg = load_llm_settings()
+            if not (cfg.base_url and cfg.api_key and cfg.model):
+                return None
+            model_id = normalize_model_for_gateway(cfg.model, cfg.base_url)
+
+            tools = []
+            for agent_id, _inst, d in pool:
+                role = (d.role_description or "")[:400]
+                plugs = ",".join(d.plugins or [])
+                aff = ",".join(d.stage_affinity or [])
+                tools.append({
+                    "type": "function",
+                    "function": {
+                        "name": f"agent_{agent_id}",
+                        "description": (
+                            f"name: {d.name}\n"
+                            f"role: {role}\n"
+                            f"plugins: {plugs}\n"
+                            f"stage_affinity: {aff}"
+                        )[:700],
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                })
+            # AMBIGUOUS 作为显式选项（A4）
+            tools.append({
+                "type": "function",
+                "function": {
+                    "name": "agent_AMBIGUOUS",
+                    "description": (
+                        "任务不属于池内任何已知工种/拿不准时调用——"
+                        "不要硬选"
+                    ),
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            })
+
+            allowed = {f"agent_{aid}" for aid, _, _ in pool} | {
+                "agent_AMBIGUOUS"
+            }
+            content = (
+                f"阶段/task_type: {task_type}\n"
+                f"任务内容: {(task_content or task_type)[:3000]}"
+            )
+
+            def _pick(resp) -> str | None:
+                msg = resp.choices[0].message
+                tcs = getattr(msg, "tool_calls", None) or []
+                raw = None
+                if tcs:
+                    raw = tcs[0].function.name
+                else:
+                    text = msg.content or ""
+                    for name in allowed:
+                        if name in text:
+                            raw = name
+                            break
+                if raw not in allowed:
+                    return None
+                return raw[len("agent_"):]
+
+            result = await asyncio.wait_for(
+                llm_complete(
+                    model=model_id,
+                    api_base=cfg.base_url,
+                    api_key=cfg.api_key,
+                    messages=[{
+                        "role": "user",
+                        "content": (
+                            f"{content}\n\n"
+                            "从智能体工具列表中选择最匹配该任务的一个"
+                            "（只能选列表中的；plugins 已固定不可扩展；"
+                            "都不合适请选 agent_AMBIGUOUS）。"
+                        ),
+                    }],
+                    tools=tools,
+                    tool_choice="auto",
+                    max_tokens=500,
+                    timeout=60,
+                ),
+                timeout=70,
+            )
+            if not result.get("ok"):
+                return None
+            return _pick(result["response"])
+        except Exception:  # noqa: BLE001 — 语义失败退种子
+            logger.debug("semantic agent pick failed", exc_info=True)
+            return None
 
     async def spawn(
         self, definition_id: int, project_id: int

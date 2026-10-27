@@ -71,20 +71,94 @@ class TestBackfillValidator:
         assert ".pptx" in r.message and "slide_generator" in r.message
 
     @pytest.mark.asyncio
-    async def test_real_pptx_passes(self, dbengine):
+    async def test_real_pptx_passes(self, dbengine, tmp_path):
+        """SYS-085: 合格 pptx（≥6 页、非空≥80%、封面有字）→ PASS。"""
+        from pptx import Presentation
+
         from project_runtime.reviewer.gate import (
             BackfillValidator,
             GateStatus,
         )
 
+        pptx_file = tmp_path / "方案汇报.pptx"
+        prs = Presentation()
+        cover = prs.slides.add_slide(prs.slide_layouts[0])
+        cover.shapes.title.text = "项目方案"
+        for i in range(6):
+            s = prs.slides.add_slide(prs.slide_layouts[1])
+            s.shapes.title.text = f"节{i+1}"
+            s.placeholders[1].text_frame.text = f"内容{i+1}"
+        prs.save(str(pptx_file))
+        pptx_path = str(pptx_file)
+        md_path = str(tmp_path / "out.md")
+
         class _A1:
             name = "方案汇报.pptx"
+            path = pptx_path
 
         class _A2:
             name = "交付补全-方案PPT_output.md"
+            path = md_path
 
         r = await BackfillValidator().validate(_mk_task(), [_A1(), _A2()])
-        assert r.status == GateStatus.PASS
+        assert r.status == GateStatus.PASS, r.message
+
+    @pytest.mark.asyncio
+    async def test_pptx_empty_shells_blocked(self, dbengine, tmp_path):
+        """SYS-085: 70页/大量空壳样本 → Gate FAIL + 可执行指引。"""
+        from pptx import Presentation
+
+        from project_runtime.reviewer.gate import (
+            BackfillValidator,
+            GateStatus,
+        )
+
+        pptx_file = tmp_path / "空壳.pptx"
+        prs = Presentation()
+        # 封面有字 + 大量空内容页（模拟炸页）
+        cover = prs.slides.add_slide(prs.slide_layouts[0])
+        cover.shapes.title.text = "空壳样例"
+        for _ in range(20):
+            s = prs.slides.add_slide(prs.slide_layouts[1])
+            s.shapes.title.text = ""
+        prs.save(str(pptx_file))
+        pptx_path = str(pptx_file)
+
+        class _A:
+            name = "空壳.pptx"
+            path = pptx_path
+
+        r = await BackfillValidator().validate(_mk_task(), [_A()])
+        assert r.status == GateStatus.FAIL, r.message
+        assert "非空" in r.message or "空" in r.message or "80%" in r.message
+        assert "slide_generator" in r.message
+
+    @pytest.mark.asyncio
+    async def test_pptx_too_few_pages_blocked(self, dbengine, tmp_path):
+        """SYS-085: 页数 < 6 → FAIL。"""
+        from pptx import Presentation
+
+        from project_runtime.reviewer.gate import (
+            BackfillValidator,
+            GateStatus,
+        )
+
+        pptx_file = tmp_path / "少页.pptx"
+        prs = Presentation()
+        for i in range(3):
+            s = prs.slides.add_slide(prs.slide_layouts[1])
+            s.shapes.title.text = f"页{i}"
+            s.placeholders[1].text_frame.text = "有字"
+        prs.save(str(pptx_file))
+        pptx_path = str(pptx_file)
+
+        class _A:
+            name = "少页.pptx"
+            path = pptx_path
+
+        r = await BackfillValidator().validate(_mk_task(), [_A()])
+        assert r.status == GateStatus.FAIL
+        assert "6" in r.message
 
     @pytest.mark.asyncio
     async def test_code_backfill_needs_readme(self, dbengine):

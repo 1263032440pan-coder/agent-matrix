@@ -229,6 +229,7 @@ class ExecutionRunner:
                     s, project_id, task_id,
                     task_type=task_type_snapshot,
                     task_contract=task_contract_snapshot,
+                    task_content=task_select_content or "",
                 )
                 await s.commit()
         except Exception:  # noqa: BLE001 — Agent 面绝不阻断执行
@@ -345,6 +346,7 @@ class ExecutionRunner:
                 WorkPackage(
                     task_id=task_id,
                     task_name=task_name,
+                    playbook_ref=task_playbook_ref_snapshot,
                     skill_context=skill_ctx,
                     # WP-031 binding trace
                     contract=context_json,
@@ -770,29 +772,33 @@ class ExecutionRunner:
 
 
 async def _delivery_closeout_check(project_id: int) -> None:
-    """V1.6 序5: 项目收口——三件基线 vs 产物事实, 缺件补建任务。
+    """V1.6c: 项目收口——按 delivery_manifest 缺件补建；无清单则 V1.6b 三件兜底。"""
+    import json as _json
+    from pathlib import Path
 
-    钩子化原则: 本函数只收集事实（artifact 扩展名/工作区文件）+
-    补建任务; "缺不缺/质量够不够"的最终判定在补建任务的收工自查
-    （delivery_tags 驱动, 标准在 skill《交付基线》）里闭环——本层
-    只做存在性检测（.pptx / 代码文件+README / 测试报告 md）。
-    """
-    from project_runtime.project_state.enums import TaskStatus
-    from project_runtime.project_state.models import (
-        Artifact,
+    from project_runtime.event import EventEngine, RuntimeEventType
+    from project_runtime.procedure.delivery_manifest import (
+        check_match,
+        validate_manifest,
+        workspace_file_names,
     )
+    from project_runtime.project_state.enums import TaskStatus
+    from project_runtime.project_state.models import Artifact
     from project_runtime.project_state.models import (
         Project as ProjectModel,
     )
     from project_runtime.project_state.models import (
         Task as TaskModel,
     )
+    from project_runtime.task_graph.manager import (
+        CreateTaskRequest,
+        TaskGraphManager,
+    )
 
     async with AsyncSession(engine) as session:
         proj = await session.get(ProjectModel, project_id)
-        if proj is None or proj.delivery_profile != "SOFTWARE_DEV":
+        if proj is None:
             return
-        # 残留检查: 有进行中任务不收口（REWORK 也在循环内）
         active = list(
             (
                 await session.execute(
@@ -809,7 +815,7 @@ async def _delivery_closeout_check(project_id: int) -> None:
         )
         if active:
             return
-        # 产物事实
+
         arts = list(
             (
                 await session.execute(
@@ -818,32 +824,66 @@ async def _delivery_closeout_check(project_id: int) -> None:
             ).scalars().all()
         )
         all_names = [a.name or "" for a in arts]
-        has_ppt = any(n.lower().endswith(".pptx") for n in all_names)
-        has_code = any(
-            n.lower().endswith((".py", ".js", ".ts"))
-            for n in all_names
-        ) and any(
-            n.lower().startswith("readme") for n in all_names
-        )
-        has_report = any(
-            "测试" in n and n.lower().endswith(".md") for n in all_names
-        )
-        missing: list[str] = []
-        if not has_ppt:
-            missing.append("ppt")
-        if not has_code:
-            missing.append("code")
-        if not has_report:
-            missing.append("test_report")
-        if not missing:
+        ws_root = Path(f"data/tasks/{project_id}")
+        if ws_root.exists():
+            all_names = list({*all_names, *workspace_file_names(ws_root)})
+
+        missing_items: list[dict] = []
+        manifest = None
+        if proj.delivery_manifest:
+            try:
+                manifest = validate_manifest(proj.delivery_manifest)
+            except Exception:  # noqa: BLE001
+                logger.debug("closeout manifest invalid", exc_info=True)
+                manifest = None
+
+        if manifest:
+            for d in manifest.get("deliverables") or []:
+                probs = check_match(all_names, d.get("match") or {})
+                if probs:
+                    missing_items.append({
+                        "id": d["id"],
+                        "name": d["name"],
+                        "fact": "；".join(probs),
+                        "deliverable_ids": [d["id"]],
+                        "delivery_tags": [],
+                        "task_type": "交付打包",
+                    })
+        elif proj.delivery_profile == "SOFTWARE_DEV":
+            # V1.6b 兜底（无动态清单时）
+            has_ppt = any(n.lower().endswith(".pptx") for n in all_names)
+            has_code = any(
+                n.lower().endswith((".py", ".js", ".ts"))
+                for n in all_names
+            ) and any(n.lower().startswith("readme") for n in all_names)
+            has_report = any(
+                "测试" in n and n.lower().endswith(".md") for n in all_names
+            )
+            legacy = [
+                ("ppt", "方案PPT", "项目 artifact 无 .pptx 文件",
+                 "交付打包"),
+                ("code", "可运行代码", "项目 artifact 无代码文件或 README",
+                 "开发实现"),
+                ("test_report", "测试报告",
+                 "项目 artifact 无含'测试'的 md 报告", "测试验证"),
+            ]
+            flags = {"ppt": has_ppt, "code": has_code,
+                     "test_report": has_report}
+            for tag, name, fact, tt in legacy:
+                if not flags[tag]:
+                    missing_items.append({
+                        "id": tag,
+                        "name": name,
+                        "fact": fact,
+                        "deliverable_ids": [],
+                        "delivery_tags": [tag],
+                        "task_type": tt,
+                    })
+        else:
             return
-        # 防死循环: 同缺失件的补建任务已存在 → 只发事件不再补
-        tag_names = {
-            "ppt": "交付补全-方案PPT",
-            "code": "交付补全-可运行代码",
-            "test_report": "交付补全-测试报告",
-        }
-        from project_runtime.event import EventEngine, RuntimeEventType
+
+        if not missing_items:
+            return
 
         existing = {
             t.name for t in
@@ -853,88 +893,60 @@ async def _delivery_closeout_check(project_id: int) -> None:
                 )
             )).scalars().all()
         }
-        task_type_map = {
-            "ppt": "交付打包",
-            "code": "开发实现",
-            "test_report": "测试验证",
-        }
-        facts = {
-            "ppt": "项目 artifact 无 .pptx 文件",
-            "code": "项目 artifact 无代码文件或 README",
-            "test_report": "项目 artifact 无含'测试'的 md 报告",
-        }
-        for tag in missing:
-            task_name = tag_names[tag]
+        created_ids: list[int] = []
+        mgr = TaskGraphManager(session)
+        for item in missing_items:
+            task_name = f"交付补全-{item['name']}"
             await EventEngine().record(
                 RuntimeEventType.RECONCILIATION_GAP,
                 project_id=project_id,
                 phase="CLOSEOUT",
-                message=f"三件基线缺件: {task_name}（{facts[tag]}）",
+                message=f"交付清单缺件: {task_name}（{item['fact']}）",
             )
             if task_name in existing:
-                continue  # 已补建过——防死循环（既有护栏语义）
-            # 补建任务（契约列事实; delivery_tags 让收工自查闭环质量判定）
-            import json as _json
-
-            contract = _json.dumps({
-                "delivery_tags": [tag],
-                "code_stage": tag in ("code", "test_report"),
-                "stage_outputs": (
-                    ["项目方案介绍 PPT"] if tag == "ppt"
-                    else ["入口文件", "功能模块", "测试文件", "README"]
-                    if tag == "code"
-                    else ["测试报告"]
-                ),
-                "gap_fact": facts[tag],
-                "基线": (
-                    "skill《交付基线》: PPT≥6页非空封面含项目名 / "
-                    "代码=src+tests+README+依赖 / 测试报告含范围结果统计结论"
-                ),
-            }, ensure_ascii=False)
-            from project_runtime.task_graph.manager import (
-                CreateTaskRequest,
-                TaskGraphManager,
-            )
-
-            mgr = TaskGraphManager(session)
+                continue
             t = await mgr.create_task(CreateTaskRequest(
                 project_id=project_id,
                 name=task_name,
-                task_type="交付打包",
+                task_type=item["task_type"],
             ))
             t.playbook_ref = _json.dumps({
-                "delivery_tags": [tag],
-                "code_stage": tag in ("code", "test_report"),
-                "stage_outputs": contract and [] or [],
+                "deliverable_ids": item["deliverable_ids"],
+                "delivery_tags": item["delivery_tags"],
+                "stage_outputs": [item["name"]],
             }, ensure_ascii=False)
-            # 需求/事实进 contract 字段（playbook_ref 只带 tags 供钩子消费）
             t.contract = (
-                f"交付补全任务。缺失事实：{facts[tag]}。"
-                "请按 skill《交付基线》完成该交付物——"
-                "PPT 用 slide_generator，代码用 file_rw 落盘 src/ tests/ README。"
+                f"交付补全任务。缺失事实：{item['fact']}。"
+                f"请产出「{item['name']}」并落盘到工作区。"
             )
-            # 返修单v2 P3: 补建任务 provision——按 task_type 保证有
-            # 环节匹配实例（交付打包→releaser/开发实现→coder/
-            # 测试验证→tester）, 思维链事件带归属, AgentPanel 可见
             try:
                 from project_runtime.worker.lifecycle import (
                     provision_after_plan,
                 )
 
                 await provision_after_plan(
-                    session, project_id, [task_type_map[tag]]
+                    session, project_id, [item["task_type"]]
                 )
-            except Exception:  # noqa: BLE001 — provision best-effort
+            except Exception:  # noqa: BLE001
                 logger.debug("backfill provision failed", exc_info=True)
             try:
                 await mgr.promote_to_ready(t.id)
-            except (ValueError, Exception):  # noqa: B001 — 无依赖可 READY
+            except (ValueError, Exception):  # noqa: B001
                 pass
+            created_ids.append(t.id)
         await session.commit()
         logger.info(
             "delivery closeout: project %d missing %s — 补建任务已创建",
-            project_id, missing,
+            project_id, [i["name"] for i in missing_items],
         )
+        for tid in created_ids:
+            try:
+                await ExecutionService().submit(project_id, tid)
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "backfill submit failed project=%s task=%s",
+                    project_id, tid, exc_info=True,
+                )
 
 
 # 返修单-闭环接线 P0-2: 后台 runner 强引用（防 GC 丢任务）

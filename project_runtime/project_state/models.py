@@ -54,6 +54,10 @@ class Project(Base):
     delivery_profile: Mapped[str | None] = mapped_column(
         String(32), nullable=True
     )
+    # V1.6c: 动态交付总清单 JSON（计划抽取；schema 见 delivery_manifest.py）
+    delivery_manifest: Mapped[str | None] = mapped_column(
+        Text, nullable=True
+    )
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )

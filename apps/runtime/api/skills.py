@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -46,11 +46,14 @@ def _serialize(sk) -> dict:
 
 
 @router.post("/import", status_code=201)
-async def import_skill_package(file: UploadFile):
-    """导入 ZIP Skill 包：安全校验（禁可执行/防穿越/大小限制）→ 注册进 Registry。
+async def import_skill_package(
+    file: UploadFile,
+    allow_executable: bool = Form(False),
+):
+    """导入 ZIP Skill 包：安全校验 → 注册进 Registry。
 
-    包结构（声明式）：SKILL.md（frontmatter: skill_id/name/version/skill_type/
-    description）+ 可选 references/*.md。校验失败即拒绝，不入库。
+    默认文本四防；allow_executable=true 启用 ADR-039 EXECUTION 层级
+    （.py/.sh + 提额；执行型包建议先过四闸再开此开关）。
     """
     if not (file.filename or "").lower().endswith(".zip"):
         raise HTTPException(400, "Only .zip skill packages are accepted")
@@ -69,8 +72,11 @@ async def import_skill_package(file: UploadFile):
         async with AsyncSession(engine) as session:
             importer = SkillPackageImporter(session)
             try:
-                sk = await importer.import_zip(tmp_path)
+                sk = await importer.import_zip(
+                    tmp_path, allow_executable=allow_executable,
+                )
                 result = _serialize(sk)
+                result["allow_executable"] = allow_executable
                 await session.commit()
                 return result
             except SkillImportError as e:

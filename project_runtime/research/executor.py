@@ -266,6 +266,39 @@ class WebResearchExecutor:
         if rec.status == "ANSWERED":
             return rec  # 五查幂等——已答不重做
 
+        # 返修V3 批B: 专用研究类型分派
+        if rec.research_kind == "SKILL_DISCOVERY":
+            from project_runtime.skills.discovery import (
+                execute_skill_discovery_record,
+            )
+
+            await execute_skill_discovery_record(self._session, research_id)
+            return await self._session.get(ResearchRecord, research_id)
+
+        if rec.research_kind == "METHODOLOGY_RESEARCH":
+            from project_runtime.skills.discovery import (
+                project_has_private_domain,
+                run_gpt_researcher,
+            )
+
+            if await project_has_private_domain(
+                self._session, rec.project_id,
+            ):
+                rec.summary = "PRIVATE 域跳过联网方法论研究"
+                rec.findings_json = json.dumps(
+                    {"stages": [], "skipped_private": True},
+                    ensure_ascii=False,
+                )
+                rec.status = "ANSWERED"
+                await self._session.flush()
+                return rec
+            report = await run_gpt_researcher(rec.question)
+            rec.summary = str(report.get("summary") or "")[:2000]
+            rec.findings_json = json.dumps(report, ensure_ascii=False)
+            rec.status = "ANSWERED"
+            await self._session.flush()
+            return rec
+
         results = await self._search(rec.question)
         if not results:
             logger.warning(

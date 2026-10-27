@@ -239,6 +239,7 @@ def _make_worker():
 
     w = LLMWorkerAdapter.__new__(LLMWorkerAdapter)
     w._max_tokens = 16000
+    w._current_agent = None  # __new__ 跳过 __init__——补齐 CoT 事件字段
     return w
 
 

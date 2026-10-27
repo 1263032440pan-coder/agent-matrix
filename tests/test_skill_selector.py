@@ -65,8 +65,34 @@ async def _seed(eng, skills: list[SkillDefinition]):
 
 
 @pytest.mark.asyncio
-async def test_single_candidate_direct_return(dbengine):
+async def test_single_candidate_direct_return(dbengine, monkeypatch):
+    """唯一候选仍走内容匹配；LLM 选中该 skill 时返回它。"""
     await _seed(dbengine, [_skill("only-one")])
+
+    class FakeMsg:
+        class _TC:
+            class _Fn:
+                name = "skill_only-one"
+            function = _Fn()
+        content = None
+        tool_calls = [_TC()]
+
+    class FakeResp:
+        choices = [type("C", (), {"message": FakeMsg()})()]
+
+    async def fake_llm(**_kw):
+        return {"ok": True, "response": FakeResp()}
+
+    monkeypatch.setattr(
+        "project_runtime.llm.provider.llm_complete", fake_llm,
+    )
+    from project_runtime import llm as llm_mod
+    monkeypatch.setattr(
+        llm_mod, "load_llm_settings",
+        lambda: type("C", (), {
+            "base_url": "http://x", "api_key": "k", "model": "m"})(),
+    )
+
     async with AsyncSession(dbengine) as s:
         sel = SkillSelector(s)
         picked = await sel.select(task_content="随便什么任务")

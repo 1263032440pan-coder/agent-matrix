@@ -204,18 +204,16 @@ async def test_commit_with_retry_audit_and_bound(dbengine, project_id):
             calls["n"] += 1
             if calls["n"] <= 2:
                 raise OperationalError("x", {}, Exception("database is locked"))
-            # undo the pending change before the real commit re-run
-            await s.rollback()
-            p2 = await s.get(Project, project_id)
-            p2.goal = "retry then succeed"
             await real_commit()
 
+        async def restage():
+            p2 = await s.get(Project, project_id)
+            p2.goal = "retry then succeed"
+
         reset_lock_audit()
-        # commit_with_retry calls session.rollback() on retry, which discards
-        # the pending change — so the flaky stub re-stages it before succeeding.
-        monkeypatch_commit = AsyncMock(side_effect=flaky_commit)
-        s.commit = monkeypatch_commit  # type: ignore[method-assign]
-        await commit_with_retry(s, context="flaky")
+        # rollback discards pending ORM writes — on_retry re-stages them.
+        s.commit = AsyncMock(side_effect=flaky_commit)  # type: ignore[method-assign]
+        await commit_with_retry(s, context="flaky", on_retry=restage)
         events = get_lock_audit()
         assert len(events) == 2
         assert all(e["context"] == "flaky" for e in events)

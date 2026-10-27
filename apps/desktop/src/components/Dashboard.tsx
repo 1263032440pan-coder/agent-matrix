@@ -1,7 +1,22 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { DashboardData } from '../api';
-import { fetchDashboard } from '../api';
+import { fetchDashboard, reclassifyDelivery } from '../api';
 import { ArtifactViewer } from './ArtifactViewer';
+
+function matchHint(match: Record<string, unknown> | null | undefined): string {
+  if (!match) return '';
+  const bits: string[] = [];
+  if (Array.isArray(match.ext) && match.ext.length) {
+    bits.push(`扩展名 ${match.ext.join('/')}`);
+  }
+  if (Array.isArray(match.name_contains) && match.name_contains.length) {
+    bits.push(`文件名含 ${match.name_contains.join('/')}`);
+  }
+  if (Array.isArray(match.any_name_prefix) && match.any_name_prefix.length) {
+    bits.push(`另需前缀 ${match.any_name_prefix.join('/')}`);
+  }
+  return bits.join('；');
+}
 
 const STATUS_COLORS: Record<string, string> = {
   ACCEPTED: '#52c41a',
@@ -286,21 +301,77 @@ export function Dashboard({ projectId, paused }: { projectId: number; paused?: b
               <p style={{ color: '#555', fontSize: 13, margin: 0 }}>
                 Task #{selected.id}
               </p>
+              <div
+                data-testid="required-deliverables"
+                style={{ marginTop: 10 }}
+              >
+                <div
+                  style={{
+                    fontSize: 12,
+                    fontWeight: 600,
+                    color: '#333',
+                    marginBottom: 4,
+                  }}
+                >
+                  要求产物
+                </div>
+                {(selected.required_deliverables?.length ?? 0) === 0 ? (
+                  <span style={{ color: '#999', fontSize: 13 }}>
+                    本节点无强制交付项（非交付环节或未分配清单）
+                  </span>
+                ) : (
+                  <ul
+                    style={{
+                      margin: 0,
+                      paddingLeft: 18,
+                      fontSize: 13,
+                      color: '#333',
+                    }}
+                  >
+                    {selected.required_deliverables!.map((d, i) => {
+                      const hint = matchHint(d.match);
+                      return (
+                        <li key={d.id ?? `${d.name}-${i}`}>
+                          {d.name}
+                          {hint ? (
+                            <span style={{ color: '#888', fontSize: 12 }}>
+                              {' '}
+                              — {hint}
+                            </span>
+                          ) : null}
+                        </li>
+                      );
+                    })}
+                  </ul>
+                )}
+              </div>
               {(() => {
                 const taskArts = data.artifacts.filter(
                   (a) => a.task_id === selected.id
                 );
                 return (
-                  <div style={{ marginTop: 8 }}>
+                  <div style={{ marginTop: 10 }}>
+                    <div
+                      style={{
+                        fontSize: 12,
+                        fontWeight: 600,
+                        color: '#333',
+                        marginBottom: 4,
+                      }}
+                    >
+                      已产出
+                    </div>
                     {taskArts.length === 0 ? (
                       <span style={{ color: '#999', fontSize: 13 }}>
-                        该任务暂无产物
+                        该任务暂无产物文件
                       </span>
                     ) : (
                       taskArts.map((a) => {
                         // V1.5a-1: 文件树缩进——logical_id 路径深度
                         const lid =
-                          (a as any).logical_artifact_id || a.name || '';
+                          (a as { logical_artifact_id?: string }).logical_artifact_id ||
+                          a.name ||
+                          '';
                         const depth = Math.max(
                           0, (lid.match(/\//g) || []).length - 1
                         );

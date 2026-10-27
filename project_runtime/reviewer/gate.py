@@ -105,6 +105,67 @@ def _relpath(p: str) -> str:
         return p
 
 
+def _pptx_quality_check(pptx_arts: list) -> str:
+    """返修单 V3 批D-D4: 读回 pptx 事实断言（零 AI）。
+
+    规则: 页数≥6、非空页占比≥80%、封面有字。
+    返回空串=通过；非空=可执行 FAIL 指引。
+    """
+    path = None
+    for a in pptx_arts:
+        p = getattr(a, "path", None) or ""
+        if p and os.path.exists(p):
+            path = p
+            break
+    if not path:
+        return (
+            "方案PPT: 有 .pptx 登记但文件不可读——请确认产物已落盘后"
+            "用 slide_generator 重生成（≥6 页、非空≥80%、封面有字）"
+        )
+    try:
+        from pptx import Presentation as _Pres
+
+        slides = list(_Pres(path).slides)
+    except Exception as e:  # noqa: BLE001
+        return (
+            f"方案PPT: 无法读回 {_relpath(path)}（{e}）——"
+            "请用 slide_generator 重生成合规大纲（每页一个 ##）"
+        )
+    n = len(slides)
+    if n < 6:
+        return (
+            f"方案PPT: 仅 {n} 页（要求≥6）——请用 slide_generator 按"
+            "`##` 一节一页重生成（建议 6-12 页，封面用 `#`）"
+        )
+    non_empty = sum(
+        1
+        for sl in slides
+        if any(
+            sh.has_text_frame and sh.text_frame.text.strip()
+            for sh in sl.shapes
+        )
+    )
+    ratio = non_empty / n if n else 0.0
+    if ratio < 0.8:
+        return (
+            f"方案PPT: 非空页 {non_empty}/{n}（占比 {ratio:.0%} < 80%）——"
+            "空壳页过多，请按一节一页大纲用 slide_generator 重生成"
+        )
+    cover_ok = bool(
+        slides
+        and any(
+            sh.has_text_frame and sh.text_frame.text.strip()
+            for sh in slides[0].shapes
+        )
+    )
+    if not cover_ok:
+        return (
+            "方案PPT: 封面无文字——请用 `# 项目名` 作封面后"
+            "经 slide_generator 重生成"
+        )
+    return ""
+
+
 class BuildValidator(Validator):
     """V0.1 placeholder — no real build step. Always PASS."""
 
@@ -155,11 +216,20 @@ class BackfillValidator(Validator):
         problems: list[str] = []
         for tag in tags:
             if tag == "ppt":
-                if not any(n.lower().endswith(".pptx") for n in names):
+                pptx_arts = [
+                    a for a in artifacts
+                    if (a.name or "").lower().endswith(".pptx")
+                ]
+                if not pptx_arts:
                     problems.append(
                         "方案PPT: 无 .pptx 文件——可用 slide_generator 生成"
                         "（不少于 6 页, 封面含项目名）"
                     )
+                else:
+                    # 返修单 V3 批D-D4: 读回断言（页数/非空占比/封面）
+                    q = _pptx_quality_check(pptx_arts)
+                    if q:
+                        problems.append(q)
             elif tag == "code":
                 has_code = any(
                     n.lower().endswith((".py", ".js", ".ts", ".java"))

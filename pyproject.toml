@@ -28,6 +28,10 @@ dev = [
     "ruff>=0.6",
     "httpx>=0.28",
 ]
+# 返修V3 批B-B4: GPT-Researcher 路线 A（可选——未装则方法论降级搜索+种子）
+optional-research = [
+    "gpt-researcher>=0.10",
+]
 
 [tool.ruff]
 target-version = "py312"
@@ -40,3 +44,6 @@ select = ["E", "F", "I", "N", "W"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "real_llm: allow live llm_complete (skip autouse stub in conftest)",
+]

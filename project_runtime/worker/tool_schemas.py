@@ -89,14 +89,23 @@ CODE_SEARCH_SCHEMA = {
 
 SLIDE_SCHEMA = {
     "description": (
-        "把 markdown 大纲生成 .pptx 演示文稿（python-pptx，标题页/"
-        "目录/内容/要点/结尾版式）。制作方案评审、原型说明、里程碑"
-        "汇报材料时使用。参数: markdown（大纲）, filename（workspace 已忽略——自动存任务工作区）。"
+        "把 markdown 大纲生成 .pptx 演示文稿（python-pptx）。"
+        "分页方言（对齐 markdown-pptx/md2pptx）：每页=一个 `##` 二级标题"
+        "+其下要点/段落；`#` 一级标题作封面；建议 6-12 页。"
+        "勿用表格、代码块或 `---` 作为正文结构（`---` 仅显式分页）。"
+        "参数: markdown（大纲）, filename（workspace 已忽略——自动存任务工作区）。"
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "markdown": {"type": "string", "description": "幻灯片大纲"},
+            "markdown": {
+                "type": "string",
+                "description": (
+                    "幻灯片大纲。格式：`# 封面标题`；每页用 `## 页标题` 起节，"
+                    "节下用 `- 要点` 或短段落；建议总共 6-12 页。"
+                    "避免表格、代码块；不要把 `---` 当装饰线（会分页）。"
+                ),
+            },
             "workspace": {"type": "string", "description": (
                 "已忽略——PPT 自动保存到当前任务工作区（无需传路径）"
             )},

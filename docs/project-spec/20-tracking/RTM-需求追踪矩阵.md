@@ -174,6 +174,8 @@ DOING
 | SYS-079 | slide_generator 事实返回：生成后返回页数/非空页数/含标题元数据（判定归模型） | Worker 工具 | V1.6 序4 | pptx 元数据（slides/non_empty_slides/has_title_text + stdout 提示语） | project_runtime/worker/tools.py | tests/test_worker_tools.py 20 passed | DONE（`e82a1f9`） |
 | SYS-080 | 项目收口对账钩子：末任务 ACCEPTED + SOFTWARE_DEV → 三件 vs artifact 全集，缺件补建任务；新增 RuntimeEventType.RECONCILIATION_GAP 枚举 | 收口对账 | V1.6 序5 | RECONCILIATION_GAP 事件 + _delivery_closeout_check | service.py + event/models.py | tests/test_delivery_hooks.py（收口补建/防死循环/NOT_SOFTWARE 对照 4 用例） | DONE（`e82a1f9`） |
 | SYS-081 | UI：项目卡片"软件开发需求"标识 + NOT_SOFTWARE 重新判定入口 + 三件状态行 | Desktop UI | V1.6 序6 | delivery_profile/delivery_status + POST reclassify-delivery | Dashboard.tsx 交付基线区 + api.ts | 前端 tsc 零错 + vitest 25 passed | DONE（`e82a1f9`） |
+| SYS-096 | V1.6c：计划期 LLM 抽取 `delivery_manifest`（结构化 JSON+match 白名单）；非法 → `DELIVERY_MANIFEST_INVALID` 422 + 事件 + 桌面 toast；中止本轮任务图 | Delivery Manifest | V1.6c | Project.delivery_manifest + migration c8e1f2a3b4d5 + `/plan` `_extract_manifest` | procedure/delivery_manifest.py + api/projects.py + api.ts + ProjectActions.tsx | tests/test_delivery_manifest.py | DONE（2026-10-27） |
+| SYS-097 | V1.6c：任务 `deliverable_ids` 子集 + Claude Stop match 硬闸（≤3 返工→FAILED）；收口按总清单缺件补建+submit；无清单时 V1.6b tags 兜底 | Worker/Closeout | V1.6c | playbook_ref.deliverable_ids + `_delivery_stop_problems` + closeout match | planner.py + llm_worker.py + execution/service.py | test_delivery_manifest + test_delivery_stop_gate + test_delivery_hooks/backfill | DONE（2026-10-27） |
 
 ### 本批追踪说明
 
@@ -182,3 +184,36 @@ DOING
 - 剩余实测项（不阻塞 DONE 判定，代码与单测已锚定）：迷你待办 CLI 全链真跑（验收清单第 8 条）与 UI 重新判定入口手动验证——待应用重启后执行。
 - SYS-071 硬门：启用决策权在用户（自觉率 25% 数据已交），拍板后新增追踪项。
 - 更新时间：2026-10-22（V1.6 序 0-7 全部完成，`e82a1f9` 提交推送后终态）。
+
+## 链路四段问题综合治理（返修单 V3）追踪项
+
+> 依据：`返修单-链路四段问题综合治理方案V3.md`（定稿 2026-10-26）。
+> 批次顺序：批 D → 批 A → 批 B → 批 C；Coding Agent 只更新代码/测试/状态列。
+> 拍板锁定：全自动安装四闸 / bwrap 沙箱 / 流程 AI 合成（九词降种子）/ PPT 抄 md2pptx /
+> GPT-Researcher 路线 A / 闸3 ≥1000 star+90 天活跃 / 不考虑省 AI 成本。
+
+| ID | 需求/能力 | 架构模块 | 开发 WP | API/协议 | 代码 | 测试 | 状态 |
+|---|---|---|---|---|---|---|---|
+| SYS-082 | 批D-D1：slide_generator 按节建页（`##` 起节、节内归并、`---` 显式分页；对齐 md2pptx；一级标题封面） | Worker 工具 | 返修V3 批D | slide_generator 分页语义 | project_runtime/worker/tools.py | tests/test_worker_tools.py::TestSlideGeneratorV3BatchD | DONE（2026-10-26） |
+| SYS-083 | 批D-D2：SLIDE_SCHEMA 写明输入方言（每页=`##`+要点；拒表格/代码块/`---` 作内容；建议 6–12 页；对齐 markdown-pptx 约束） | Worker Schema | 返修V3 批D | SLIDE_SCHEMA | project_runtime/worker/tool_schemas.py | tests/test_worker_tools.py::test_schema_teaches_slide_dialect | DONE（2026-10-26） |
+| SYS-084 | 批D-D3：二级标题数 vs 实际页数偏差>2 倍 → stdout 追加归因提示（事实陈述，判定归模型） | Worker 工具 | 返修V3 批D | stdout 归因 | project_runtime/worker/tools.py | tests/test_worker_tools.py::test_skew_hint_when_pages_explode | DONE（2026-10-26） |
+| SYS-085 | 批D-D4：Gate PPT 读回断言（页数≥6、非空占比≥80%、封面有字；不满足打回+可执行指引；零 AI） | Gate | 返修V3 批D | BackfillValidator ppt 升级 | project_runtime/reviewer/gate.py | tests/test_backfill_gate.py（质量三用例） | DONE（2026-10-26） |
+| SYS-086 | 批A-A1：规划器 AI 临场合成自由命名阶段清单（skill+材料+研究为参考书；九词表降默认种子；schema+依赖环校验） | Dynamic Planner | 返修V3 批A | extractor stage 自由命名 | procedure/llm_extractor.py | tests/test_v3_batch_a.py::TestA1* | DONE（2026-10-26） |
+| SYS-087 | 批A-A2：派活语义分配（按任务+阶段从池内模板挑；plugins 天花板在模板字段；不可编造智能体） | Scheduler/Worker Routing | 返修V3 批A | WorkerRegistry 语义 route | worker/registry.py + lifecycle + execution/service | tests/test_v3_batch_a.py::TestA2* | DONE（2026-10-26） |
+| SYS-088 | 批A-A4/A5：misc=AI 主动判定非已知工种；selector 引导词改中性 PROJECT_METHOD（清偏置） | Skill Selector / Routing | 返修V3 批A | AMBIGUOUS 选项 + 中性 extra_context | skill_planning.py + registry._semantic_pick | tests/test_v3_batch_a.py（A5+AMBIGUOUS） | DONE（2026-10-26） |
+| SYS-089 | 批B-B1：selector 全池不匹配 → SKILL_GAP 进 pending_requests（与 REQUEST_RESEARCH 同构；事件留痕，禁静默） | Skill / Event | 返修V3 批B | SKILL_GAP 事件+研究单 | skills/discovery.emit_skill_gap + skill_planning | tests/test_v3_batch_b.py::TestB1* | DONE（2026-10-26） |
+| SYS-090 | 批B-B2：research_type=SKILL_DISCOVERY；只搜 SKILL.md 元数据（agentskills.io）；PRIVATE 零外发 | Research | 返修V3 批B | SKILL_DISCOVERY | skills/discovery + research/executor | tests/test_v3_batch_b.py::TestB2* | DONE（2026-10-26） |
+| SYS-091 | 批B-B3：候选 skill → 批C 四闸全自动安装；全拒/无结果 → REQUEST_USER_INPUT | Skill Discovery→Install | 返修V3 批B/C | auto_install 钩子（C 前 fail-closed） | skills/discovery.route_discovery_candidates | tests/test_v3_batch_b.py::TestB3* | DONE（2026-10-26；闸体待批C） |
+| SYS-092 | 批B-B4：METHODOLOGY_RESEARCH + GPT-Researcher 库嵌入 Provider；结构化流程报告喂规划器（批A-A3） | Research Provider | 返修V3 批B | gpt-researcher 可选+降级 | skills/discovery + playbook/_methodology_stages | tests/test_v3_batch_b.py::TestB4* | DONE（2026-10-26） |
+| SYS-093 | 批C：四闸全自动安装（bandit+pip-audit / bwrap 冒烟 / GitHub 信任 / hash+venv+白名单）；无人工确认队列 | Skill Install Sandbox | 返修V3 批C | SkillSandbox + 四闸 | skills/install_gates.py + sandbox.py | tests/test_v3_batch_c.py::TestFourGates | DONE（2026-10-26） |
+| SYS-094 | 批C：importer EXECUTION 层级（allow_executable / 100MB·300 文件）；默认文本路径四防零回归；立 ADR-039 | Skill Importer | 返修V3 批C | EXECUTION 层级 + ADR-039 | skills/importer.py + ADR-039 | tests/test_v3_batch_c.py::TestExecutionImporter | DONE（2026-10-26） |
+| SYS-095 | 批C：运行面接线（资产只读目录/脚本白名单/venv 绑定）；ppt-master 优先、不可用退内置 slide_generator | Worker/Skill Runtime | 返修V3 批C | 双层 PPT 兜底 | tools.py 白名单 + ppt_fallback.py | tests/test_v3_batch_c.py（Shell+PPT） | DONE（2026-10-26） |
+
+### V3 追踪说明
+
+- SYS-082~085（批 D）**已交付**（2026-10-26）：按节建页 + Schema 方言 + 偏斜归因 + Gate 读回断言；相关 14 用例绿。
+- SYS-086~088（批 A）**已交付**（2026-10-26）：extractor 自由阶段命名；语义派活+AMBIGUOUS；selector 中性引导；九词降种子亲和兜底；test_v3_batch_a + 路由回归 24 passed。
+- SYS-089~092（批 B）**已交付**（2026-10-26）：SKILL_GAP 事件+研究单；SKILL_DISCOVERY；安装钩子→四闸；METHODOLOGY_RESEARCH+Playbook 消费。
+- SYS-093~095（批 C）**已交付**（2026-10-26）：四闸（AST/bwrap SKIP/信任/落盘）+ EXECUTION 导入 + ADR-039 + shell 脚本白名单 + ppt-master 兜底；test_v3_batch_c + 回归 30 passed。
+- 返修单 V3 四批（D/A/B/C）RTM SYS-082~095 全部 DONE。
+- 更新时间：2026-10-26（V3 四批收口）。

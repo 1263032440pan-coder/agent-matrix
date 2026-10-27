@@ -27,8 +27,12 @@ logger = logging.getLogger(__name__)
 
 ALLOWED_EXTENSIONS = {".md", ".yaml", ".yml", ".json", ".txt"}
 EXECUTABLE_EXTENSIONS = {".py", ".sh", ".ps1", ".bat", ".exe", ".dll", ".so", ".com"}
+# 返修V3 批C / ADR-039: EXECUTION 层级允许的脚本扩展（仍拒 .exe/.dll）
+EXECUTION_ALLOWED_EXTRA = {".py", ".sh"}
 MAX_FILES = 100
 MAX_PACKAGE_BYTES = 10 * 1024 * 1024  # 10MB
+MAX_FILES_EXECUTION = 300
+MAX_PACKAGE_BYTES_EXECUTION = 100 * 1024 * 1024  # 100MB
 
 REQUIRED_FRONTMATTER = ("skill_id", "name", "version", "skill_type", "description")
 
@@ -54,12 +58,22 @@ def _validate_relpath(relpath: str) -> None:
         raise SkillImportError(f"Path traversal rejected: {relpath}")
 
 
-def _validate_file(relpath: str, data: bytes) -> None:
+def _validate_file(
+    relpath: str, data: bytes, *, allow_executable: bool = False,
+) -> None:
     ext = Path(relpath).suffix.lower()
-    if ext in EXECUTABLE_EXTENSIONS:
-        raise SkillImportError(f"Executable content forbidden: {relpath}")
-    if ext not in ALLOWED_EXTENSIONS:
-        raise SkillImportError(f"File type not allowed: {relpath}")
+    if allow_executable:
+        # ADR-039 EXECUTION: 允许 .py/.sh；仍拒二进制可执行
+        hard_ban = EXECUTABLE_EXTENSIONS - EXECUTION_ALLOWED_EXTRA
+        if ext in hard_ban:
+            raise SkillImportError(f"Executable content forbidden: {relpath}")
+        if ext not in ALLOWED_EXTENSIONS and ext not in EXECUTION_ALLOWED_EXTRA:
+            raise SkillImportError(f"File type not allowed: {relpath}")
+    else:
+        if ext in EXECUTABLE_EXTENSIONS:
+            raise SkillImportError(f"Executable content forbidden: {relpath}")
+        if ext not in ALLOWED_EXTENSIONS:
+            raise SkillImportError(f"File type not allowed: {relpath}")
     try:
         data.decode("utf-8")
     except UnicodeDecodeError as e:
@@ -95,11 +109,20 @@ class SkillPackageImporter:
         self._registry = SkillRegistry(session)
 
     async def import_directory(
-        self, path: str, source: SkillSource = SkillSource.USER
+        self,
+        path: str,
+        source: SkillSource = SkillSource.USER,
+        *,
+        allow_executable: bool = False,
     ) -> SkillDefinition:
+        """导入目录。默认文本四防；allow_executable=True 启用 ADR-039 EXECUTION。"""
         root = Path(path)
         if not root.is_dir():
             raise SkillImportError(f"Not a directory: {path}")
+        max_files = MAX_FILES_EXECUTION if allow_executable else MAX_FILES
+        max_bytes = (
+            MAX_PACKAGE_BYTES_EXECUTION if allow_executable else MAX_PACKAGE_BYTES
+        )
         files: dict[str, bytes] = {}
         count = 0
         total = 0
@@ -109,21 +132,29 @@ class SkillPackageImporter:
             if not f.is_file():
                 continue
             count += 1
-            if count > MAX_FILES:
-                raise SkillImportError(f"Package exceeds {MAX_FILES} files")
+            if count > max_files:
+                raise SkillImportError(f"Package exceeds {max_files} files")
             data = f.read_bytes()
             total += len(data)
-            if total > MAX_PACKAGE_BYTES:
+            if total > max_bytes:
                 raise SkillImportError("Package exceeds size limit")
             rel = f.relative_to(root).as_posix()
             _validate_relpath(rel)
-            _validate_file(rel, data)
+            _validate_file(rel, data, allow_executable=allow_executable)
             files[rel] = data
         return await self._register(files, package_ref=str(root), source=source)
 
     async def import_zip(
-        self, path: str, source: SkillSource = SkillSource.USER
+        self,
+        path: str,
+        source: SkillSource = SkillSource.USER,
+        *,
+        allow_executable: bool = False,
     ) -> SkillDefinition:
+        max_files = MAX_FILES_EXECUTION if allow_executable else MAX_FILES
+        max_bytes = (
+            MAX_PACKAGE_BYTES_EXECUTION if allow_executable else MAX_PACKAGE_BYTES
+        )
         files: dict[str, bytes] = {}
         total = 0
         try:
@@ -134,8 +165,8 @@ class SkillPackageImporter:
             ) from e
         with zf_ctx as zf:
             infos = zf.infolist()
-            if len(infos) > MAX_FILES:
-                raise SkillImportError(f"Package exceeds {MAX_FILES} files")
+            if len(infos) > max_files:
+                raise SkillImportError(f"Package exceeds {max_files} files")
             for info in infos:
                 # Symlink check: unix mode high bits
                 if (info.external_attr >> 16) & 0o120000 == 0o120000:
@@ -146,9 +177,9 @@ class SkillPackageImporter:
                 _validate_relpath(rel)
                 data = zf.read(info)
                 total += len(data)
-                if total > MAX_PACKAGE_BYTES:
+                if total > max_bytes:
                     raise SkillImportError("Package exceeds size limit")
-                _validate_file(rel, data)
+                _validate_file(rel, data, allow_executable=allow_executable)
                 files[rel] = data
         return await self._register(files, package_ref=str(path), source=source)
 

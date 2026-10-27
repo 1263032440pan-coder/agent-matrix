@@ -93,6 +93,17 @@ class PlaybookBuilder:
                     "%d user nodes mapped) — project=%d",
                     len(stages), len(nodes), project_id,
                 )
+            else:
+                # 返修V3 批B-B4/A3: 无 skill 时消费 METHODOLOGY_RESEARCH 阶段报告
+                meth = await self._methodology_stages(project_id)
+                if meth:
+                    workstreams = map_nodes_to_stages(meth, nodes)
+                    skill_skeleton_applied = True
+                    logger.info(
+                        "Playbook: methodology research skeleton (%d stages) "
+                        "— project=%d",
+                        len(meth), project_id,
+                    )
         if workstreams is None:
             workstreams = self._build_workstreams(nodes, assets, gaps)
 
@@ -313,6 +324,42 @@ class PlaybookBuilder:
             }
             for r in records
         ]
+
+    async def _methodology_stages(self, project_id: int) -> list[dict] | None:
+        """返修V3 批B-B4: ANSWERED METHODOLOGY_RESEARCH → skill 骨架同构 stages。"""
+        from project_runtime.research.models import ResearchRecord
+        from project_runtime.skills.discovery import KIND_METHODOLOGY
+
+        stmt = (
+            select(ResearchRecord)
+            .where(
+                ResearchRecord.project_id == project_id,
+                ResearchRecord.research_kind == KIND_METHODOLOGY,
+                ResearchRecord.status == "ANSWERED",
+            )
+            .order_by(ResearchRecord.id.desc())
+            .limit(1)
+        )
+        rec = (await self._session.execute(stmt)).scalar_one_or_none()
+        if rec is None or not rec.findings_json:
+            return None
+        try:
+            data = json.loads(rec.findings_json)
+        except ValueError:
+            return None
+        stages_raw = data.get("stages") or []
+        if not isinstance(stages_raw, list) or not stages_raw:
+            return None
+        out: list[dict] = []
+        for st in stages_raw:
+            if isinstance(st, dict) and st.get("name"):
+                out.append({
+                    "name": str(st["name"]),
+                    "expected_outputs": list(st.get("outputs") or []),
+                })
+            elif isinstance(st, str) and st.strip():
+                out.append({"name": st.strip(), "expected_outputs": []})
+        return out or None
 
     async def _get_skill_refs(self, project_id: int) -> list[dict]:
         """ENABLED PROJECT_METHOD skill bindings -> reference records.

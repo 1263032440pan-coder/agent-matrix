@@ -5,7 +5,19 @@ export interface DashboardData {
     status: string;
     automation_mode: string;
   };
-  tasks: Array<{ id: number; name: string; status: string; depends_on?: number[] }>;
+  tasks: Array<{
+    id: number;
+    name: string;
+    status: string;
+    depends_on?: number[];
+    /** V1.6c: 该节点被要求的产物（计划清单子集 / tags / stage_outputs） */
+    required_deliverables?: Array<{
+      id: string | null;
+      name: string;
+      match?: Record<string, unknown> | null;
+    }>;
+    stage_outputs?: string[];
+  }>;
   current_task: { id: number; name: string } | null;
   worker_status: { running: number; ready: number };
   // V1.6 序6: 交付画像 + 三件状态
@@ -161,13 +173,51 @@ export async function uploadMethodAsset(
   return resp.json();
 }
 
+export class PlanningError extends Error {
+  errorCode?: string;
+  constructor(message: string, errorCode?: string) {
+    super(message);
+    this.name = 'PlanningError';
+    this.errorCode = errorCode;
+  }
+}
+
 export async function runPlanning(
   projectId: number
 ): Promise<{ model_id: number; gaps: number; tasks: number }> {
   const resp = await fetch(`${API_BASE}/api/projects/${projectId}/plan`, {
     method: 'POST',
   });
-  if (!resp.ok) throw new Error(`Planning failed: ${resp.status}`);
+  if (!resp.ok) {
+    let detail: unknown = null;
+    try {
+      detail = await resp.json();
+    } catch {
+      /* ignore */
+    }
+    const body =
+      detail && typeof detail === 'object' && 'detail' in detail
+        ? (detail as { detail: unknown }).detail
+        : detail;
+    if (
+      body &&
+      typeof body === 'object' &&
+      (body as { error_code?: string }).error_code ===
+        'DELIVERY_MANIFEST_INVALID'
+    ) {
+      const msg =
+        (body as { message?: string }).message ||
+        '交付清单 JSON 校验失败';
+      throw new PlanningError(msg, 'DELIVERY_MANIFEST_INVALID');
+    }
+    const fallback =
+      typeof body === 'string'
+        ? body
+        : body && typeof body === 'object' && 'message' in body
+          ? String((body as { message: unknown }).message)
+          : `Planning failed: ${resp.status}`;
+    throw new PlanningError(fallback);
+  }
   return resp.json();
 }
 
@@ -249,9 +299,14 @@ export interface SkillQuery {
   status?: string;
 }
 
-export async function importSkillPackage(file: File): Promise<SkillInfo> {
+export async function importSkillPackage(
+  file: File,
+  opts?: { allow_executable?: boolean },
+): Promise<SkillInfo> {
   const form = new FormData();
   form.append('file', file);
+  // ADR-039: 默认 false——执行型包显式放行
+  form.append('allow_executable', opts?.allow_executable ? 'true' : 'false');
   const resp = await fetch(`${API_BASE}/api/skills/import`, {
     method: 'POST',
     body: form,

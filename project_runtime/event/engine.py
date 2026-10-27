@@ -63,27 +63,37 @@ class EventEngine:
         # Truncate: keep the event row small for SSE frames & list queries.
         if message and len(message) > 120:
             message = message[:120] + "…"
-        ev = RuntimeEvent(
-            event_type=event_type.value,
-            project_id=project_id,
-            task_id=task_id,
-            execution_id=execution_id,
-            phase=phase,
-            message=message,
-            actor=actor,
-            correlation_id=correlation_id,
-            causation_id=causation_id,
-            payload=json.dumps(payload, ensure_ascii=False) if payload else None,
+        payload_json = (
+            json.dumps(payload, ensure_ascii=False) if payload else None
         )
         try:
             async with self._session() as session:
-                session.add(ev)
-                await session.flush()
-                event_id = ev.id  # capture before commit expires the object
+                event_id_box: dict[str, int | None] = {"id": None}
+
+                async def _stage() -> None:
+                    ev = RuntimeEvent(
+                        event_type=event_type.value,
+                        project_id=project_id,
+                        task_id=task_id,
+                        execution_id=execution_id,
+                        phase=phase,
+                        message=message,
+                        actor=actor,
+                        correlation_id=correlation_id,
+                        causation_id=causation_id,
+                        payload=payload_json,
+                    )
+                    session.add(ev)
+                    await session.flush()
+                    event_id_box["id"] = ev.id
+
+                await _stage()
                 await short_tx.commit_with_retry(
-                    session, context=f"event.{event_type.value}"
+                    session,
+                    context=f"event.{event_type.value}",
+                    on_retry=_stage,
                 )
-                return event_id
+                return event_id_box["id"]
         except Exception as e:  # noqa: BLE001 — progress trail is best-effort
             logger.error("Event record failed (%s): %s", event_type.value, e)
             return None

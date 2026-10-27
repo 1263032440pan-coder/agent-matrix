@@ -200,4 +200,6 @@ class TestPlannerTaskTypeChain:
         from project_runtime.procedure.llm_extractor import _PROMPT
 
         assert '"stage"' in _PROMPT
-        assert "九选一" in _PROMPT
+        # 返修V3 批A: 推翻九选一——自由命名 + 九词仅默认种子
+        assert "九选一" not in _PROMPT
+        assert "默认种子" in _PROMPT or "临场" in _PROMPT

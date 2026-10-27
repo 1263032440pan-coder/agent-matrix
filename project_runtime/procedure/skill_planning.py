@@ -100,16 +100,32 @@ async def read_skill_stages(
             sk = await SkillSelector(session).select(
                 task_content=content,
                 skill_type=SkillType.PROJECT_METHOD,
-                extra_context="生成项目流程计划：需要软件项目交付方法类 skill",
+                # 返修V3 批A-A5: 中性引导——防多 skill 时代被『软件交付』带偏
+                extra_context=(
+                    "生成项目流程计划：选择最匹配项目内容的 PROJECT_METHOD skill"
+                ),
             )
             if sk is not None and not (sk.stages or "").strip():
                 # 选中的 skill 没有 stages 元数据 — 用不了
-                return None
+                sk = None
         except Exception:  # noqa: BLE001 — 自动选择失败不阻断规划
             logger.debug("LLM skill auto-select failed", exc_info=True)
-            return None
+            sk = None
 
     if sk is None:
+        # 返修V3 批B-B1: 禁静默——发 SKILL_GAP（事件+研究单）
+        try:
+            from project_runtime.skills.discovery import emit_skill_gap
+
+            content = doc_text or await _project_doc_text(session, project_id)
+            await emit_skill_gap(
+                session,
+                project_id,
+                domain_summary=content[:800] or f"project:{project_id}",
+                skill_type="PROJECT_METHOD",
+            )
+        except Exception:  # noqa: BLE001 — 信号失败仍不阻断规划
+            logger.debug("emit SKILL_GAP failed", exc_info=True)
         return None
 
     # 解析 stages/expected_outputs（skill 是可选增强，绝不阻断）

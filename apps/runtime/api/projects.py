@@ -485,6 +485,66 @@ async def run_planning(project_id: int):
             "skill_available": skill_available,
         }
 
+    async def _extract_manifest(session: AsyncSession):
+        """V1.6c: 材料+skill → 项目 delivery_manifest；非法 JSON → 422 toast。"""
+        import json as _json
+
+        from project_runtime.event import EventEngine, RuntimeEventType
+        from project_runtime.procedure.delivery_manifest import (
+            DeliveryManifestError,
+            extract_manifest_from_materials,
+        )
+        from project_runtime.procedure.skill_planning import (
+            _project_doc_text,
+        )
+
+        project = await session.get(Project, project_id)
+        if project is None:
+            raise HTTPException(404, "Project not found")
+        materials = await _project_doc_text(session, project_id)
+        if not (materials or "").strip():
+            project.delivery_manifest = None
+            return {"delivery_manifest": None, "deliverables": 0}
+        skill_hint = ""
+        if project.delivery_profile == "SOFTWARE_DEV":
+            skill_hint = (
+                "软件开发交付常含：方案介绍 PPT（.pptx）、"
+                "可运行代码（源码+README）、测试报告（文件名含「测试」的 .md）。"
+                "请按材料实际要求增减，不要编造材料未要求的项。"
+            )
+        try:
+            man = await extract_manifest_from_materials(
+                materials_text=materials,
+                skill_hint=skill_hint,
+            )
+        except DeliveryManifestError as e:
+            try:
+                await EventEngine().record(
+                    RuntimeEventType.DELIVERY_MANIFEST_INVALID,
+                    project_id=project_id,
+                    phase="PLAN",
+                    message=e.message,
+                    payload={"error_code": e.error_code},
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug("emit DELIVERY_MANIFEST_INVALID failed",
+                             exc_info=True)
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "ok": False,
+                    "error_code": e.error_code,
+                    "message": e.message,
+                },
+            ) from e
+        project.delivery_manifest = _json.dumps(
+            man, ensure_ascii=False,
+        )
+        return {
+            "delivery_manifest": "ok",
+            "deliverables": len(man.get("deliverables") or []),
+        }
+
     async def _build(session: AsyncSession):
         playbook = await PlaybookBuilder(session).build(project_id)
         return {"playbook_id": playbook.id}
@@ -509,6 +569,7 @@ async def run_planning(project_id: int):
     try:
         result.update(await _stage(_clear_old_plan))
         result.update(await _stage(_normalize))
+        result.update(await _stage(_extract_manifest))
         result.update(await _stage(_assess))
         result.update(await _stage(_classify))
         result.update(await _stage(_resolve))
@@ -749,12 +810,28 @@ async def project_dashboard(project_id: int, session: AsyncSession = Depends(get
     deps_by_task: dict[int, list[int]] = {}
     for d in dep_rows:
         deps_by_task.setdefault(d.task_id, []).append(d.depends_on_id)
+    # V1.6c: 解析项目总清单，供节点「要求产物」展示
+    manifest = None
+    if project.delivery_manifest:
+        try:
+            from project_runtime.procedure.delivery_manifest import (
+                validate_manifest,
+            )
+
+            manifest = validate_manifest(project.delivery_manifest)
+        except Exception:  # noqa: BLE001
+            logger.debug("dashboard manifest parse failed", exc_info=True)
+            manifest = None
     task_list = [
         {
             "id": t.id,
             "name": t.name,
             "status": t.status.value,
             "depends_on": deps_by_task.get(t.id, []),
+            "required_deliverables": _required_deliverables_of(
+                t.playbook_ref, manifest
+            ),
+            "stage_outputs": _stage_outputs_of(t.playbook_ref),
         }
         for t in tasks
     ]
@@ -907,6 +984,85 @@ async def project_dashboard(project_id: int, session: AsyncSession = Depends(get
         # WP-018: current frontier (READY task ids — 可推进边界高亮)
         "frontier": [t.id for t in tasks if t.status.value == "READY"],
     }
+
+
+_TAG_LABELS = {
+    "ppt": "方案PPT",
+    "code": "可运行代码",
+    "test_report": "测试报告",
+}
+
+
+def _parse_playbook_ref(playbook_ref: str | None) -> dict:
+    if not playbook_ref:
+        return {}
+    try:
+        data = json.loads(playbook_ref)
+        return data if isinstance(data, dict) else {}
+    except (ValueError, TypeError):
+        return {}
+
+
+def _stage_outputs_of(playbook_ref: str | None) -> list[str]:
+    ref = _parse_playbook_ref(playbook_ref)
+    outs = ref.get("stage_outputs") or []
+    return [str(x) for x in outs if x]
+
+
+def _required_deliverables_of(
+    playbook_ref: str | None, manifest: dict | None
+) -> list[dict]:
+    """任务被要求的产物（优先 deliverable_ids → tags → stage_outputs）。"""
+    ref = _parse_playbook_ref(playbook_ref)
+    by_id: dict = {}
+    if manifest:
+        by_id = {d["id"]: d for d in (manifest.get("deliverables") or [])}
+
+    items: list[dict] = []
+    ids = [str(x) for x in (ref.get("deliverable_ids") or []) if x]
+    if not ids and manifest:
+        tags = list(ref.get("delivery_tags") or [])
+        if tags:
+            from project_runtime.procedure.delivery_manifest import (
+                map_legacy_tags_to_ids,
+            )
+
+            ids = map_legacy_tags_to_ids(manifest, tags)
+
+    for did in ids:
+        d = by_id.get(did)
+        if d:
+            items.append({
+                "id": did,
+                "name": d.get("name") or did,
+                "match": d.get("match"),
+            })
+        else:
+            items.append({"id": did, "name": did, "match": None})
+
+    if not items:
+        for tag in ref.get("delivery_tags") or []:
+            items.append({
+                "id": str(tag),
+                "name": _TAG_LABELS.get(str(tag), str(tag)),
+                "match": None,
+            })
+
+    if not items:
+        for so in ref.get("stage_outputs") or []:
+            if so:
+                items.append({"id": None, "name": str(so), "match": None})
+
+    # 去重（按 name）
+    seen: set[str] = set()
+    uniq: list[dict] = []
+    for it in items:
+        key = it.get("name") or it.get("id") or ""
+        if key in seen:
+            continue
+        seen.add(key)
+        uniq.append(it)
+    return uniq
 
 
 async def _manual_actions(session: AsyncSession, project_id: int) -> list[dict]:
