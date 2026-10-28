@@ -83,6 +83,23 @@ class TestA1FreeStageSynthesis:
         )
         assert n["workstream"] == "任务图构建"
 
+    def test_recover_nodes_json_from_reasoning(self):
+        """content 空时从 reasoning 捞 nodes；裸数组也可解析。"""
+        from project_runtime.llm import LLMSettings
+        from project_runtime.procedure.llm_extractor import (
+            LLMExtractor,
+            _recover_nodes_json,
+        )
+
+        ex = LLMExtractor(LLMSettings())
+        raw = _recover_nodes_json(
+            "",
+            '现在输出 JSON。\n{"nodes":[{"name":"方法识别","stage":"项目理解"}]}',
+        )
+        assert ex._parse(raw)[0]["name"] == "方法识别"
+        assert ex._parse(_recover_nodes_json("", '[{"name":"B"}]'))[0]["name"] == "B"
+        assert ex._parse("") == []
+
 
 class TestA2SemanticRoute:
     @pytest.mark.asyncio

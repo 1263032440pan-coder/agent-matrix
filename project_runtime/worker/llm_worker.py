@@ -31,12 +31,16 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-_TOOL_ROUNDS = 12  # 工具循环上限（19号定 4=单搜索工具语义; 20号工具面
-                   # 扩到 11 个后语义变了——模型需摸环境 2-4 轮 + 干活
-                   # 2-4 轮 + 收敛写作 2-4 轮; opencode 同款循环上限数十轮）
+# 全局工具循环上限：全部走本 Worker 的任务统一 32，无按节点例外。
+_TOOL_ROUNDS = 32
 
-# V1.6b: Claude Stop 对齐——交付存在性硬闸独立返工轮次
+# V1.6b: Claude Stop 对齐——交付存在性硬闸独立返工轮次（仅提前收工路径）
 _DELIVERY_REPAIR_MAX = 3
+
+_BUDGET_GRACE_NUDGE = (
+    "【Continue nudge·工具轮次已用尽】请直接输出最终交付说明"
+    "（做到哪、缺什么），不要再调用工具。"
+)
 
 
 class DeliveryBaselineError(RuntimeError):
@@ -137,10 +141,9 @@ class LLMWorkerAdapter(WorkerAdapter):
         self._mgr = TaskGraphManager(session)
         self._artifact_mgr = artifact_mgr
         self._max_tokens = max_tokens
-        # V1.5a-1 序6/7: 工作区快照/软提醒状态
+        # V1.5a-1 序6: 工作区快照状态
         self._current_task_id: int | None = None
-        self._nudged_tasks: set[int] = set()
-        # V1.6b: 交付硬闸返工计数（task_id → 已注入次数）
+        # V1.6b: 交付硬闸返工计数（task_id → 已注入次数；仅提前收工）
         self._delivery_repair_counts: dict[int, int] = {}
         # V1.6 序0: 任务工作区根（file_rw 写禁闭）
         self._workspace_root: str | None = None
@@ -334,25 +337,24 @@ class LLMWorkerAdapter(WorkerAdapter):
         return Path(f"data/tasks/0/{self._current_task_id or 0}")
 
     async def _delivery_stop_problems(self, wp) -> list[str]:
-        """V1.6c: 收工硬闸问题列表（空=可通过）。
+        """V1.6d: 收工硬闸——优先冻结脚本子进程；无 ids 则不拦。
 
-        优先 playbook_ref.deliverable_ids + Project.delivery_manifest；
-        否则回退 V1.6b delivery_tags 写死规则。
+        脚本缺失/hash 不符 → DeliveryBaselineError（不降级 match）。
+        无脚本且仅有 legacy tags → V1.6b 工作区检查。
         """
         import json as _json
+        import time
 
-        from project_runtime.procedure.delivery_manifest import (
-            check_deliverables,
-            map_legacy_tags_to_ids,
-            validate_manifest,
-            workspace_file_names,
+        from project_runtime.procedure.delivery_validator import (
+            run_validator_script,
+            sha256_file,
+            validator_path,
         )
 
         ws = self._task_ws_root()
         wr = getattr(wp, "workspace_root", None)
         if wr:
             ws = Path(wr)
-        names = workspace_file_names(ws)
 
         ref: dict = {}
         try:
@@ -361,97 +363,76 @@ class LLMWorkerAdapter(WorkerAdapter):
                 ref = _json.loads(raw_ref)
         except (ValueError, TypeError):
             ref = {}
-        ids = list(ref.get("deliverable_ids") or [])
+        ids = [str(x) for x in (ref.get("deliverable_ids") or []) if x]
         tags = _delivery_tags_for_wp(wp)
 
-        manifest = None
         pid = getattr(self, "_current_project_id", None)
+        proj = None
         if pid is not None and self._session is not None:
             try:
                 from project_runtime.project_state.models import Project
 
                 proj = await self._session.get(Project, pid)
-                if proj and proj.delivery_manifest:
-                    manifest = validate_manifest(proj.delivery_manifest)
             except Exception:  # noqa: BLE001
-                logger.debug("load delivery_manifest failed", exc_info=True)
-                manifest = None
+                logger.debug("load project for validator failed", exc_info=True)
 
-        if manifest:
-            if not ids and tags:
-                ids = map_legacy_tags_to_ids(manifest, tags)
-            if ids:
-                return check_deliverables(names, manifest, ids)
-            return []
+        if ids and proj is not None and pid is not None:
+            expected = proj.delivery_validator_hash
+            script = validator_path(int(pid))
+            actual = sha256_file(script) if script.exists() else None
+            if not expected or actual != expected:
+                try:
+                    from project_runtime.event import (
+                        EventEngine,
+                        RuntimeEventType,
+                    )
 
+                    await EventEngine().record(
+                        RuntimeEventType.DELIVERY_VALIDATOR_TAMPERED,
+                        project_id=int(pid),
+                        task_id=int(getattr(wp, "task_id", 0) or 0),
+                        phase="STOP",
+                        message="校验脚本缺失或被篡改，请重新生成计划",
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.debug("emit TAMPERED failed", exc_info=True)
+                raise DeliveryBaselineError(
+                    "交付校验脚本缺失或被篡改，请重新生成计划"
+                )
+            t0 = time.monotonic()
+            result = await run_validator_script(script, ws, ids)
+            elapsed = int((time.monotonic() - t0) * 1000)
+            try:
+                from project_runtime.event import (
+                    EventEngine,
+                    RuntimeEventType,
+                )
+
+                await EventEngine().record(
+                    RuntimeEventType.DELIVERY_VALIDATOR_RUN,
+                    project_id=int(pid),
+                    task_id=int(getattr(wp, "task_id", 0) or 0),
+                    phase="STOP",
+                    message=(
+                        "ok" if result.get("ok")
+                        else ";".join(result.get("problems") or [])[:100]
+                    ),
+                    payload={
+                        "ok": bool(result.get("ok")),
+                        "problems": (result.get("problems") or [])[:8],
+                        "elapsed_ms": elapsed,
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug("emit VALIDATOR_RUN failed", exc_info=True)
+            if result.get("ok"):
+                return []
+            return list(result.get("problems") or ["校验未通过"])
+
+        # 无 deliverable_ids：legacy tags 兜底（旧任务）
         if tags:
             return _check_delivery_workspace(ws, tags)
         return []
-
-    async def _delivery_self_check(
-        self, wp, output: str,
-    ) -> str:
-        """V1.6 序3: 收工自查钩子（一次性）——delivery_tags 驱动。
-
-        泛化取代 V1.5a-1 _soft_nudge_tests（三条件特例）:
-        - 触发: delivery_tags 非空 或 code_stage（旧语义并入）
-        - 注入: 工作区文件树事实 + 契约交付清单 + 对照 skill《交付基线》
-        - 一次性: 同任务第二次收工放行（_nudged_tasks 复用）
-        - 防死循环=预算制（自查回合计入 12 轮工具预算——设计单 §三③）
-        """
-        tags = list(getattr(wp, "delivery_tags", None) or [])
-        if getattr(wp, "code_stage", False) and "code" not in tags:
-            tags.append("code")  # 旧三条件特例并入
-        if not tags:
-            return output
-        if getattr(wp, "task_id", None) in self._nudged_tasks:
-            return output  # 已自查过——放行
-        # 工作区事实（文件树——机制只呈现事实, 判定归 skill）
-        root = self._task_ws_root()
-        files_desc = "（空）"
-        if root.exists():
-            files = [
-                f"{p.relative_to(root)}（{p.stat().st_size}B）"
-                for p in sorted(root.rglob("*")) if p.is_file()
-            ][:30]
-            files_desc = "\n".join(files) if files else "（空）"
-        # 契约交付清单
-        stage_outputs = []
-        try:
-            import json as _json
-
-            ref = getattr(wp, "playbook_ref", None)
-            if ref:
-                stage_outputs = _json.loads(ref).get("stage_outputs") or []
-        except (ValueError, AttributeError, TypeError):
-            pass
-        tag_names = {"ppt": "项目方案介绍 PPT", "code": "可运行的代码",
-                     "test_report": "测试报告"}
-        tag_list = "、".join(tag_names.get(t, t) for t in tags)
-        # 返修V3 批C: PPT 双层兜底提示
-        ppt_hint = "slide_generator"
-        if "ppt" in tags:
-            from project_runtime.skills.ppt_fallback import resolve_ppt_backend
-
-            backend = resolve_ppt_backend(wp.skill_context)
-            ppt_hint = (
-                "ppt-master 脚本（失败则用 slide_generator）"
-                if backend == "ppt-master"
-                else "slide_generator"
-            )
-        tools_hint = "file_rw"
-        if "ppt" in tags:
-            tools_hint += f" / {ppt_hint}"
-        if "code" in tags or "test_report" in tags:
-            tools_hint += " / file_rw"
-        self._nudged_tasks.add(wp.task_id)
-        return (
-            f"{output}\n\n【收工自查】本任务契约要求交付：{tag_list}"
-            f"（阶段产出物：{'、'.join(stage_outputs) or '未声明'}）。"
-            f"\n当前工作区文件清单：\n{files_desc}\n"
-            "请对照 skill《交付基线》自查：缺什么补什么"
-            f"（可用 {tools_hint}），齐了才输出最终交付。"
-        )
 
     async def cancel(self, task_id: int) -> None:
         async with self._db_lock:
@@ -843,34 +824,119 @@ class LLMWorkerAdapter(WorkerAdapter):
                     "tool_call_id": tc["id"] or f"call_{i}",
                     "content": result_text,
                 })
-            # V1.4h 软收敛: 预算过半提醒一次（软引导非硬约束）
-            if round_no == _TOOL_ROUNDS - 4:
-                messages.append({
-                    "role": "user",
-                    "content": (
-                        f"【系统提醒】工具调用已进行 {round_no} 轮"
-                        f"（共 {_TOOL_ROUNDS} 轮上限）。"
-                        "如果已有足够信息，请直接输出最终交付内容"
-                        "（markdown 格式），不要再调用工具。"
-                    ),
-                })
-            # 继续下一轮（模型基于搜索结果继续推理/产出）
-        # 12 轮用尽强收（防失控）—— V1.4h: 带工具操作摘要
-        if not content.strip():
+            # 继续下一轮（模型基于工具结果继续推理/产出）
+
+        # 预算用尽：Continue nudge → Grace（禁工具）→ 必跑 Stop（失败=FAILED）
+        return await self._budget_grace_close(
+            wp, task_id, messages, cfg, model, content, tool_history,
+            session_store, context_stats,
+        )
+
+    async def _budget_grace_close(
+        self,
+        wp,
+        task_id: int | None,
+        messages: list,
+        cfg,
+        model: str,
+        content: str,
+        tool_history: list[tuple[str, bool, int]],
+        session_store,
+        context_stats: dict,
+    ) -> str:
+        """工具预算用尽：Continue nudge → Grace（无 tools）→ Stop。
+
+        Grace 后 Stop 失败直接 FAILED（不再给工具返工）。
+        """
+        messages.append({
+            "role": "user",
+            "content": _BUDGET_GRACE_NUDGE,
+        })
+        grace_text = ""
+        try:
+            result = await self._stream_round(cfg, model, messages, tools=None)
+            if result.get("ok"):
+                stream = result["response"]
+                parts: list[str] = []
+                reasoning: list[str] = []
+                async for chunk in stream:
+                    delta = chunk.choices[0].delta if chunk.choices else None
+                    if delta is None:
+                        continue
+                    cc = delta.content or ""
+                    rc = getattr(delta, "reasoning_content", None) or ""
+                    if cc:
+                        parts.append(cc)
+                    if rc:
+                        reasoning.append(rc)
+                grace_text = "".join(parts).strip()
+                if not grace_text:
+                    grace_text = "".join(reasoning)[-2000:].strip()
+        except Exception:  # noqa: BLE001 — Grace 失败仍走 Stop
+            logger.warning(
+                "budget grace LLM failed task=%s", task_id, exc_info=True,
+            )
+
+        if not grace_text:
             if tool_history:
                 ok_n = sum(1 for _, ok, _ in tool_history if ok)
                 names = sorted({n for n, _, _ in tool_history})
                 names_str = "、".join(names[:8])
-                content = (
+                grace_text = (
                     f"（工具循环达上限——已执行 {len(tool_history)} 次"
                     f"工具调用（{ok_n} 次成功），涉及工具: {names_str}。"
                     "未能收敛出最终交付内容。）"
                 )
             else:
-                content = "（工具循环达上限，未能产出最终内容）"
-        return await self._archive_session(
-            task_id, wp, session_store, content, context_stats
+                grace_text = "（工具循环达上限，未能产出最终内容）"
+
+        content = grace_text
+        await self._emit_tool_budget_grace(
+            task_id, grace_text, tool_history,
         )
+
+        problems = await self._delivery_stop_problems(wp)
+        if problems:
+            raise DeliveryBaselineError(
+                "工具轮次用尽后校验未通过："
+                + "；".join(problems)
+            )
+        return await self._archive_session(
+            task_id, wp, session_store, content, context_stats,
+        )
+
+    async def _emit_tool_budget_grace(
+        self,
+        task_id: int | None,
+        grace_text: str,
+        tool_history: list[tuple[str, bool, int]],
+    ) -> None:
+        """发出 TOOL_BUDGET_GRACE（Dashboard 须可见）。"""
+        try:
+            from project_runtime.event import EventEngine, RuntimeEventType
+
+            ok_n = sum(1 for _, ok, _ in tool_history if ok)
+            names = sorted({n for n, _, _ in tool_history})
+            preview = (grace_text or "")[:500]
+            await EventEngine().record(
+                RuntimeEventType.TOOL_BUDGET_GRACE,
+                project_id=getattr(self, "_current_project_id", None),
+                task_id=int(task_id or 0) or None,
+                phase="WORKER",
+                message=(
+                    f"工具预算用尽·Grace（{_TOOL_ROUNDS} 轮）"
+                    f"：{preview[:120]}"
+                ),
+                payload={
+                    "tool_rounds": _TOOL_ROUNDS,
+                    "grace_text": preview,
+                    "tool_calls": len(tool_history),
+                    "tool_ok": ok_n,
+                    "tools": names[:12],
+                },
+            )
+        except Exception:  # noqa: BLE001
+            logger.debug("emit TOOL_BUDGET_GRACE failed", exc_info=True)
 
     async def _archive_session(
         self, task_id: int | None, wp, session_store, content: str,

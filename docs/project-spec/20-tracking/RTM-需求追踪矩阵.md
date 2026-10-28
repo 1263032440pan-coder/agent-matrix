@@ -176,6 +176,14 @@ DOING
 | SYS-081 | UI：项目卡片"软件开发需求"标识 + NOT_SOFTWARE 重新判定入口 + 三件状态行 | Desktop UI | V1.6 序6 | delivery_profile/delivery_status + POST reclassify-delivery | Dashboard.tsx 交付基线区 + api.ts | 前端 tsc 零错 + vitest 25 passed | DONE（`e82a1f9`） |
 | SYS-096 | V1.6c：计划期 LLM 抽取 `delivery_manifest`（结构化 JSON+match 白名单）；非法 → `DELIVERY_MANIFEST_INVALID` 422 + 事件 + 桌面 toast；中止本轮任务图 | Delivery Manifest | V1.6c | Project.delivery_manifest + migration c8e1f2a3b4d5 + `/plan` `_extract_manifest` | procedure/delivery_manifest.py + api/projects.py + api.ts + ProjectActions.tsx | tests/test_delivery_manifest.py | DONE（2026-10-27） |
 | SYS-097 | V1.6c：任务 `deliverable_ids` 子集 + Claude Stop match 硬闸（≤3 返工→FAILED）；收口按总清单缺件补建+submit；无清单时 V1.6b tags 兜底 | Worker/Closeout | V1.6c | playbook_ref.deliverable_ids + `_delivery_stop_problems` + closeout match | planner.py + llm_worker.py + execution/service.py | test_delivery_manifest + test_delivery_stop_gate + test_delivery_hooks/backfill | DONE（2026-10-27） |
+| SYS-098 | V1.6d：计划期生成冻结 `_delivery_validate.py`；先清旧；`delivery_validator_hash` 落库 | Delivery Validator | V1.6d | `/plan` generate_validator + migration d9f4a1b2c3e5 | procedure/delivery_validator.py + api/projects.py | test_delivery_validator | DONE（2026-10-27） |
+| SYS-099 | V1.6d：AST 静态门 + 差分冒烟强制不弱于 match | Validator Gate | V1.6d | 生成流水线门禁 | delivery_validator.py | AST/差分用例 | DONE（2026-10-27） |
+| SYS-100 | V1.6d：脚本失败 → 整单计划失败；`DELIVERY_VALIDATOR_INVALID` 422+事件+toast | Plan/UI | V1.6d | error_code + EventType | api + event + ProjectActions | vitest toast | DONE（2026-10-27） |
+| SYS-101 | V1.6d：Stop asyncio 子进程只扫本任务工作区；≤3 返工；`DELIVERY_VALIDATOR_RUN` | Worker Stop | V1.6d | Stop 钩子 | llm_worker.py | stop_gate + frozen validator | DONE（2026-10-27） |
+| SYS-102 | V1.6d：脚本缺失/hash 篡改 → 任务 FAILED，不降级 match | Worker Integrity | V1.6d | TAMPERED 事件 | llm_worker.py | test_stop_tamper_raises | DONE（2026-10-27） |
+| SYS-103 | V1.6d：file_rw 不可改写冻结校验脚本 | Worker 工具安全 | V1.6d | 写保护 | tools.py | is_validator_script_path | DONE（2026-10-27） |
+| SYS-104 | V1.6d：收口用冻结脚本扫项目根；缺项补建；脚本无效不瞎补 | Closeout | V1.6d | closeout | execution/service.py | hooks/backfill 回归 | DONE（2026-10-27） |
+| SYS-105 | V1.6d：Dashboard 展示脚本 hash 前缀/生成时间 | Desktop UI | V1.6d | dashboard 字段 | Dashboard.tsx + api | delivery-validator-meta | DONE（2026-10-27） |
 
 ### 本批追踪说明
 

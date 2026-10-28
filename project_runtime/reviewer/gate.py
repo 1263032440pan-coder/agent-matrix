@@ -202,15 +202,44 @@ class BackfillValidator(Validator):
 
     async def validate(self, task: Task, artifacts: list[Artifact]) -> ValidatorResult:
         import json as _json
+        from pathlib import Path
 
         try:
-            tags = _json.loads(task.playbook_ref or "{}").get(
-                "delivery_tags"
-            ) or []
+            ref = _json.loads(task.playbook_ref or "{}")
         except ValueError:
-            tags = []
-        if not tags or not (task.name or "").startswith("交付补全"):
+            ref = {}
+        tags = list(ref.get("delivery_tags") or [])
+        ids = [str(x) for x in (ref.get("deliverable_ids") or []) if x]
+        if not (task.name or "").startswith("交付补全"):
             return ValidatorResult(GateStatus.PASS, "not a backfill task")
+        if not tags and not ids:
+            return ValidatorResult(GateStatus.PASS, "not a backfill task")
+
+        # V1.6d: deliverable_ids → 与 Stop 同口径（冻结脚本）
+        if ids:
+            from project_runtime.procedure.delivery_validator import (
+                run_validator_script,
+                validator_path,
+            )
+
+            script = validator_path(int(task.project_id))
+            ws = Path(f"data/tasks/{task.project_id}/{task.id}")
+            if not script.exists():
+                return ValidatorResult(
+                    GateStatus.FAIL,
+                    "交付校验脚本缺失——请重新生成计划后再跑补全任务",
+                )
+            result = await run_validator_script(script, ws, ids)
+            if result.get("ok"):
+                return ValidatorResult(
+                    GateStatus.PASS,
+                    f"backfill verified (ids={','.join(ids)})",
+                )
+            problems = list(result.get("problems") or ["校验未通过"])
+            return ValidatorResult(
+                GateStatus.FAIL,
+                "交付实物缺失: " + "; ".join(problems),
+            )
 
         names = [a.name or "" for a in artifacts]
         problems: list[str] = []

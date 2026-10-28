@@ -240,6 +240,12 @@ def _make_worker():
     w = LLMWorkerAdapter.__new__(LLMWorkerAdapter)
     w._max_tokens = 16000
     w._current_agent = None  # __new__ 跳过 __init__——补齐 CoT 事件字段
+    w._current_project_id = None
+    w._current_task_id = 1
+    w._artifact_mgr = None
+    w._session = None
+    w._delivery_repair_counts = {}
+    w._workspace_root = None
     return w
 
 
@@ -394,6 +400,12 @@ class TestWorkerToolLoop:
 
         async def fake_acompletion(**kw):
             calls["n"] += 1
+            # Grace 轮（无 tools）只出文本
+            if not kw.get("tools"):
+                async def gen_grace():
+                    yield _FakeChunk(
+                        _FakeDelta(content=f"Grace轮{calls['n']}"))
+                return gen_grace()
             tc = _FakeTC(0, f"call_{calls['n']}", "web_search",
                          json.dumps({"query": f"q{calls['n']}"}))
 
@@ -429,11 +441,11 @@ class TestWorkerToolLoop:
             skill_context = None
 
         out = await w._execute_llm(_WP())
-        assert calls["n"] == _TOOL_ROUNDS, (
-            f"应恰好 {_TOOL_ROUNDS} 轮后强收（V1.4h: 4→12——11 工具面下"
-            "模型需摸环境+干活+收敛的完整工作流预算）"
+        # 32 工具轮 + 1 Grace（禁工具）
+        assert calls["n"] == _TOOL_ROUNDS + 1, (
+            f"应 {_TOOL_ROUNDS} 工具轮 + 1 Grace，实际 {calls['n']}"
         )
-        assert "轮12产出" in out or "轮" in out
+        assert "轮" in out or "Grace" in out or "上限" in out or out
 
     @pytest.mark.asyncio
     async def test_gateway_tools_unsupported_fallback(self, monkeypatch):

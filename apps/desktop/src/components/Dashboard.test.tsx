@@ -50,6 +50,13 @@ const base: DashboardData = {
 };
 
 describe('Dashboard 节点要求产物', () => {
+  it('任务图节点上直接显示产物名', async () => {
+    vi.mocked(fetchDashboard).mockResolvedValue(base);
+    render(<Dashboard projectId={1} />);
+    await screen.findByTestId('task-graph');
+    expect(screen.getByTestId('task-products-10')).toHaveTextContent('方案PPT');
+  });
+
   it('点击节点可见 required_deliverables', async () => {
     vi.mocked(fetchDashboard).mockResolvedValue(base);
     render(<Dashboard projectId={1} />);
@@ -62,6 +69,55 @@ describe('Dashboard 节点要求产物', () => {
     });
     expect(screen.getByTestId('required-deliverables')).toHaveTextContent(
       '扩展名 .pptx',
+    );
+  });
+
+  it('TOOL_BUDGET_GRACE 在任务详情可见，并展示随后 Stop', async () => {
+    vi.mocked(fetchDashboard).mockResolvedValue({
+      ...base,
+      runtime_events: [
+        {
+          event_id: 1,
+          event_type: 'TOOL_BUDGET_GRACE',
+          timestamp: '2026-10-28T10:00:00',
+          execution_id: null,
+          task_id: 10,
+          phase: 'WORKER',
+          message: '工具预算用尽·Grace',
+          payload: {
+            tool_rounds: 32,
+            grace_text: 'Grace收尾：缺 README',
+          },
+        },
+        {
+          event_id: 2,
+          event_type: 'DELIVERY_VALIDATOR_RUN',
+          timestamp: '2026-10-28T10:00:01',
+          execution_id: null,
+          task_id: 10,
+          phase: 'STOP',
+          message: '缺 README',
+          payload: {
+            ok: false,
+            problems: ['缺 README'],
+          },
+        },
+      ],
+    });
+    render(<Dashboard projectId={1} />);
+    await screen.findByTestId('task-graph');
+    await userEvent.click(screen.getByTestId('task-node-10'));
+    await waitFor(() => {
+      expect(screen.getByTestId('task-grace')).toHaveTextContent(
+        'Grace收尾：缺 README',
+      );
+    });
+    expect(screen.getByTestId('task-grace')).toHaveTextContent('32 轮');
+    expect(screen.getByTestId('task-grace-stop')).toHaveTextContent(
+      'Stop：未通过',
+    );
+    expect(screen.getByTestId('task-grace-stop')).toHaveTextContent(
+      '缺 README',
     );
   });
 

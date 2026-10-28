@@ -144,6 +144,21 @@ class FileRwProvider:
             if content is None or not str(content).strip():
                 return {"ok": False, "error": "write 需要 content"}
             content = str(content)
+            # V1.6d: 禁止改写项目级冻结校验脚本
+            from project_runtime.procedure.delivery_validator import (
+                SCRIPT_NAME,
+                is_validator_script_path,
+            )
+            if is_validator_script_path(path) or str(path).endswith(
+                SCRIPT_NAME
+            ):
+                return {
+                    "ok": False,
+                    "error": (
+                        f"禁止写入冻结校验脚本 {SCRIPT_NAME}——"
+                        "请重新「生成计划」更新闸门"
+                    ),
+                }
             # V1.6 序0: 任务级写禁闭——调用方注入 __ws_root 时,
             # resolved 必须落在该任务工作区内（防写到相邻目录逃逸 harvest）
             ws_root_raw = payload.get("__ws_root")

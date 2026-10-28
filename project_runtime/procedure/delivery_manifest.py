@@ -28,6 +28,26 @@ class DeliveryManifestError(ValueError):
         self.message = message
 
 
+def _coerce_str_list(val: Any) -> list[str] | None:
+    """LLM 常把 name_contains/ext 写成单字符串——归一为非空字符串数组。
+
+    返回 None 表示类型无法接受（非 str/list 或元素非 str）。
+    """
+    if isinstance(val, str):
+        s = val.strip()
+        return [s] if s else []
+    if isinstance(val, list):
+        out: list[str] = []
+        for x in val:
+            if not isinstance(x, str):
+                return None
+            s = x.strip()
+            if s:
+                out.append(s)
+        return out
+    return None
+
+
 def validate_manifest(data: Any) -> dict:
     """校验并归一化 manifest；失败抛 DeliveryManifestError。"""
     if isinstance(data, str):
@@ -73,12 +93,14 @@ def validate_manifest(data: Any) -> dict:
             )
         norm_match: dict[str, Any] = {}
         if "ext" in match:
-            ext = match["ext"]
-            if not isinstance(ext, list) or not all(
-                isinstance(x, str) for x in ext
-            ):
+            ext = _coerce_str_list(match["ext"])
+            if ext is None:
                 raise DeliveryManifestError(
-                    f"deliverables[{i}].match.ext 须为字符串数组"
+                    f"deliverables[{i}].match.ext 须为字符串或字符串数组"
+                )
+            if not ext:
+                raise DeliveryManifestError(
+                    f"deliverables[{i}].match.ext 不可为空"
                 )
             norm_match["ext"] = [
                 x.lower() if x.startswith(".") else f".{x.lower()}"
@@ -86,12 +108,14 @@ def validate_manifest(data: Any) -> dict:
             ]
         for key in ("name_contains", "any_name_prefix"):
             if key in match:
-                val = match[key]
-                if not isinstance(val, list) or not all(
-                    isinstance(x, str) for x in val
-                ):
+                val = _coerce_str_list(match[key])
+                if val is None:
                     raise DeliveryManifestError(
-                        f"deliverables[{i}].match.{key} 须为字符串数组"
+                        f"deliverables[{i}].match.{key} 须为字符串或字符串数组"
+                    )
+                if not val:
+                    raise DeliveryManifestError(
+                        f"deliverables[{i}].match.{key} 不可为空"
                     )
                 norm_match[key] = val
         min_count = int(match.get("min_count") or 1)
@@ -219,6 +243,7 @@ async def extract_manifest_from_materials(
 ) -> dict:
     """LLM 抽取交付清单；校验后返回归一化 dict。失败抛 DeliveryManifestError。"""
     from project_runtime.llm import (
+        llm_message_text,
         load_llm_settings,
         normalize_model_for_gateway,
     )
@@ -238,34 +263,62 @@ async def extract_manifest_from_materials(
         '"min_count":1}}\n'
         "]}\n"
         "match 只允许键: ext, name_contains, any_name_prefix, min_count。"
+        "ext / name_contains / any_name_prefix 必须是 JSON 字符串数组"
+        "（例 name_contains:[\"测试\"]，禁止写成单个字符串）。\n"
         "代码类产物请同时设 ext 与 any_name_prefix:[\"readme\"]。\n"
-        "测试报告类请 name_contains 含「测试」且 ext 含 .md。\n\n"
+        "测试报告类请 name_contains:[\"测试\"] 且 ext 含 .md。\n"
+        "不要输出思考过程或其它文字，JSON 之外不要有内容。\n\n"
         f"【交付基线提示】\n{skill_hint[:1500] or '（无）'}\n\n"
         f"【材料摘要】\n{materials_text[:6000]}"
     )
     import asyncio
 
-    result = await asyncio.wait_for(
-        llm_complete(
-            model=model_id,
-            api_base=cfg.base_url,
-            api_key=cfg.api_key,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=2000,
-            timeout=120,
-        ),
-        timeout=130,
-    )
-    if not result.get("ok"):
-        raise DeliveryManifestError(
-            f"交付清单抽取失败：{result.get('error', 'LLM error')}"
+    async def _once(messages: list[dict], max_tokens: int) -> str:
+        result = await asyncio.wait_for(
+            llm_complete(
+                model=model_id,
+                api_base=cfg.base_url,
+                api_key=cfg.api_key,
+                messages=messages,
+                max_tokens=max_tokens,
+                timeout=120,
+            ),
+            timeout=130,
         )
-    resp = result["response"]
-    text = (resp.choices[0].message.content or "").strip()
-    # 剥 markdown 围栏
+        if not result.get("ok"):
+            raise DeliveryManifestError(
+                f"交付清单抽取失败：{result.get('error', 'LLM error')}"
+            )
+        return llm_message_text(result["response"].choices[0].message)
+
+    text = await _once([{"role": "user", "content": prompt}], 4000)
+    if not text.strip():
+        # 推理模型偶发空 content：再要一次，强制只吐 JSON
+        text = await _once(
+            [
+                {"role": "user", "content": prompt},
+                {
+                    "role": "user",
+                    "content": (
+                        "上一次未返回正文。请立刻只输出一个合法 JSON 对象，"
+                        "不要思考过程、不要 markdown、不要解释。"
+                    ),
+                },
+            ],
+            4000,
+        )
+    # 剥 markdown 围栏；再取首个 JSON 对象（容忍前后噪音）
     fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
     if fence:
         text = fence.group(1).strip()
+    brace = re.search(r"\{[\s\S]*\}", text)
+    if brace:
+        text = brace.group(0)
+    if not text.strip():
+        raise DeliveryManifestError(
+            "模型未返回合法 JSON：空响应"
+            "（推理模型可能把 token 耗在思考上，请重试）"
+        )
     try:
         raw = json.loads(text)
     except json.JSONDecodeError as e:

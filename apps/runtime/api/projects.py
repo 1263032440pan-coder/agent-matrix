@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import tempfile
 from pathlib import Path
 
@@ -545,6 +546,115 @@ async def run_planning(project_id: int):
             "deliverables": len(man.get("deliverables") or []),
         }
 
+    async def _generate_validator(session: AsyncSession):
+        """V1.6d: 冻结校验脚本；失败 → 422 DELIVERY_VALIDATOR_INVALID。"""
+        from project_runtime.event import EventEngine, RuntimeEventType
+        from project_runtime.procedure.delivery_manifest import (
+            validate_manifest,
+        )
+        from project_runtime.procedure.delivery_validator import (
+            DeliveryValidatorError,
+            clear_validator_files,
+            generate_and_install_validator,
+            utcnow,
+        )
+        from project_runtime.procedure.skill_planning import (
+            _project_doc_text,
+        )
+
+        project = await session.get(Project, project_id)
+        if project is None:
+            raise HTTPException(404, "Project not found")
+        # 先清旧（脏态防护）
+        clear_validator_files(project_id)
+        project.delivery_validator_hash = None
+        project.delivery_validator_generated_at = None
+        await session.flush()
+
+        if not project.delivery_manifest:
+            err = DeliveryValidatorError(
+                "无交付清单，无法生成校验脚本（请确认已上传材料）"
+            )
+            try:
+                await EventEngine().record(
+                    RuntimeEventType.DELIVERY_VALIDATOR_INVALID,
+                    project_id=project_id,
+                    phase="PLAN",
+                    message=err.message,
+                    payload={"error_code": err.error_code},
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "emit DELIVERY_VALIDATOR_INVALID failed",
+                    exc_info=True,
+                )
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "ok": False,
+                    "error_code": err.error_code,
+                    "message": err.message,
+                },
+            ) from err
+
+        try:
+            man = validate_manifest(project.delivery_manifest)
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "ok": False,
+                    "error_code": "DELIVERY_VALIDATOR_INVALID",
+                    "message": f"交付清单无法用于生成校验脚本：{e}",
+                },
+            ) from e
+
+        materials = await _project_doc_text(session, project_id)
+        skill_hint = ""
+        if project.delivery_profile == "SOFTWARE_DEV":
+            skill_hint = (
+                "按清单 match 做存在性校验；不得弱于 ext/"
+                "name_contains/any_name_prefix/min_count。"
+            )
+        try:
+            digest = await generate_and_install_validator(
+                project_id,
+                man,
+                materials_text=materials or "",
+                skill_hint=skill_hint,
+            )
+        except DeliveryValidatorError as e:
+            clear_validator_files(project_id)
+            project.delivery_validator_hash = None
+            project.delivery_validator_generated_at = None
+            try:
+                await EventEngine().record(
+                    RuntimeEventType.DELIVERY_VALIDATOR_INVALID,
+                    project_id=project_id,
+                    phase="PLAN",
+                    message=e.message,
+                    payload={"error_code": e.error_code},
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "emit DELIVERY_VALIDATOR_INVALID failed",
+                    exc_info=True,
+                )
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "ok": False,
+                    "error_code": e.error_code,
+                    "message": e.message,
+                },
+            ) from e
+        project.delivery_validator_hash = digest
+        project.delivery_validator_generated_at = utcnow()
+        return {
+            "delivery_validator": "ok",
+            "delivery_validator_hash": digest[:8],
+        }
+
     async def _build(session: AsyncSession):
         playbook = await PlaybookBuilder(session).build(project_id)
         return {"playbook_id": playbook.id}
@@ -570,6 +680,7 @@ async def run_planning(project_id: int):
         result.update(await _stage(_clear_old_plan))
         result.update(await _stage(_normalize))
         result.update(await _stage(_extract_manifest))
+        result.update(await _stage(_generate_validator))
         result.update(await _stage(_assess))
         result.update(await _stage(_classify))
         result.update(await _stage(_resolve))
@@ -687,8 +798,8 @@ async def agent_thinking_stream(
 ):
     """返修单 B: 项目级 Agent 实时思维链事件流（AgentPanel 消费）。
 
-    LLM_THINKING_CHUNK 按 id 增量拉取; payload 带 agent_instance_id/
-    agent_name（Worker 侧归属）——前端按实例过滤。
+    LLM_THINKING_CHUNK / LLM_ANSWER_CHUNK 按 id 增量拉取;
+    payload 带 agent_instance_id/agent_name（Worker 侧归属）——前端按实例过滤。
     """
     from project_runtime.event.models import RuntimeEvent
 
@@ -697,7 +808,10 @@ async def agent_thinking_stream(
             select(RuntimeEvent)
             .where(
                 RuntimeEvent.project_id == project_id,
-                RuntimeEvent.event_type == "LLM_THINKING_CHUNK",
+                RuntimeEvent.event_type.in_((
+                    "LLM_THINKING_CHUNK",
+                    "LLM_ANSWER_CHUNK",
+                )),
                 RuntimeEvent.id > after_id,
             )
             .order_by(RuntimeEvent.id.desc())
@@ -822,6 +936,31 @@ async def project_dashboard(project_id: int, session: AsyncSession = Depends(get
         except Exception:  # noqa: BLE001
             logger.debug("dashboard manifest parse failed", exc_info=True)
             manifest = None
+    # 旧计划未把 LLM outputs 写入 playbook_ref：按任务名回填流程节点 outputs
+    node_outputs_by_name: dict[str, str] = {}
+    try:
+        from project_runtime.project_state.models import ProcedureNode
+
+        model_id = (
+            await session.execute(
+                select(ProjectProcedureModel.id)
+                .where(ProjectProcedureModel.project_id == project_id)
+                .order_by(ProjectProcedureModel.version.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if model_id is not None:
+            for n in (
+                await session.execute(
+                    select(ProcedureNode).where(
+                        ProcedureNode.model_id == model_id
+                    )
+                )
+            ).scalars().all():
+                if n.outputs:
+                    node_outputs_by_name[n.name] = n.outputs
+    except Exception:  # noqa: BLE001
+        logger.debug("dashboard node outputs lookup failed", exc_info=True)
     task_list = [
         {
             "id": t.id,
@@ -829,9 +968,14 @@ async def project_dashboard(project_id: int, session: AsyncSession = Depends(get
             "status": t.status.value,
             "depends_on": deps_by_task.get(t.id, []),
             "required_deliverables": _required_deliverables_of(
-                t.playbook_ref, manifest
+                t.playbook_ref,
+                manifest,
+                node_outputs_by_name.get(t.name),
             ),
-            "stage_outputs": _stage_outputs_of(t.playbook_ref),
+            "stage_outputs": _stage_outputs_of(
+                t.playbook_ref,
+                node_outputs_by_name.get(t.name),
+            ),
         }
         for t in tasks
     ]
@@ -920,6 +1064,16 @@ async def project_dashboard(project_id: int, session: AsyncSession = Depends(get
         },
         # V1.6 序6: 交付画像 + 三件状态（事实汇总——UI 状态行）
         "delivery_profile": project.delivery_profile,
+        # V1.6d: 冻结校验脚本元数据
+        "delivery_validator_hash": project.delivery_validator_hash,
+        "delivery_validator_hash_prefix": (
+            (project.delivery_validator_hash or "")[:8] or None
+        ),
+        "delivery_validator_generated_at": (
+            project.delivery_validator_generated_at.isoformat()
+            if project.delivery_validator_generated_at
+            else None
+        ),
         "delivery_status": {
             "ppt": any(
                 (a.name or "").lower().endswith(".pptx") for a in artifacts
@@ -991,6 +1145,9 @@ _TAG_LABELS = {
     "code": "可运行代码",
     "test_report": "测试报告",
 }
+_RE_PPT = re.compile(r"ppt|pptx|演示|汇报|幻灯|slides?", re.I)
+_RE_CODE = re.compile(r"源码|代码|实现|入口文件|功能模块|README|可运行", re.I)
+_RE_TEST = re.compile(r"测试报告|测试文件|测试", re.I)
 
 
 def _parse_playbook_ref(playbook_ref: str | None) -> dict:
@@ -1003,16 +1160,41 @@ def _parse_playbook_ref(playbook_ref: str | None) -> dict:
         return {}
 
 
-def _stage_outputs_of(playbook_ref: str | None) -> list[str]:
+def _split_output_blob(raw: object) -> list[str]:
+    """与 planner 同构：把 outputs 长串拆成展示用列表。"""
+    import re
+
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return [str(x).strip() for x in raw if str(x).strip()]
+    text = str(raw).strip()
+    if not text or text.upper() in ("UNKNOWN", "AMBIGUOUS", "无", "N/A"):
+        return []
+    return [
+        p.strip()
+        for p in re.split(r"[；;、\|/\n]+", text)
+        if p.strip()
+    ]
+
+
+def _stage_outputs_of(
+    playbook_ref: str | None, fallback_outputs: str | None = None,
+) -> list[str]:
     ref = _parse_playbook_ref(playbook_ref)
-    outs = ref.get("stage_outputs") or []
-    return [str(x) for x in outs if x]
+    outs = [str(x) for x in (ref.get("stage_outputs") or []) if x]
+    if outs:
+        return outs
+    # 兼容旧任务：playbook_ref 未透传时，用流程节点 outputs
+    return _split_output_blob(ref.get("outputs") or fallback_outputs)
 
 
 def _required_deliverables_of(
-    playbook_ref: str | None, manifest: dict | None
+    playbook_ref: str | None,
+    manifest: dict | None,
+    fallback_outputs: str | None = None,
 ) -> list[dict]:
-    """任务被要求的产物（优先 deliverable_ids → tags → stage_outputs）。"""
+    """任务被要求的产物（优先 deliverable_ids → tags → stage_outputs/outputs）。"""
     ref = _parse_playbook_ref(playbook_ref)
     by_id: dict = {}
     if manifest:
@@ -1022,6 +1204,24 @@ def _required_deliverables_of(
     ids = [str(x) for x in (ref.get("deliverable_ids") or []) if x]
     if not ids and manifest:
         tags = list(ref.get("delivery_tags") or [])
+        # tags 空时，用产物文案再扫一遍（旧计划未写 tags）
+        if not tags:
+            blob = " ".join(
+                str(x)
+                for x in [
+                    ref.get("task_name"),
+                    fallback_outputs,
+                    *(ref.get("stage_outputs") or []),
+                    ref.get("outputs"),
+                ]
+                if x
+            )
+            if _RE_PPT.search(blob):
+                tags.append("ppt")
+            if _RE_CODE.search(blob):
+                tags.append("code")
+            if _RE_TEST.search(blob):
+                tags.append("test_report")
         if tags:
             from project_runtime.procedure.delivery_manifest import (
                 map_legacy_tags_to_ids,
@@ -1049,9 +1249,8 @@ def _required_deliverables_of(
             })
 
     if not items:
-        for so in ref.get("stage_outputs") or []:
-            if so:
-                items.append({"id": None, "name": str(so), "match": None})
+        for so in _stage_outputs_of(playbook_ref, fallback_outputs):
+            items.append({"id": None, "name": str(so), "match": None})
 
     # 去重（按 name）
     seen: set[str] = set()

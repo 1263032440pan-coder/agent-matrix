@@ -9,6 +9,8 @@
 - 嵌套路径三形态（P4 已单测——此处冒烟）
 """
 
+import json
+
 import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
@@ -194,6 +196,45 @@ class TestBackfillValidator:
         t2 = _mk_task("接口开发")  # 有 tags 但名字非补建
         r2 = await BackfillValidator().validate(t2, [_A()])
         assert r2.status == GateStatus.PASS
+
+    @pytest.mark.asyncio
+    async def test_deliverable_ids_uses_frozen_script(
+        self, dbengine, tmp_path, monkeypatch,
+    ):
+        """有 deliverable_ids 时走冻结脚本，不再因空 delivery_tags 空过。"""
+        from project_runtime.reviewer.gate import (
+            BackfillValidator,
+            GateStatus,
+        )
+
+        script = tmp_path / "_delivery_validate.py"
+        script.write_text(
+            "import json,sys\n"
+            "print(json.dumps({'ok': False, 'problems': ['缺 d_ppt']}))\n"
+            "sys.exit(1)\n",
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(
+            "project_runtime.procedure.delivery_validator.validator_path",
+            lambda pid: script,
+        )
+
+        class _T:
+            id = 9
+            name = "交付补全-方案PPT"
+            project_id = 1
+            status = __import__(
+                "project_runtime.project_state.enums", fromlist=["TaskStatus"]
+            ).TaskStatus.EXECUTION_DONE
+            playbook_ref = json.dumps({
+                "deliverable_ids": ["d_ppt"],
+                "delivery_tags": [],
+            })
+
+        r = await BackfillValidator().validate(_T(), [])
+        assert r.status == GateStatus.FAIL
+        assert "缺 d_ppt" in r.message
 
 
 class TestAntiDeadloop:

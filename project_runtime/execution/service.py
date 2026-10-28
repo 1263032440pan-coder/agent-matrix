@@ -772,7 +772,7 @@ class ExecutionRunner:
 
 
 async def _delivery_closeout_check(project_id: int) -> None:
-    """V1.6c: 项目收口——按 delivery_manifest 缺件补建；无清单则 V1.6b 三件兜底。"""
+    """V1.6d: 收口——优先冻结脚本扫项目根；脚本无效则事件不瞎补。"""
     import json as _json
     from pathlib import Path
 
@@ -781,6 +781,11 @@ async def _delivery_closeout_check(project_id: int) -> None:
         check_match,
         validate_manifest,
         workspace_file_names,
+    )
+    from project_runtime.procedure.delivery_validator import (
+        run_validator_script,
+        sha256_file,
+        validator_path,
     )
     from project_runtime.project_state.enums import TaskStatus
     from project_runtime.project_state.models import Artifact
@@ -837,7 +842,87 @@ async def _delivery_closeout_check(project_id: int) -> None:
                 logger.debug("closeout manifest invalid", exc_info=True)
                 manifest = None
 
-        if manifest:
+        script = validator_path(project_id)
+        expected = proj.delivery_validator_hash
+        actual = sha256_file(script) if script.exists() else None
+        script_ok = bool(expected and actual == expected)
+
+        if manifest and expected:
+            if not script_ok:
+                await EventEngine().record(
+                    RuntimeEventType.DELIVERY_VALIDATOR_TAMPERED,
+                    project_id=project_id,
+                    phase="CLOSEOUT",
+                    message="收口：校验脚本缺失或被篡改，跳过自动补建，请重新生成计划",
+                )
+                await EventEngine().record(
+                    RuntimeEventType.RECONCILIATION_GAP,
+                    project_id=project_id,
+                    phase="CLOSEOUT",
+                    message="校验脚本无效，未自动补建交付任务",
+                )
+                return
+            ids = [d["id"] for d in (manifest.get("deliverables") or [])]
+            result = await run_validator_script(script, ws_root, ids)
+            try:
+                await EventEngine().record(
+                    RuntimeEventType.DELIVERY_VALIDATOR_RUN,
+                    project_id=project_id,
+                    phase="CLOSEOUT",
+                    message=(
+                        "ok" if result.get("ok")
+                        else ";".join(result.get("problems") or [])[:100]
+                    ),
+                    payload={
+                        "ok": bool(result.get("ok")),
+                        "problems": (result.get("problems") or [])[:12],
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug("closeout RUN event failed", exc_info=True)
+            if result.get("ok"):
+                return
+            # 按 deliverable 拆分补建：problems 含名称前缀
+            by_name = {
+                d["name"]: d for d in (manifest.get("deliverables") or [])
+            }
+            by_id = {
+                d["id"]: d for d in (manifest.get("deliverables") or [])
+            }
+            claimed: set[str] = set()
+            for prob in result.get("problems") or []:
+                matched = None
+                for name, d in by_name.items():
+                    if name in str(prob):
+                        matched = d
+                        break
+                if matched is None:
+                    for did, d in by_id.items():
+                        if did in str(prob):
+                            matched = d
+                            break
+                if matched and matched["id"] not in claimed:
+                    claimed.add(matched["id"])
+                    missing_items.append({
+                        "id": matched["id"],
+                        "name": matched["name"],
+                        "fact": str(prob),
+                        "deliverable_ids": [matched["id"]],
+                        "delivery_tags": [],
+                        "task_type": "交付打包",
+                    })
+            if not missing_items:
+                # 无法拆分时按全清单缺件补（保守）
+                for d in manifest.get("deliverables") or []:
+                    missing_items.append({
+                        "id": d["id"],
+                        "name": d["name"],
+                        "fact": "；".join(result.get("problems") or ["缺件"]),
+                        "deliverable_ids": [d["id"]],
+                        "delivery_tags": [],
+                        "task_type": "交付打包",
+                    })
+        elif manifest:
             for d in manifest.get("deliverables") or []:
                 probs = check_match(all_names, d.get("match") or {})
                 if probs:
@@ -850,7 +935,6 @@ async def _delivery_closeout_check(project_id: int) -> None:
                         "task_type": "交付打包",
                     })
         elif proj.delivery_profile == "SOFTWARE_DEV":
-            # V1.6b 兜底（无动态清单时）
             has_ppt = any(n.lower().endswith(".pptx") for n in all_names)
             has_code = any(
                 n.lower().endswith((".py", ".js", ".ts"))

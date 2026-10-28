@@ -68,6 +68,10 @@ class RuntimeEventType(str, enum.Enum):
     MANIFEST_CHECK = "MANIFEST_CHECK"               # Controller 清单对账（规范 20 §3.4）
     RECONCILIATION_GAP = "RECONCILIATION_GAP"       # V1.6 序5: 收口对账缺件
     DELIVERY_MANIFEST_INVALID = "DELIVERY_MANIFEST_INVALID"  # V1.6c: 清单 JSON 非法
+    DELIVERY_VALIDATOR_INVALID = "DELIVERY_VALIDATOR_INVALID"  # V1.6d: 脚本生成/契约失败
+    DELIVERY_VALIDATOR_TAMPERED = "DELIVERY_VALIDATOR_TAMPERED"  # V1.6d: hash 不符
+    DELIVERY_VALIDATOR_RUN = "DELIVERY_VALIDATOR_RUN"  # V1.6d: 子进程校验一次
+    TOOL_BUDGET_GRACE = "TOOL_BUDGET_GRACE"  # 工具预算用尽后 Grace 收尾（须上屏）
 
 
 class RuntimeEvent(Base):

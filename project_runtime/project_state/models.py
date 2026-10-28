@@ -58,6 +58,13 @@ class Project(Base):
     delivery_manifest: Mapped[str | None] = mapped_column(
         Text, nullable=True
     )
+    # V1.6d: 冻结校验脚本 sha256 + 生成时间
+    delivery_validator_hash: Mapped[str | None] = mapped_column(
+        String(64), nullable=True
+    )
+    delivery_validator_generated_at: Mapped[datetime.datetime | None] = (
+        mapped_column(DateTime, nullable=True)
+    )
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )

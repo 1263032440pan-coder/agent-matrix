@@ -24,12 +24,16 @@ from project_runtime.project_state.models import Project
 
 logger = logging.getLogger(__name__)
 
-# project_id 直连表（删除序无关——同事务）
+# project_id 直连表。顺序有关：凡 FK 指向 task 的表必须先于 task 删除
+# （agent_instance.current_task_id / issue.task_id / event.task_id 等）。
 _DIRECT_TABLES = [
     "runtime_event",
     "execution",
     "manual_action",
     "artifact",
+    "issue",
+    "event",
+    "agent_instance",
     "task",
     "skill_binding",
     "method_asset",
@@ -48,17 +52,17 @@ _DIRECT_TABLES = [
     "delivery_contract",
     "checkpoint",
     "decision",
-    "issue",
-    "event",
     "human_decision",
     "constraint",
-    # 20号规范批次1 表（V1.4e 补——此前缺失致删除事务 FK 断链回滚）
-    "agent_instance",
 ]
 
 _INDIRECT = {
     # table: (父表链 join 条件)
-    "task_dependency": 'task_id IN (SELECT id FROM "task" WHERE project_id = :pid)',
+    # depends_on_id 也是 FK→task，两侧都要清
+    "task_dependency": (
+        'task_id IN (SELECT id FROM "task" WHERE project_id = :pid) '
+        'OR depends_on_id IN (SELECT id FROM "task" WHERE project_id = :pid)'
+    ),
     "task_run": 'task_id IN (SELECT id FROM "task" WHERE project_id = :pid)',
     "gate_result": 'task_id IN (SELECT id FROM "task" WHERE project_id = :pid)',
     "procedure_node": (
@@ -73,13 +77,13 @@ _INDIRECT = {
         'contract_id IN (SELECT id FROM "delivery_contract" '
         'WHERE project_id = :pid)'
     ),
-    # 20号规范: ACP 消息经 agent_instance 间接引用 project——
-    # from/to 两向都清（任一端是本项目实例即删）
+    # 20号规范: ACP 消息经 agent_instance 或 task_id 引用
     "acp_message": (
         'from_agent_instance_id IN '
         '(SELECT id FROM agent_instance WHERE project_id = :pid) '
         'OR to_agent_instance_id IN '
-        '(SELECT id FROM agent_instance WHERE project_id = :pid)'
+        '(SELECT id FROM agent_instance WHERE project_id = :pid) '
+        'OR task_id IN (SELECT id FROM "task" WHERE project_id = :pid)'
     ),
 }
 
@@ -143,6 +147,24 @@ class ProjectDeletionService:
         )
         if n2.rowcount:
             deleted["runtime_event(dangling_task_refs)"] = n2.rowcount
+        # 0c. 断开 agent 对 task 的软引用（current_task_id），避免删 task 时 FK 崩
+        n3 = await self._session.execute(
+            text(
+                'UPDATE agent_instance SET current_task_id = NULL '
+                'WHERE project_id = :pid AND current_task_id IS NOT NULL'
+            ).bindparams(pid=project_id)
+        )
+        if n3.rowcount:
+            deleted["agent_instance(clear_current_task)"] = n3.rowcount
+        # 0d. 任务自引用 parent_task_id
+        n4 = await self._session.execute(
+            text(
+                'UPDATE "task" SET parent_task_id = NULL '
+                'WHERE project_id = :pid AND parent_task_id IS NOT NULL'
+            ).bindparams(pid=project_id)
+        )
+        if n4.rowcount:
+            deleted["task(clear_parent)"] = n4.rowcount
         # 1. 间接表先删（父表还在，子查询有效）
         for t, cond in _INDIRECT.items():
             n = await self._session.execute(

@@ -56,6 +56,29 @@ describe('ProjectActions V1.6c toast', () => {
     );
   });
 
+  it('DELIVERY_VALIDATOR_INVALID → toast', async () => {
+    vi.mocked(runPlanning).mockRejectedValue(
+      new PlanningError(
+        '交付校验脚本生成失败：差分冒烟失败',
+        'DELIVERY_VALIDATOR_INVALID',
+      ),
+    );
+    render(
+      <ProjectActions
+        projectId={1}
+        onCreated={() => undefined}
+        onImported={() => undefined}
+      />,
+    );
+    await userEvent.click(screen.getByText('生成计划'));
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith(
+        '交付校验脚本生成失败：差分冒烟失败',
+        8,
+      );
+    });
+  });
+
   it('普通规划错误不弹 DELIVERY toast', async () => {
     vi.mocked(runPlanning).mockRejectedValue(
       new PlanningError('Planning failed: 502'),

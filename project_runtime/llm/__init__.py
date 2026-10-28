@@ -23,6 +23,42 @@ class LLMSettings(BaseModel):
     model: str = ""
 
 
+def llm_message_text(message: object) -> str:
+    """取 assistant 可见文本；content 空时回退 reasoning_content。
+
+    deepseek-v4-pro 等推理模型常把整段产出放在 reasoning_content，
+    content 为空——直接 json.loads 会得到 char 0 空错误。
+    """
+    def _as_str(val: object) -> str:
+        if val is None:
+            return ""
+        if isinstance(val, str):
+            return val
+        if isinstance(val, list):
+            parts: list[str] = []
+            for item in val:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict) and item.get("type") == "text":
+                    parts.append(str(item.get("text") or ""))
+                else:
+                    t = getattr(item, "text", None)
+                    if t:
+                        parts.append(str(t))
+            return "".join(parts)
+        return str(val)
+
+    if isinstance(message, dict):
+        text = _as_str(message.get("content")).strip()
+        if text:
+            return text
+        return _as_str(message.get("reasoning_content")).strip()
+    text = _as_str(getattr(message, "content", None)).strip()
+    if text:
+        return text
+    return _as_str(getattr(message, "reasoning_content", None)).strip()
+
+
 def normalize_model_for_gateway(model: str, base_url: str | None) -> str:
     """OpenAI-compatible 网关需要显式 provider 前缀。
 

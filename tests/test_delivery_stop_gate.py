@@ -115,7 +115,6 @@ async def test_stop_gate_blocks_then_passes(tmp_path, monkeypatch):
     w._current_task_id = 7
     w._current_project_id = 1
     w._current_agent = None
-    w._nudged_tasks = set()
     w._delivery_repair_counts = {}
     w._max_tokens = 1000
     w._artifact_mgr = type("M", (), {"_workspace_root": "data/tasks"})()
@@ -187,7 +186,6 @@ async def test_stop_gate_fails_after_3_repairs(tmp_path, monkeypatch):
     w._current_task_id = 7
     w._current_project_id = 1
     w._current_agent = None
-    w._nudged_tasks = set()
     w._delivery_repair_counts = {}
     w._max_tokens = 1000
     w._artifact_mgr = None

@@ -31,6 +31,28 @@ _TAG_CODE = re.compile(r"源码|代码|实现|入口文件|功能模块|README")
 _TAG_TEST = re.compile(r"测试报告|测试文件|测试")
 
 
+def _split_outputs_field(raw: object) -> list[str]:
+    """AI 常把产物写成 outputs 长字符串；拆成 stage_outputs 列表。"""
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        return [str(x).strip() for x in raw if str(x).strip()]
+    text = str(raw).strip()
+    if not text or text.upper() in ("UNKNOWN", "AMBIGUOUS", "无", "N/A"):
+        return []
+    parts = re.split(r"[；;、\|/\n]+", text)
+    return [p.strip() for p in parts if p.strip()]
+
+
+def _stage_outputs_of_ws(ws: dict) -> list[str]:
+    """优先结构化 stage_outputs；否则从 outputs 字段拆分（LLM 主路径）。"""
+    staged = list(ws.get("stage_outputs") or [])
+    staged = [str(x).strip() for x in staged if str(x).strip()]
+    if staged:
+        return staged
+    return _split_outputs_field(ws.get("outputs"))
+
+
 def _delivery_tags_of_ws(
     ws: dict, stage_outputs: list, task_type: str,
 ) -> list:
@@ -38,6 +60,7 @@ def _delivery_tags_of_ws(
     text = " ".join(
         str(x) for x in [
             task_type, ws.get("name"), ws.get("workstream"),
+            ws.get("outputs"),
             *(stage_outputs or []),
         ] if x
     )
@@ -166,9 +189,8 @@ class DynamicPlanner:
         code_stage_flag = bool(ws.get("code_stage")) or task_type in (
             "开发实现", "测试验证",
         )
-        # V1.6 序0: code_stage 且 stage_outputs 空 → 补默认四件套
-        # （与 skill 1.1.0 开发实现阶段 outputs 同构; skill 透传优先不覆盖）
-        stage_outputs = list(ws.get("stage_outputs") or [])
+        # V1.6 序0: 先吃 LLM outputs / stage_outputs；code_stage 且仍空 → 四件套
+        stage_outputs = _stage_outputs_of_ws(ws)
         if code_stage_flag and not stage_outputs:
             stage_outputs = ["入口文件", "功能模块", "测试文件", "README"]
         delivery_tags = _delivery_tags_of_ws(ws, stage_outputs, task_type)

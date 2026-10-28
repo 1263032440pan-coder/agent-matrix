@@ -48,6 +48,34 @@ def test_validate_unknown_match_key():
     assert "foo" in ei.value.message
 
 
+def test_validate_coerces_string_match_fields():
+    """LLM 把 name_contains/ext 写成单字符串 → 归一为数组。"""
+    m = validate_manifest({
+        "deliverables": [{
+            "id": "d1",
+            "name": "测试报告",
+            "match": {
+                "ext": ".md",
+                "name_contains": "测试",
+                "min_count": 1,
+            },
+        }],
+    })
+    assert m["deliverables"][0]["match"]["ext"] == [".md"]
+    assert m["deliverables"][0]["match"]["name_contains"] == ["测试"]
+
+
+def test_validate_rejects_non_string_list_items():
+    with pytest.raises(DeliveryManifestError) as ei:
+        validate_manifest({
+            "deliverables": [{
+                "id": "d1", "name": "X",
+                "match": {"name_contains": [1, 2]},
+            }],
+        })
+    assert "name_contains" in ei.value.message
+
+
 def test_validate_bad_json_string():
     with pytest.raises(DeliveryManifestError):
         validate_manifest("{not json")
@@ -96,24 +124,94 @@ def test_assign_heuristic():
     assert "d1" in ids
 
 
+def test_llm_message_text_falls_back_to_reasoning():
+    from types import SimpleNamespace
+
+    from project_runtime.llm import llm_message_text
+
+    assert llm_message_text(
+        SimpleNamespace(content="hi", reasoning_content="think")
+    ) == "hi"
+    assert llm_message_text(
+        SimpleNamespace(content="", reasoning_content='{"a":1}')
+    ) == '{"a":1}'
+    assert llm_message_text(
+        {"content": None, "reasoning_content": "  x  "}
+    ) == "x"
+
+
 @pytest.mark.asyncio
-async def test_stop_problems_uses_manifest_ids(tmp_path):
-    """有 delivery_manifest + deliverable_ids → match 硬闸（非写死 tags）。"""
+async def test_extract_manifest_uses_reasoning_json(monkeypatch):
+    """content 空、reasoning 含 JSON 时仍能抽清单。"""
+    from types import SimpleNamespace
+
+    from project_runtime.procedure import delivery_manifest as dm
+
+    class _Cfg:
+        base_url = "http://x"
+        api_key = "k"
+        model = "m"
+
+    async def _fake_complete(**_kwargs):
+        msg = SimpleNamespace(
+            content="",
+            reasoning_content=(
+                '思考…最终输出 '
+                '{"version":1,"deliverables":['
+                '{"id":"d1","name":"方案PPT","match":{"ext":[".pptx"]}}'
+                "]}"
+            ),
+        )
+        return {
+            "ok": True,
+            "response": SimpleNamespace(
+                choices=[SimpleNamespace(message=msg)],
+            ),
+        }
+
+    import project_runtime.llm as llm_mod
+    import project_runtime.llm.provider as prov
+
+    monkeypatch.setattr(llm_mod, "load_llm_settings", lambda: _Cfg())
+    monkeypatch.setattr(llm_mod, "normalize_model_for_gateway", lambda m, b: m)
+    monkeypatch.setattr(prov, "llm_complete", _fake_complete)
+
+    out = await dm.extract_manifest_from_materials(
+        materials_text="需要方案PPT",
+    )
+    assert out["deliverables"][0]["id"] == "d1"
+
+
+@pytest.mark.asyncio
+async def test_stop_problems_uses_frozen_validator(tmp_path, monkeypatch):
+    """V1.6d: deliverable_ids → 冻结脚本子进程硬闸。"""
     import json
 
+    from project_runtime.procedure.delivery_manifest import validate_manifest
+    from project_runtime.procedure.delivery_validator import (
+        generate_and_install_validator,
+        render_match_validator_source,
+    )
     from project_runtime.worker.llm_worker import LLMWorkerAdapter
+
+    monkeypatch.chdir(tmp_path)
+    man = validate_manifest({
+        "version": 1,
+        "deliverables": [{
+            "id": "d_ppt",
+            "name": "方案PPT",
+            "match": {"ext": [".pptx"], "min_count": 1},
+        }],
+    })
+    digest = await generate_and_install_validator(
+        1, man, source_override=render_match_validator_source(man),
+    )
 
     class _Sess:
         async def get(self, model, pid):
             class P:
-                delivery_manifest = json.dumps({
-                    "version": 1,
-                    "deliverables": [{
-                        "id": "d_ppt",
-                        "name": "方案PPT",
-                        "match": {"ext": [".pptx"], "min_count": 1},
-                    }],
-                })
+                delivery_manifest = json.dumps(man)
+                delivery_validator_hash = digest
 
             return P()
 
@@ -133,6 +231,6 @@ async def test_stop_problems_uses_manifest_ids(tmp_path):
     worker._session = _Sess()
     worker._task_ws_root = lambda: ws
     problems = await worker._delivery_stop_problems(WP())
-    assert problems and "方案PPT" in problems[0]
+    assert problems and ("方案PPT" in problems[0] or "pptx" in problems[0].lower())
     (ws / "方案.pptx").write_bytes(b"PK")
     assert await worker._delivery_stop_problems(WP()) == []

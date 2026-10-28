@@ -64,10 +64,26 @@ _PROMPT = """你是项目流程分析器。从下面的方法资料中抽取流�
   ]
 }}
 
+重要：完整 JSON 必须写在正式回复（content）里；思考过程不要起草整表，
+更不要只写「现在输出 JSON」而不真正输出对象。
+
 资料来源：{source_name}
 资料正文：
 {text}
 """
+
+# 流式空闲超时：思考结束后若网关不再推送 chunk，避免干等到 605s
+_STREAM_IDLE_SEC = 60.0
+_RETRY_JSON_ONLY = (
+    "上一次未在正式回复中给出合法 JSON。"
+    "请立刻只输出一个 JSON 对象 "
+    '{"nodes":[{"name":"...","stage":"...","inputs":"UNKNOWN",'
+    '"activities":"UNKNOWN","outputs":"UNKNOWN","roles":"UNKNOWN",'
+    '"dependencies":"UNKNOWN","gate":"UNKNOWN",'
+    '"acceptance_criteria":"UNKNOWN","evidence_requirements":"UNKNOWN",'
+    '"constraints":"UNKNOWN","rework_path":"UNKNOWN"}]}，'
+    "不要思考过程、不要 markdown、不要解释。"
+)
 
 
 class LLMExtractor:
@@ -97,8 +113,7 @@ class LLMExtractor:
         return await self._extract_llm(text, source_name)
 
     async def _extract_llm(self, text: str, source_name: str) -> list[dict]:
-        # AOP-P2-2 清偿: litellm 直调 → LLM Capability Provider
-        from project_runtime.llm.provider import llm_acomplete
+        import asyncio as _asyncio
 
         model = self._cfg.model
         known = ("openai/", "azure/", "anthropic/", "huggingface/", "ollama/",
@@ -116,33 +131,101 @@ class LLMExtractor:
                 "自行安排——本约定只约束交付完整性，不约束流程设计。"
                 "承载任务的 outputs 请体现对应产物。"
             )
-        # 流式调用（CoT UI）：reasoning/content 分通道增量收集，
-        # 思考过程边收边发 LLM_THINKING_CHUNK 事件供界面实时显示
-        # V1.4b P4: 外层 wait_for——网关断流（aiostream 挂死）时
-        # litellm 自身 timeout 不生效, 605s 强制解除（/plan 不再永久挂起）
+        # 流式 + CoT；空闲超时防网关断流；失败则 JSON-only 重试一次
+
+        content, reasoning = await self._stream_once(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=16000,
+            call_timeout=600,
+        )
+        nodes = self._parse(_recover_nodes_json(content, reasoning))
+        if not nodes:
+            # 推理模型常在「现在输出 JSON」后断流/空 content——非流式再要一次
+            logger.warning(
+                "procedure extract: empty/unparseable after stream; "
+                "retry JSON-only once"
+            )
+            from project_runtime.llm.provider import llm_complete
+            from project_runtime.llm import llm_message_text
+
+            retry = await _asyncio.wait_for(
+                llm_complete(
+                    model=model,
+                    api_base=self._cfg.base_url,
+                    api_key=self._cfg.api_key,
+                    messages=[
+                        {"role": "user", "content": prompt},
+                        {"role": "user", "content": _RETRY_JSON_ONLY},
+                    ],
+                    max_tokens=8000,
+                    timeout=180,
+                ),
+                timeout=190,
+            )
+            if not retry.get("ok"):
+                raise RuntimeError(retry.get("error", "LLM retry failed"))
+            text = llm_message_text(retry["response"].choices[0].message)
+            await _emit_cot(self._project_id, "answer", text[:500] or "(empty)")
+            nodes = self._parse(_recover_nodes_json(text, ""))
+        if not nodes:
+            raise ValueError("LLM returned no parseable nodes")
+        return [self._normalize_node(n, source_name) for n in nodes]
+
+    async def _stream_once(
+        self,
+        *,
+        model: str,
+        messages: list[dict],
+        max_tokens: int,
+        call_timeout: int,
+    ) -> tuple[str, str]:
+        """流式抽取；返回 (content, reasoning)。空闲超时提前结束消费。"""
         import asyncio as _asyncio
+
+        from project_runtime.llm.provider import llm_acomplete
 
         result = await _asyncio.wait_for(
             llm_acomplete(
-            model=model,
-            api_base=self._cfg.base_url,
-            api_key=self._cfg.api_key,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=16000,
-                timeout=600,  # 推理型模型思考+生成长文档抽取——实测 104s+，600s 上限
+                model=model,
+                api_base=self._cfg.base_url,
+                api_key=self._cfg.api_key,
+                messages=messages,
+                max_tokens=max_tokens,
+                timeout=call_timeout,
                 stream=True,
             ),
-            timeout=605,
+            timeout=call_timeout + 5,
         )
         if not result.get("ok"):
-            # LLM 已配置但调用失败必须抛错（用户决策 2026-09-25——
-            # 静默降级产物比失败更糟，会被幂等键永久缓存）
             raise RuntimeError(result.get("error", "LLM failed"))
         stream = result["response"]
         reasoning_parts: list[str] = []
         content_parts: list[str] = []
         think_buf = ""
-        async for chunk in stream:
+        answer_buf = ""
+        ait = stream.__aiter__()
+        while True:
+            try:
+                chunk = await _asyncio.wait_for(
+                    ait.__anext__(), timeout=_STREAM_IDLE_SEC,
+                )
+            except StopAsyncIteration:
+                break
+            except _asyncio.TimeoutError:
+                logger.warning(
+                    "LLM stream idle >%.0fs — stop consuming "
+                    "(content=%d reasoning=%d chars)",
+                    _STREAM_IDLE_SEC,
+                    sum(len(x) for x in content_parts),
+                    sum(len(x) for x in reasoning_parts),
+                )
+                await _emit_cot(
+                    self._project_id,
+                    "thinking",
+                    f"\n[流式空闲超时 {_STREAM_IDLE_SEC:.0f}s，停止等待]\n",
+                )
+                break
             delta = chunk.choices[0].delta if chunk.choices else None
             if delta is None:
                 continue
@@ -156,32 +239,35 @@ class LLMExtractor:
                     think_buf = ""
             if cc:
                 content_parts.append(cc)
+                answer_buf += cc
+                if len(answer_buf) >= 80 or "\n" in answer_buf:
+                    await _emit_cot(self._project_id, "answer", answer_buf)
+                    answer_buf = ""
         if think_buf:
             await _emit_cot(self._project_id, "thinking", think_buf)
-        raw = "".join(content_parts)
-        # 推理型模型：content 可能为空而 reasoning_content 有内容（token 耗尽在思考）。
-        # 优先 content；空则从 reasoning_content 尾部捞 JSON（思考里常已产出结构）
-        if not raw.strip():
-            rc_all = "".join(reasoning_parts)
-            # 找思考里的 json 块
-            m = re.search(r"\[[\s\S]*\]", rc_all)
-            if m:
-                raw = m.group(0)
-        nodes = self._parse(raw)
-        if not nodes:
-            raise ValueError("LLM returned no parseable nodes")
-        return [self._normalize_node(n, source_name) for n in nodes]
+        if answer_buf:
+            await _emit_cot(self._project_id, "answer", answer_buf)
+        return "".join(content_parts), "".join(reasoning_parts)
 
     def _parse(self, raw: str) -> list[dict]:
-        # Strip code fences
-        raw = raw.strip()
+        raw = (raw or "").strip()
+        if not raw:
+            return []
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             if raw.startswith("json"):
                 raw = raw[4:]
-        data = json.loads(raw)
-        nodes = data.get("nodes", [])
-        return nodes if isinstance(nodes, list) else []
+            raw = raw.strip()
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return []
+        if isinstance(data, list):
+            return [x for x in data if isinstance(x, dict)]
+        if isinstance(data, dict):
+            nodes = data.get("nodes", [])
+            return nodes if isinstance(nodes, list) else []
+        return []
 
     def _normalize_node(self, n: dict, source_name: str) -> dict:
         # V1.4b 修1c: stage 字段落 workstream 列（环节贯通——
@@ -216,6 +302,28 @@ class LLMExtractor:
         else:
             node["readiness_status"] = "PARTIAL"
         return node
+
+
+def _recover_nodes_json(content: str, reasoning: str) -> str:
+    """优先 content；空则从 reasoning 捞 {\"nodes\":...} 或节点数组。"""
+    for blob in (content or "", reasoning or ""):
+        text = blob.strip()
+        if not text:
+            continue
+        fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
+        if fence:
+            text = fence.group(1).strip()
+        m = re.search(r"\{[\s\S]*\"nodes\"[\s\S]*\}", text)
+        if m:
+            return m.group(0)
+        m = re.search(
+            r'\[\s*\{\s*"name"[\s\S]*\}\s*\]', text,
+        )
+        if m:
+            return m.group(0)
+        if text.lstrip().startswith(("{", "[")):
+            return text
+    return (content or "").strip()
 
 
 def detect_conflicts(nodes: list[dict]) -> list[dict]:

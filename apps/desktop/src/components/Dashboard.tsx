@@ -48,11 +48,33 @@ interface TaskNode {
   id: number;
   name: string;
   status: string;
+  depends_on?: number[];
+  required_deliverables?: Array<{
+    id: string | null;
+    name: string;
+    match?: Record<string, unknown> | null;
+  }>;
+  stage_outputs?: string[];
 }
 
 /** WP-018: Current Frontier——READY 任务（可推进边界）。 */
 export function frontierIds(tasks: TaskNode[]): number[] {
   return tasks.filter((t) => t.status === 'READY').map((t) => t.id);
+}
+
+function productLabels(t: TaskNode): string[] {
+  // AI 写入的 outputs / stage_outputs 优先展示；清单名仅补未覆盖项
+  const fromAi = (t.stage_outputs ?? []).filter(Boolean);
+  const fromReq = (t.required_deliverables ?? [])
+    .map((d) => d.name)
+    .filter(Boolean);
+  if (fromAi.length === 0) return fromReq;
+  const seen = fromAi.map((s) => s.toLowerCase());
+  const uncovered = fromReq.filter((n) => {
+    const nl = n.toLowerCase();
+    return !seen.some((s) => s.includes(nl) || nl.includes(s));
+  });
+  return [...fromAi, ...uncovered];
 }
 
 /** Layered layout: depth = longest upstream chain. Nodes on the left, deps flow right. */
@@ -77,17 +99,27 @@ function layoutTasks(tasks: TaskNode[], deps: Array<[number, number]>) {
     layers.set(d, [...(layers.get(d) ?? []), t]);
   });
 
-  const NODE_W = 170;
-  const NODE_H = 56;
+  const NODE_W = 200;
+  const BASE_H = 56;
   const GAP_X = 60;
   const GAP_Y = 24;
+  const heights = new Map<number, number>();
+  tasks.forEach((t) => {
+    const all = productLabels(t);
+    const shown = Math.min(all.length, 3);
+    const extra = all.length > 3 ? 1 : 0; // "+N 项" 行
+    const lines = shown + extra;
+    heights.set(t.id, BASE_H + (lines > 0 ? 4 + lines * 14 : 0));
+  });
   const positions = new Map<number, { x: number; y: number }>();
   [...layers.entries()].forEach(([d, ts]) => {
-    ts.forEach((t, i) => {
-      positions.set(t.id, { x: d * (NODE_W + GAP_X), y: i * (NODE_H + GAP_Y) });
+    let y = 0;
+    ts.forEach((t) => {
+      positions.set(t.id, { x: d * (NODE_W + GAP_X), y });
+      y += (heights.get(t.id) ?? BASE_H) + GAP_Y;
     });
   });
-  return { positions, NODE_W, NODE_H };
+  return { positions, heights, NODE_W, BASE_H };
 }
 
 export function TaskGraphView({
@@ -101,13 +133,19 @@ export function TaskGraphView({
   onSelect: (id: number) => void;
   selectedId: number | null;
 }) {
-  const { positions, NODE_W, NODE_H } = useMemo(
+  const { positions, heights, NODE_W, BASE_H } = useMemo(
     () => layoutTasks(tasks, deps),
     [tasks, deps]
   );
 
   const maxX = Math.max(0, ...[...positions.values()].map((p) => p.x)) + NODE_W;
-  const maxY = Math.max(0, ...[...positions.values()].map((p) => p.y)) + NODE_H;
+  const maxY = Math.max(
+    0,
+    ...tasks.map((t) => {
+      const p = positions.get(t.id);
+      return (p?.y ?? 0) + (heights.get(t.id) ?? BASE_H);
+    }),
+  );
 
   return (
     <div style={{ overflowX: 'auto', padding: 8 }}>
@@ -121,10 +159,12 @@ export function TaskGraphView({
           const a = positions.get(up);
           const b = positions.get(down);
           if (!a || !b) return null;
+          const ah = heights.get(up) ?? BASE_H;
+          const bh = heights.get(down) ?? BASE_H;
           const x1 = a.x + NODE_W;
-          const y1 = a.y + NODE_H / 2;
+          const y1 = a.y + ah / 2;
           const x2 = b.x;
-          const y2 = b.y + NODE_H / 2;
+          const y2 = b.y + bh / 2;
           const midX = (x1 + x2) / 2;
           return (
             <polyline
@@ -139,7 +179,10 @@ export function TaskGraphView({
         })}
         {tasks.map((t) => {
           const p = positions.get(t.id)!;
+          const h = heights.get(t.id) ?? BASE_H;
           const selected = t.id === selectedId;
+          const products = productLabels(t).slice(0, 3);
+          const more = productLabels(t).length - products.length;
           return (
             <g
               key={t.id}
@@ -150,7 +193,7 @@ export function TaskGraphView({
             >
               <rect
                 width={NODE_W}
-                height={NODE_H}
+                height={h}
                 rx={8}
                 fill="#fff"
                 stroke={selected ? '#1890ff' : (STATUS_COLORS[t.status] ?? '#888')}
@@ -160,7 +203,7 @@ export function TaskGraphView({
               {t.status === 'READY' && (
                 <rect
                   width={NODE_W + 8}
-                  height={NODE_H + 8}
+                  height={h + 8}
                   x={-4}
                   y={-4}
                   rx={10}
@@ -171,12 +214,37 @@ export function TaskGraphView({
                   data-testid={`frontier-glow-${t.id}`}
                 />
               )}
-              <text x={12} y={22} fontSize={13} fontWeight={600} fill="#222">
-                {t.name.length > 10 ? t.name.slice(0, 10) + '…' : t.name}
+              <text x={12} y={20} fontSize={13} fontWeight={600} fill="#222">
+                {t.name.length > 12 ? t.name.slice(0, 12) + '…' : t.name}
               </text>
-              <text x={12} y={42} fontSize={11} fill={STATUS_COLORS[t.status] ?? '#888'}>
+              <text x={12} y={38} fontSize={11} fill={STATUS_COLORS[t.status] ?? '#888'}>
                 {t.status}
               </text>
+              {products.length > 0 && (
+                <g data-testid={`task-products-${t.id}`}>
+                  {products.map((name, i) => (
+                    <text
+                      key={`${t.id}-p-${i}`}
+                      x={12}
+                      y={54 + i * 14}
+                      fontSize={10}
+                      fill="#595959"
+                    >
+                      · {name.length > 14 ? name.slice(0, 14) + '…' : name}
+                    </text>
+                  ))}
+                  {more > 0 && (
+                    <text
+                      x={12}
+                      y={54 + products.length * 14}
+                      fontSize={10}
+                      fill="#8c8c8c"
+                    >
+                      +{more} 项…
+                    </text>
+                  )}
+                </g>
+              )}
             </g>
           );
         })}
@@ -301,6 +369,102 @@ export function Dashboard({ projectId, paused }: { projectId: number; paused?: b
               <p style={{ color: '#555', fontSize: 13, margin: 0 }}>
                 Task #{selected.id}
               </p>
+              {(() => {
+                const evs = data.runtime_events ?? [];
+                const graceEv = [...evs]
+                  .reverse()
+                  .find(
+                    (e) =>
+                      e.event_type === 'TOOL_BUDGET_GRACE' &&
+                      e.task_id === selected.id,
+                  );
+                if (!graceEv) return null;
+                const gtext =
+                  (graceEv.payload?.grace_text as string | undefined) ||
+                  graceEv.message ||
+                  '';
+                // Grace 之后同任务的 Stop 结果（DELIVERY_VALIDATOR_RUN）
+                const stopEv =
+                  evs.find(
+                    (e) =>
+                      e.event_type === 'DELIVERY_VALIDATOR_RUN' &&
+                      e.task_id === selected.id &&
+                      e.event_id > graceEv.event_id,
+                  ) ??
+                  [...evs]
+                    .reverse()
+                    .find(
+                      (e) =>
+                        e.event_type === 'DELIVERY_VALIDATOR_RUN' &&
+                        e.task_id === selected.id,
+                    );
+                const stopOk = stopEv?.payload?.ok;
+                const stopProblems = (stopEv?.payload?.problems as
+                  | string[]
+                  | undefined) ?? [];
+                const stopLine =
+                  stopEv == null
+                    ? null
+                    : stopOk === true
+                      ? 'Stop：通过'
+                      : stopOk === false
+                        ? `Stop：未通过${
+                            stopProblems.length
+                              ? ` — ${stopProblems.join('；')}`
+                              : stopEv.message
+                                ? ` — ${stopEv.message}`
+                                : ''
+                          }`
+                        : stopEv.message
+                          ? `Stop：${stopEv.message}`
+                          : null;
+                return (
+                  <div
+                    data-testid="task-grace"
+                    style={{
+                      marginTop: 10,
+                      padding: 10,
+                      background: '#fff7e6',
+                      border: '1px solid #ffd591',
+                      borderRadius: 6,
+                      fontSize: 13,
+                    }}
+                  >
+                    <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                      工具预算用尽 · Grace
+                      {graceEv.payload?.tool_rounds
+                        ? `（${graceEv.payload.tool_rounds} 轮）`
+                        : ''}
+                    </div>
+                    <pre
+                      style={{
+                        margin: 0,
+                        whiteSpace: 'pre-wrap',
+                        fontFamily: 'inherit',
+                        color: '#555',
+                        maxHeight: 160,
+                        overflow: 'auto',
+                      }}
+                    >
+                      {gtext}
+                    </pre>
+                    {stopLine ? (
+                      <div
+                        data-testid="task-grace-stop"
+                        style={{
+                          marginTop: 8,
+                          paddingTop: 8,
+                          borderTop: '1px dashed #ffd591',
+                          color: stopOk === false ? '#cf1322' : '#389e0d',
+                          fontWeight: 500,
+                        }}
+                      >
+                        {stopLine}
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })()}
               <div
                 data-testid="required-deliverables"
                 style={{ marginTop: 10 }}
@@ -457,6 +621,17 @@ export function Dashboard({ projectId, paused }: { projectId: number; paused?: b
                 测试报告 {data.delivery_status.test_report ? '✅' : '❌'}
               </p>
             )}
+            <p
+              data-testid="delivery-validator-meta"
+              style={{ fontSize: 12, color: '#666', marginBottom: 0 }}
+            >
+              {data.delivery_validator_hash_prefix
+                ? `校验脚本已生成 · hash ${data.delivery_validator_hash_prefix}…`
+                : '校验脚本未生成'}
+              {data.delivery_validator_generated_at
+                ? ` · ${data.delivery_validator_generated_at.slice(0, 19)}`
+                : ''}
+            </p>
           </section>
 
           <section data-testid="artifacts" style={card}>
@@ -532,13 +707,32 @@ export function Dashboard({ projectId, paused }: { projectId: number; paused?: b
           <h3 style={{ marginTop: 0 }}>Runtime Events（实时进度）</h3>
           <ul style={{ paddingLeft: 18, maxHeight: 240, overflowY: 'auto' }}>
             {(data.runtime_events ?? []).map((e) => (
-              <li key={e.event_id} style={{ fontSize: 13 }}>
+              <li
+                key={e.event_id}
+                style={{
+                  fontSize: 13,
+                  ...(e.event_type === 'TOOL_BUDGET_GRACE'
+                    ? {
+                        background: '#fff7e6',
+                        borderLeft: '3px solid #fa8c16',
+                        padding: '4px 8px',
+                        marginBottom: 4,
+                      }
+                    : {}),
+                }}
+              >
                 <code style={{ color: '#666' }}>
                   {e.timestamp ? e.timestamp.slice(11, 19) : '--:--:--'}
                 </code>{' '}
                 <strong>{e.event_type}</strong>
                 {e.phase ? ` · ${e.phase}` : ''}
                 {e.message ? ` — ${e.message}` : ''}
+                {e.event_type === 'TOOL_BUDGET_GRACE' &&
+                e.payload?.grace_text ? (
+                  <div style={{ color: '#666', marginTop: 2 }}>
+                    {String(e.payload.grace_text).slice(0, 200)}
+                  </div>
+                ) : null}
               </li>
             ))}
           </ul>

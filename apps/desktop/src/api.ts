@@ -23,6 +23,10 @@ export interface DashboardData {
   // V1.6 序6: 交付画像 + 三件状态
   delivery_profile?: string | null;
   delivery_status?: { ppt: boolean; code: boolean; test_report: boolean };
+  // V1.6d: 冻结校验脚本
+  delivery_validator_hash?: string | null;
+  delivery_validator_hash_prefix?: string | null;
+  delivery_validator_generated_at?: string | null;
   artifacts: Array<{
     id: number;
     name: string;
@@ -49,6 +53,16 @@ export interface DashboardData {
     task_id: number | null;
     phase: string | null;
     message: string | null;
+    payload?: {
+      grace_text?: string;
+      tool_rounds?: number;
+      tool_calls?: number;
+      tool_ok?: number;
+      tools?: string[];
+      ok?: boolean;
+      problems?: string[];
+      [key: string]: unknown;
+    } | null;
   }>;
 }
 
@@ -199,16 +213,19 @@ export async function runPlanning(
       detail && typeof detail === 'object' && 'detail' in detail
         ? (detail as { detail: unknown }).detail
         : detail;
-    if (
-      body &&
-      typeof body === 'object' &&
-      (body as { error_code?: string }).error_code ===
-        'DELIVERY_MANIFEST_INVALID'
-    ) {
-      const msg =
-        (body as { message?: string }).message ||
-        '交付清单 JSON 校验失败';
-      throw new PlanningError(msg, 'DELIVERY_MANIFEST_INVALID');
+    if (body && typeof body === 'object') {
+      const code = (body as { error_code?: string }).error_code;
+      if (
+        code === 'DELIVERY_MANIFEST_INVALID' ||
+        code === 'DELIVERY_VALIDATOR_INVALID'
+      ) {
+        const msg =
+          (body as { message?: string }).message ||
+          (code === 'DELIVERY_VALIDATOR_INVALID'
+            ? '交付校验脚本生成失败'
+            : '交付清单 JSON 校验失败');
+        throw new PlanningError(msg, code);
+      }
     }
     const fallback =
       typeof body === 'string'
@@ -469,10 +486,26 @@ export async function deleteProject(projectId: number): Promise<{
   tables: Record<string, number>;
   disk_removed: string[];
 }> {
-  const res = await fetch(`${API_BASE}/api/projects/${projectId}`, {
-    method: 'DELETE',
-  });
-  if (!res.ok) throw new Error(`删除失败: ${res.status}`);
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}/api/projects/${projectId}`, {
+      method: 'DELETE',
+    });
+  } catch (e) {
+    throw new Error(
+      `删除失败：无法连接 Runtime（${String(e)}）。请确认后端 :9100 已启动。`,
+    );
+  }
+  if (!res.ok) {
+    let detail = '';
+    try {
+      const body = await res.json();
+      detail = body?.detail ? `: ${JSON.stringify(body.detail)}` : '';
+    } catch {
+      /* ignore */
+    }
+    throw new Error(`删除失败: ${res.status}${detail}`);
+  }
   return res.json();
 }
 
