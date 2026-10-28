@@ -77,6 +77,20 @@ async def create_execution(req: CreateExecutionRequest):
     except ActiveExecutionExistsError as e:
         # AE-05: same Task duplicate start → no second active Execution
         raise HTTPException(409, str(e)) from e
+    except Exception as e:
+        from project_runtime.execution.service import PlanNotReadyError
+
+        if isinstance(e, PlanNotReadyError):
+            raise HTTPException(
+                409,
+                {
+                    "ok": False,
+                    "error_code": e.error_code,
+                    "message": str(e),
+                    "plan_status": e.plan_status,
+                },
+            ) from e
+        raise
 
     return {"execution_id": execution_id, "task_id": req.task_id, "status": "QUEUED"}
 

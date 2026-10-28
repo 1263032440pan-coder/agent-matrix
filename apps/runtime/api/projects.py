@@ -198,6 +198,19 @@ async def execute_project(project_id: int):
         project = await session.get(Project, project_id)
         if project is None:
             raise HTTPException(404, "Project not found")
+        from project_runtime.execution.service import PLAN_STATUS_READY
+
+        ps = getattr(project, "plan_status", None)
+        if ps is not None and ps != PLAN_STATUS_READY:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "ok": False,
+                    "error_code": "PLAN_NOT_READY",
+                    "message": f"计划未就绪（plan_status={ps}），拒绝执行",
+                    "plan_status": ps,
+                },
+            )
         # Snapshot mode BEFORE the promote loop's commit — ORM objects expire
         # on commit and attribute access afterwards triggers sync IO (the
         # MissingGreenlet 500 bug seen in production on 2026-09-24).
@@ -327,6 +340,9 @@ async def run_planning(project_id: int):
             ).scalars().all()
         )
         if not task_ids:
+            project = await session.get(Project, project_id)
+            if project is not None:
+                project.plan_status = "ASSIGNING"
             return {"cleared_tasks": 0}
         idlist = ",".join(str(t) for t in task_ids)
 
@@ -386,6 +402,10 @@ async def run_planning(project_id: int):
         await session.execute(
             _text(f'DELETE FROM task WHERE id IN ({idlist})')
         )
+        # SYS-106: 清场后进入认领中（执行入口拒绝直至 READY）
+        project = await session.get(Project, project_id)
+        if project is not None:
+            project.plan_status = "ASSIGNING"
         logger.info(
             "plan clear: project %d removed %d old tasks (full reset)",
             project_id, len(task_ids),
@@ -519,6 +539,7 @@ async def run_planning(project_id: int):
                 skill_hint=skill_hint,
             )
         except DeliveryManifestError as e:
+            project.plan_status = "INVALID"
             try:
                 await EventEngine().record(
                     RuntimeEventType.DELIVERY_MANIFEST_INVALID,
@@ -627,6 +648,7 @@ async def run_planning(project_id: int):
             clear_validator_files(project_id)
             project.delivery_validator_hash = None
             project.delivery_validator_generated_at = None
+            project.plan_status = "INVALID"
             try:
                 await EventEngine().record(
                     RuntimeEventType.DELIVERY_VALIDATOR_INVALID,
@@ -662,6 +684,9 @@ async def run_planning(project_id: int):
     async def _plan(session: AsyncSession):
         playbook = await _stage_last_playbook(session, project_id)
         tasks = await DynamicPlanner(session).plan(playbook)
+        project = await session.get(Project, project_id)
+        if project is not None:
+            project.plan_status = "ASSIGNING"
         # 20号规范 §2.2 路径1: 规划后按任务环节自动建 Agent 实例
         # （best-effort——Agent 面故障绝不阻断规划落账）
         from project_runtime.worker.lifecycle import provision_after_plan
@@ -675,6 +700,48 @@ async def run_planning(project_id: int):
             spawned = 0
         return {"tasks": len(tasks), "agents_provisioned": spawned}
 
+    async def _assign_deliverables_phase() -> dict:
+        """SYS-107~112: LLM 不持事务；硬门通过后短事务写入 deliverable_ids。"""
+        from project_runtime.event import EventEngine, RuntimeEventType
+        from project_runtime.procedure.delivery_assignment import (
+            DeliveryAssignmentError,
+            complete_delivery_assignment,
+            default_llm_fn,
+        )
+
+        try:
+            return await complete_delivery_assignment(
+                project_id,
+                llm=default_llm_fn,
+                freeze_accepted=False,
+            )
+        except DeliveryAssignmentError as e:
+            try:
+                await EventEngine().record(
+                    RuntimeEventType.DELIVERY_ASSIGNMENT_INVALID,
+                    project_id=project_id,
+                    phase="PLAN",
+                    message=e.message,
+                    payload={
+                        "error_code": e.error_code,
+                        "problems": e.problems[:20],
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "emit DELIVERY_ASSIGNMENT_INVALID failed",
+                    exc_info=True,
+                )
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "ok": False,
+                    "error_code": e.error_code,
+                    "message": e.message,
+                    "problems": e.problems[:20],
+                },
+            ) from e
+
     result: dict = {}
     try:
         result.update(await _stage(_clear_old_plan))
@@ -686,6 +753,7 @@ async def run_planning(project_id: int):
         result.update(await _stage(_resolve))
         result.update(await _stage(_build))
         result.update(await _stage(_plan))
+        result.update(await _assign_deliverables_phase())
         return result
     except HTTPException:
         raise
@@ -1074,6 +1142,10 @@ async def project_dashboard(project_id: int, session: AsyncSession = Depends(get
             if project.delivery_validator_generated_at
             else None
         ),
+        "plan_status": getattr(project, "plan_status", None) or "READY",
+        "delivery_assignment": _delivery_assignment_view(
+            manifest, tasks,
+        ),
         "delivery_status": {
             "ppt": any(
                 (a.name or "").lower().endswith(".pptx") for a in artifacts
@@ -1262,6 +1334,39 @@ def _required_deliverables_of(
         seen.add(key)
         uniq.append(it)
     return uniq
+
+
+def _delivery_assignment_view(
+    manifest: dict | None, tasks: list,
+) -> dict:
+    """SYS-117: 清单项数 / 已分配 / 每项主责。"""
+    deliverables = list((manifest or {}).get("deliverables") or [])
+    owner: dict[str, dict] = {}
+    for t in tasks:
+        try:
+            pref = json.loads(t.playbook_ref or "{}")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        for did in pref.get("deliverable_ids") or []:
+            owner[str(did)] = {"task_id": t.id, "task_name": t.name}
+    items = []
+    for d in deliverables:
+        did = str(d.get("id"))
+        o = owner.get(did)
+        items.append({
+            "id": did,
+            "name": d.get("name"),
+            "owner_task_id": o["task_id"] if o else None,
+            "owner_task_name": o["task_name"] if o else None,
+        })
+    assigned = sum(1 for i in items if i["owner_task_id"] is not None)
+    uncovered = [i["id"] for i in items if i["owner_task_id"] is None]
+    return {
+        "manifest_count": len(items),
+        "assigned_count": assigned,
+        "uncovered_ids": uncovered,
+        "items": items,
+    }
 
 
 async def _manual_actions(session: AsyncSession, project_id: int) -> list[dict]:

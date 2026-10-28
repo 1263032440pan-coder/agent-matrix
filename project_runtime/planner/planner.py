@@ -194,26 +194,9 @@ class DynamicPlanner:
         if code_stage_flag and not stage_outputs:
             stage_outputs = ["入口文件", "功能模块", "测试文件", "README"]
         delivery_tags = _delivery_tags_of_ws(ws, stage_outputs, task_type)
-        # V1.6c: 从项目 delivery_manifest 分配 deliverable_ids
+        # SYS-112: 新计划认领不再走 assign_ids_heuristic；建任务时空 ids，
+        # 由 delivery_assignment 阶段写入（plan_status=ASSIGNING→READY）。
         deliverable_ids: list[str] = []
-        try:
-            from project_runtime.procedure.delivery_manifest import (
-                assign_ids_heuristic,
-                validate_manifest,
-            )
-            from project_runtime.project_state.models import Project
-
-            proj = await self._session.get(Project, project_id)
-            if proj and proj.delivery_manifest:
-                man = validate_manifest(proj.delivery_manifest)
-                deliverable_ids = assign_ids_heuristic(
-                    ws.get("name") or "",
-                    stage_outputs,
-                    delivery_tags,
-                    man,
-                )
-        except Exception:  # noqa: BLE001 — 清单缺失不阻断建任务
-            logger.debug("deliverable_ids assign failed", exc_info=True)
         playbook_ref = json.dumps(
             {
                 "workstream_name": ws.get("workstream") or ws["name"],
@@ -226,7 +209,7 @@ class DynamicPlanner:
                 "stage_outputs": stage_outputs,
                 # V1.6 序3: delivery_tags 归一（词表命中——机制不进 LLM）
                 "delivery_tags": delivery_tags,
-                # V1.6c: 动态清单认领
+                # V1.6c: 动态清单认领（分配阶段回写）
                 "deliverable_ids": deliverable_ids,
                 # WP-007: Task 可引用 Playbook / Research（有则带上）
                 "research_enrichments": ws.get("research_enrichments") or [],

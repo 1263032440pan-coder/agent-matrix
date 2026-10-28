@@ -184,6 +184,18 @@ DOING
 | SYS-103 | V1.6d：file_rw 不可改写冻结校验脚本 | Worker 工具安全 | V1.6d | 写保护 | tools.py | is_validator_script_path | DONE（2026-10-27） |
 | SYS-104 | V1.6d：收口用冻结脚本扫项目根；缺项补建；脚本无效不瞎补 | Closeout | V1.6d | closeout | execution/service.py | hooks/backfill 回归 | DONE（2026-10-27） |
 | SYS-105 | V1.6d：Dashboard 展示脚本 hash 前缀/生成时间 | Desktop UI | V1.6d | dashboard 字段 | Dashboard.tsx + api | delivery-validator-meta | DONE（2026-10-27） |
+| SYS-106 | 交付认领：`plan_status` 生命周期门；非 READY 拒绝执行 | Plan Lifecycle | 认领方案 | migration e1a2b3c4d5e6 + submit 守卫 | models + execution/service + api | test_plan_status_gate | DONE（2026-10-28） |
+| SYS-107 | AI 标注节点角色/清单类别（关键词仅兜底） | Delivery Assignment | 认领方案 | 规划 LLM | delivery_assignment.py | test_delivery_assignment | DONE（2026-10-28） |
+| SYS-108 | AI 分次分配清单项→主责节点 + 片级重试 | Delivery Assignment | 认领方案 | 规划 LLM 多轮 | delivery_assignment.py | test_delivery_assignment | DONE（2026-10-28） |
+| SYS-109 | 整表硬门全覆盖/单一主责/一致性；失败 422+toast | Assignment Gate | 认领方案 | DELIVERY_ASSIGNMENT_INVALID | delivery_assignment + api + UI | 硬门+toast | DONE（2026-10-28） |
+| SYS-110 | 顺序可行（verification/package 拓扑） | Assignment Gate | 认领方案 | 硬门子规则 | delivery_assignment.py | test_delivery_assignment | DONE（2026-10-28） |
+| SYS-111 | 整表 AI 复核最多 1 次重派；硬门优先 | Delivery Assignment | 认领方案 | 规划 LLM | delivery_assignment.py | run_assignment | DONE（2026-10-28） |
+| SYS-112 | 新计划退出 `assign_ids_heuristic` 主路径 | Planner | 认领方案 | — | planner.py | 建任务空 ids | DONE（2026-10-28） |
+| SYS-113 | 重规划覆盖复检；ACCEPTED 认领冻结 | Replanner | 认领方案 | assign_in_session | replanner/service.py | replan 钩子 | DONE（2026-10-28） |
+| SYS-114 | 冻结脚本单调性冒烟 | Validator Gate | 认领方案 | differential_smoke | delivery_validator.py | test_monotonicity_smoke | DONE（2026-10-28） |
+| SYS-115 | 收口按 id 逐项跑脚本；禁止全表补建 | Closeout | 认领方案 | closeout | execution/service.py | 收口逻辑 | DONE（2026-10-28） |
+| SYS-116 | 补建任务带 depends_on | Closeout | 认领方案 | add_dependency | execution/service.py | 补建入边 | DONE（2026-10-28） |
+| SYS-117 | Dashboard 交付认领区（plan_status/主责） | Desktop UI | 认领方案 | dashboard 字段 | Dashboard + api | delivery-assignment | DONE（2026-10-28） |
 
 ### 本批追踪说明
 

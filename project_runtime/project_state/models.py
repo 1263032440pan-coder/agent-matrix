@@ -65,6 +65,10 @@ class Project(Base):
     delivery_validator_generated_at: Mapped[datetime.datetime | None] = (
         mapped_column(DateTime, nullable=True)
     )
+    # 交付认领计划生命周期：ASSIGNING | READY | INVALID（NULL=遗留项目视同 READY）
+    plan_status: Mapped[str | None] = mapped_column(
+        String(16), nullable=True, default="READY"
+    )
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )

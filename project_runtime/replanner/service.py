@@ -111,6 +111,26 @@ class Replanner:
         for req in getattr(planner, "pending_requests", []):
             logger.info("replan knowledge request: %s", req)
 
+        # 5.5 SYS-113: 任务集合变化后覆盖复检（ACCEPTED 认领冻结）
+        try:
+            from project_runtime.procedure.delivery_assignment import (
+                DeliveryAssignmentError,
+                assign_in_session,
+            )
+
+            await assign_in_session(
+                self._session,
+                project_id,
+                llm=None,
+                freeze_accepted=True,
+            )
+        except DeliveryAssignmentError as e:
+            logger.warning(
+                "replan assignment failed project=%s: %s",
+                project_id, e.message,
+            )
+            outcome.skipped_reason = f"assignment_invalid:{e.message[:120]}"
+
         # 6. New baseline for next detect
         asset_hashes, research_ids, und_id = await self._snapshot_inputs(
             project_id

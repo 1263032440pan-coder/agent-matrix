@@ -79,7 +79,8 @@ export function ProjectActions({
       if (
         e instanceof PlanningError &&
         (e.errorCode === 'DELIVERY_MANIFEST_INVALID' ||
-          e.errorCode === 'DELIVERY_VALIDATOR_INVALID')
+          e.errorCode === 'DELIVERY_VALIDATOR_INVALID' ||
+          e.errorCode === 'DELIVERY_ASSIGNMENT_INVALID')
       ) {
         antdMessage.error(errMsg, 8);
       }

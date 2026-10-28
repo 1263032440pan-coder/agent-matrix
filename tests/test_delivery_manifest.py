@@ -7,9 +7,43 @@ from project_runtime.procedure.delivery_manifest import (
     assign_ids_heuristic,
     check_deliverables,
     check_match,
+    extract_json_dict,
     map_legacy_tags_to_ids,
     validate_manifest,
 )
+
+
+def test_extract_json_dict_tolerates_match_fragment_plus_commentary():
+    """模型先吐 match 碎片再解释，后面才有根对象——应取 deliverables 根。"""
+    blob = (
+        '{"ext":[".py",".js"], "any_name_prefix":["readme"], "min_count":1}'
+        "。min_count表示至少有一个文件匹配，可以设为1。\n"
+        '{"version":1,"source":"plan_extract","deliverables":['
+        '{"id":"d_code","name":"代码","match":{"ext":[".py"],'
+        '"any_name_prefix":["readme"],"min_count":1}}]}'
+    )
+    obj = extract_json_dict(blob)
+    assert "deliverables" in obj
+    assert obj["deliverables"][0]["id"] == "d_code"
+
+
+def test_extract_json_dict_raw_decode_trailing_junk():
+    blob = (
+        '{"version":1,"deliverables":[{"id":"d1","name":"A",'
+        '"match":{"ext":[".md"],"min_count":1}}]}'
+        "这是多余说明"
+    )
+    obj = extract_json_dict(blob)
+    assert len(obj["deliverables"]) == 1
+
+
+def test_extract_json_dict_rejects_match_only():
+    with pytest.raises(DeliveryManifestError) as ei:
+        extract_json_dict(
+            '{"ext":[".py"],"min_count":1}。min_count表示至少有一个'
+        )
+    assert "deliverables" in ei.value.message
+
 
 
 def test_validate_ok():
@@ -74,6 +108,34 @@ def test_validate_rejects_non_string_list_items():
             }],
         })
     assert "name_contains" in ei.value.message
+
+
+def test_validate_drops_empty_ext_if_name_contains():
+    """LLM 写 ext:[] 但有 name_contains → 丢掉空 ext，仍通过。"""
+    m = validate_manifest({
+        "deliverables": [{
+            "id": "d1",
+            "name": "说明文档",
+            "match": {
+                "ext": [],
+                "name_contains": ["说明"],
+                "min_count": 1,
+            },
+        }],
+    })
+    assert "ext" not in m["deliverables"][0]["match"]
+    assert m["deliverables"][0]["match"]["name_contains"] == ["说明"]
+
+
+def test_validate_empty_ext_only_still_fails():
+    with pytest.raises(DeliveryManifestError) as ei:
+        validate_manifest({
+            "deliverables": [{
+                "id": "d1", "name": "X",
+                "match": {"ext": [], "min_count": 1},
+            }],
+        })
+    assert "至少须有" in ei.value.message
 
 
 def test_validate_bad_json_string():

@@ -56,6 +56,23 @@ describe('ProjectActions V1.6c toast', () => {
     );
   });
 
+  it('DELIVERY_ASSIGNMENT_INVALID → toast', async () => {
+    vi.mocked(runPlanning).mockRejectedValue(
+      new PlanningError('认领失败', 'DELIVERY_ASSIGNMENT_INVALID'),
+    );
+    render(
+      <ProjectActions
+        projectId={1}
+        onCreated={() => undefined}
+        onImported={() => undefined}
+      />,
+    );
+    await userEvent.click(screen.getByText('生成计划'));
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith('认领失败', 8);
+    });
+  });
+
   it('DELIVERY_VALIDATOR_INVALID → toast', async () => {
     vi.mocked(runPlanning).mockRejectedValue(
       new PlanningError(

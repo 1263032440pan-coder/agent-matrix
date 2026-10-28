@@ -2,7 +2,7 @@
 
 > 版本：2026-10-28（修订 2：合入逻辑漏洞评审补丁）  
 > 前置：V1.6c（`delivery_manifest` + 任务 `deliverable_ids`）；V1.6d（冻结校验脚本）；工具预算 Grace 方案（正交）  
-> 状态：待实现  
+> 状态：已落地（2026-10-28） 
 > 原则：**不特化任一产物类型**（PPT/某文档仅为现象举例）；修的是「清单 / 节点认领 / 产物 / 收口」整类错位。
 
 ---
@@ -267,18 +267,18 @@ Dashboard 交付区：
 
 | ID | 需求/能力 | 架构模块 | 开发 WP | API/协议 | 代码 | 测试 | 状态 |
 |---|---|---|---|---|---|---|---|
-| SYS-106 | 计划生命周期门：项目 `plan_status ∈ {ASSIGNING, READY, INVALID}`；建任务后为 ASSIGNING；分配通过才 READY；`plan_status≠READY` 时 submit / FULL_AUTO 推进 / 手动执行一律拒绝；分配失败清除本轮新建任务或置 INVALID（§4.5） | Plan Lifecycle | 本方案 §4.5 | `/plan` 分阶段 + 执行入口守卫 + migration | `api/projects.py` + `execution/service.py` + models | 分配中/失败时执行被拒；失败无残留可执行任务 | TODO |
-| SYS-107 | AI 分次标注节点角色（process/implement/verify/deliver）与清单项类别（source/verification/document/package/other），带 reason；关键词表仅兜底（§4.1） | Delivery Assignment | 本方案 §4.1 | 规划阶段 LLM 小 JSON | `procedure/delivery_assignment.py`（新） | 标注解析/缺失兜底用例 | TODO |
-| SYS-108 | AI 分次分配「清单项→主责节点」：按清单项切片、同会话连续、每轮附已分配表/剩余 id/节点负载；逐片验格式，失败只重试该片（≤2）（§4.2.1–4.2.2） | Delivery Assignment | 本方案 §4.2 | 规划阶段 LLM 多轮 | `delivery_assignment.py` | 坏片重试、抢占同 id 拒收、合并结果 | TODO |
-| SYS-109 | 整表硬门：结构合法、`task_key` 唯一映射、id ⊆ 清单、单一主责、**全覆盖**、§4.1 一致性规则；返工 ≤3 仍失败 → `DELIVERY_ASSIGNMENT_INVALID` 422 + 事件 + toast（§4.3） | Assignment Gate | 本方案 §4.3 | error_code + `RuntimeEventType` | `delivery_assignment.py` + `api/projects.py` + `event/models.py` + `api.ts` + `ProjectActions.tsx` | 漏派/重复/源码类挂 deliver 节点 → 拒收；toast vitest | TODO |
-| SYS-110 | 顺序可行：verification 类主责不早于任一 implement 节点；package 类主责不早于其打包对象主责节点（拓扑序比较）（§4.4） | Assignment Gate | 本方案 §4.4 | 硬门子规则 | `delivery_assignment.py` | 验证类挂到实现之前 → 拒收 | TODO |
-| SYS-111 | 整表回喂 AI 复核：最多触发 1 次相关片重派；重派后硬门通过即落库；AI 复核不能替代硬门（§4.2.4） | Delivery Assignment | 本方案 §4.2.4 | 规划阶段 LLM | `delivery_assignment.py` | 复核反对→仅 1 次重派；AI ok 但硬门失败→拒收 | TODO |
-| SYS-112 | 新计划认领不再走 `assign_ids_heuristic` 主路径 | Planner | 本方案 §三 | — | `planner/planner.py` | 回归：新计划 ids 仅来自分配结果 | TODO |
-| SYS-113 | 重规划/删任务覆盖复检：任务集合变化后置 ASSIGNING、重派未完成部分；ACCEPTED 认领冻结；清单变化=全量重派（§4.6） | Replanner/Plan Lifecycle | 本方案 §4.6 | Replanner + 删任务路径钩子 | `replanner/service.py` + `planner.py` + 删任务 API | 重规划后覆盖复检；ACCEPTED 认领不变 | TODO |
-| SYS-114 | 冻结脚本单调性冒烟：多子目录各自子集通过 → 合并根目录全量必须通过；否则 `DELIVERY_VALIDATOR_INVALID`（§5.1） | Validator Gate | 本方案 §5.1 | 生成流水线门禁 | `procedure/delivery_validator.py` | 非单调脚本（如「README 恰好一个」）生成失败 | TODO |
-| SYS-115 | 收口按 id 逐项跑脚本（每次单个 `--ids`），不解析 problems 文案；仅失败 id 补建；禁止全表补建（§六 1–2、4） | Closeout | 本方案 §六 | closeout | `execution/service.py` | 缺一项仅补一项；齐套零补建 | TODO |
-| SYS-116 | 补建任务带 `depends_on`：依赖原主责节点，无则依赖拓扑序最末已完成交付类节点（§六 3） | Closeout/Task Graph | 本方案 §六 | `add_dependency` | `execution/service.py` | 补建节点有入边、不落左列孤点 | TODO |
-| SYS-117 | Dashboard 交付区：清单项数 / 已分配数 / `plan_status` / 每项主责节点 / 分配失败明细 / 最近收口逐项结果（§七） | Desktop UI | 本方案 §七 | dashboard 字段 | `Dashboard.tsx` + `api.ts` + dashboard API | Dashboard vitest | TODO |
+| SYS-106 | 计划生命周期门：项目 `plan_status ∈ {ASSIGNING, READY, INVALID}`；建任务后为 ASSIGNING；分配通过才 READY；`plan_status≠READY` 时 submit / FULL_AUTO 推进 / 手动执行一律拒绝；分配失败清除本轮新建任务或置 INVALID（§4.5） | Plan Lifecycle | 本方案 §4.5 | `/plan` 分阶段 + 执行入口守卫 + migration | `api/projects.py` + `execution/service.py` + models | `tests/test_plan_status_gate.py` | DONE |
+| SYS-107 | AI 分次标注节点角色（process/implement/verify/deliver）与清单项类别（source/verification/document/package/other），带 reason；关键词表仅兜底（§4.1） | Delivery Assignment | 本方案 §4.1 | 规划阶段 LLM 小 JSON | `procedure/delivery_assignment.py`（新） | `tests/test_delivery_assignment.py` | DONE |
+| SYS-108 | AI 分次分配「清单项→主责节点」：按清单项切片、同会话连续、每轮附已分配表/剩余 id/节点负载；逐片验格式，失败只重试该片（≤2）（§4.2.1–4.2.2） | Delivery Assignment | 本方案 §4.2 | 规划阶段 LLM 多轮 | `delivery_assignment.py` | `tests/test_delivery_assignment.py` | DONE |
+| SYS-109 | 整表硬门：结构合法、`task_key` 唯一映射、id ⊆ 清单、单一主责、**全覆盖**、§4.1 一致性规则；返工 ≤3 仍失败 → `DELIVERY_ASSIGNMENT_INVALID` 422 + 事件 + toast（§4.3） | Assignment Gate | 本方案 §4.3 | error_code + `RuntimeEventType` | `delivery_assignment.py` + `api/projects.py` + `event/models.py` + `api.ts` + `ProjectActions.tsx` | 硬门单测 + toast vitest | DONE |
+| SYS-110 | 顺序可行：verification 类主责不早于任一 implement 节点；package 类主责不早于其打包对象主责节点（拓扑序比较）（§4.4） | Assignment Gate | 本方案 §4.4 | 硬门子规则 | `delivery_assignment.py` | `tests/test_delivery_assignment.py` | DONE |
+| SYS-111 | 整表回喂 AI 复核：最多触发 1 次相关片重派；重派后硬门通过即落库；AI 复核不能替代硬门（§4.2.4） | Delivery Assignment | 本方案 §4.2.4 | 规划阶段 LLM | `delivery_assignment.py` | 编排在 `run_assignment` | DONE |
+| SYS-112 | 新计划认领不再走 `assign_ids_heuristic` 主路径 | Planner | 本方案 §三 | — | `planner/planner.py` | 建任务空 ids | DONE |
+| SYS-113 | 重规划/删任务覆盖复检：任务集合变化后置 ASSIGNING、重派未完成部分；ACCEPTED 认领冻结；清单变化=全量重派（§4.6） | Replanner/Plan Lifecycle | 本方案 §4.6 | Replanner + 删任务路径钩子 | `replanner/service.py` + `assign_in_session` | Replanner 钩子；独立删任务 API 未暴露则随全清重规划覆盖 | DONE |
+| SYS-114 | 冻结脚本单调性冒烟：多子目录各自子集通过 → 合并根目录全量必须通过；否则 `DELIVERY_VALIDATOR_INVALID`（§5.1） | Validator Gate | 本方案 §5.1 | 生成流水线门禁 | `procedure/delivery_validator.py` | `tests/test_monotonicity_smoke.py` | DONE |
+| SYS-115 | 收口按 id 逐项跑脚本（每次单个 `--ids`），不解析 problems 文案；仅失败 id 补建；禁止全表补建（§六 1–2、4） | Closeout | 本方案 §六 | closeout | `execution/service.py` | 收口逻辑已改 | DONE |
+| SYS-116 | 补建任务带 `depends_on`：依赖原主责节点，无则依赖拓扑序最末已完成交付类节点（§六 3） | Closeout/Task Graph | 本方案 §六 | `add_dependency` | `execution/service.py` | 补建写 depends_on | DONE |
+| SYS-117 | Dashboard 交付区：清单项数 / 已分配数 / `plan_status` / 每项主责节点 / 分配失败明细 / 最近收口逐项结果（§七） | Desktop UI | 本方案 §七 | dashboard 字段 | `Dashboard.tsx` + `api.ts` + dashboard API | 交付区 UI；收口逐项结果见事件 payload.per_id | DONE |
 
 **前置（已完成，本方案不重做）：** SYS-096 manifest；SYS-097 deliverable_ids + 节点「要求产物」；SYS-098～105 冻结脚本 / Stop / 收口基线。  
 **归属锁定：** 单一主责；打包类节点复制他人产物不构成认领；收口以项目根为准（§五）。

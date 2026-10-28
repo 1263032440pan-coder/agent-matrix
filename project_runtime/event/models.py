@@ -72,6 +72,7 @@ class RuntimeEventType(str, enum.Enum):
     DELIVERY_VALIDATOR_TAMPERED = "DELIVERY_VALIDATOR_TAMPERED"  # V1.6d: hash 不符
     DELIVERY_VALIDATOR_RUN = "DELIVERY_VALIDATOR_RUN"  # V1.6d: 子进程校验一次
     TOOL_BUDGET_GRACE = "TOOL_BUDGET_GRACE"  # 工具预算用尽后 Grace 收尾（须上屏）
+    DELIVERY_ASSIGNMENT_INVALID = "DELIVERY_ASSIGNMENT_INVALID"  # 认领硬门失败
 
 
 class RuntimeEvent(Base):

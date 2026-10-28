@@ -243,7 +243,7 @@ async def run_validator_script(
 
 
 async def differential_smoke(script: Path, manifest: dict) -> None:
-    """满配必须 ok；空目录必须 fail 且 problems 足够。"""
+    """满配必须 ok；空目录必须 fail 且 problems 足够；合并子集须单调。"""
     ids = [d["id"] for d in (manifest.get("deliverables") or [])]
     if not ids:
         raise DeliveryValidatorError("清单无 deliverables，无法冒烟")
@@ -272,6 +272,38 @@ async def differential_smoke(script: Path, manifest: dict) -> None:
                 f"差分冒烟失败：空目录 problems 应 ≥{len(ids)}，"
                 f"实际 {len(probs)}：{probs}"
             )
+
+    # SYS-114: 多子目录各自子集通过 → 合并根目录全量必须通过（单调性）
+    if len(ids) >= 2:
+        with tempfile.TemporaryDirectory(prefix="dv_mono_") as td:
+            root = Path(td)
+            mid = (len(ids) + 1) // 2
+            chunks = [ids[:mid], ids[mid:]]
+            for i, chunk in enumerate(chunks):
+                if not chunk:
+                    continue
+                sub = root / f"part_{i}"
+                sub.mkdir(parents=True, exist_ok=True)
+                sub_man = {
+                    **manifest,
+                    "deliverables": [
+                        d for d in (manifest.get("deliverables") or [])
+                        if d["id"] in chunk
+                    ],
+                }
+                _make_fixture_files(sub, sub_man, filled=True)
+                r_sub = await run_validator_script(script, sub, chunk)
+                if not r_sub.get("ok"):
+                    raise DeliveryValidatorError(
+                        "单调性冒烟失败：子集目录应 ok=true，"
+                        f"ids={chunk} problems={r_sub.get('problems')}"
+                    )
+            r_merge = await run_validator_script(script, root, ids)
+            if not r_merge.get("ok"):
+                raise DeliveryValidatorError(
+                    "单调性冒烟失败：子集各自通过合并后全量必须 ok=true，"
+                    f"problems={r_merge.get('problems')}"
+                )
 
 
 def render_match_validator_source(manifest: dict) -> str:

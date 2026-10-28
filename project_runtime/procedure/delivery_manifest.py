@@ -28,6 +28,52 @@ class DeliveryManifestError(ValueError):
         self.message = message
 
 
+def extract_json_dict(text: str) -> dict:
+    """从模型输出中取出清单 JSON 对象。
+
+    容忍：markdown 围栏、前后说明、多个 ``{...}`` 碎片（选含 deliverables 的）、
+    trailing Extra data（用 raw_decode 只吃第一个完整对象）。
+    """
+    raw = (text or "").strip()
+    if not raw:
+        raise DeliveryManifestError(
+            "模型未返回合法 JSON：空响应"
+            "（推理模型可能把 token 耗在思考上，请重试）"
+        )
+    fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", raw)
+    if fence:
+        raw = fence.group(1).strip()
+
+    decoder = json.JSONDecoder()
+    candidates: list[dict] = []
+    for i, ch in enumerate(raw):
+        if ch != "{":
+            continue
+        try:
+            obj, _end = decoder.raw_decode(raw, i)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            candidates.append(obj)
+
+    if not candidates:
+        raise DeliveryManifestError(
+            f"模型未返回合法 JSON：无对象；片段：{raw[:180]}"
+        )
+
+    for obj in candidates:
+        if "deliverables" in obj:
+            return obj
+    # 退而求其次：带 version 的根对象
+    for obj in candidates:
+        if "version" in obj:
+            return obj
+    raise DeliveryManifestError(
+        "模型未返回交付清单根对象（缺 deliverables）；"
+        f"片段：{raw[:180]}"
+    )
+
+
 def _coerce_str_list(val: Any) -> list[str] | None:
     """LLM 常把 name_contains/ext 写成单字符串——归一为非空字符串数组。
 
@@ -92,20 +138,18 @@ def validate_manifest(data: Any) -> dict:
                 f"{sorted(unknown)}（仅允许 {sorted(_ALLOWED_MATCH_KEYS)}）"
             )
         norm_match: dict[str, Any] = {}
+        # 空数组视为「未提供该键」（LLM 常写 "ext":[]），不直接报不可为空
         if "ext" in match:
             ext = _coerce_str_list(match["ext"])
             if ext is None:
                 raise DeliveryManifestError(
                     f"deliverables[{i}].match.ext 须为字符串或字符串数组"
                 )
-            if not ext:
-                raise DeliveryManifestError(
-                    f"deliverables[{i}].match.ext 不可为空"
-                )
-            norm_match["ext"] = [
-                x.lower() if x.startswith(".") else f".{x.lower()}"
-                for x in ext
-            ]
+            if ext:
+                norm_match["ext"] = [
+                    x.lower() if x.startswith(".") else f".{x.lower()}"
+                    for x in ext
+                ]
         for key in ("name_contains", "any_name_prefix"):
             if key in match:
                 val = _coerce_str_list(match[key])
@@ -113,11 +157,8 @@ def validate_manifest(data: Any) -> dict:
                     raise DeliveryManifestError(
                         f"deliverables[{i}].match.{key} 须为字符串或字符串数组"
                     )
-                if not val:
-                    raise DeliveryManifestError(
-                        f"deliverables[{i}].match.{key} 不可为空"
-                    )
-                norm_match[key] = val
+                if val:
+                    norm_match[key] = val
         min_count = int(match.get("min_count") or 1)
         if min_count < 1:
             raise DeliveryManifestError(
@@ -263,11 +304,13 @@ async def extract_manifest_from_materials(
         '"min_count":1}}\n'
         "]}\n"
         "match 只允许键: ext, name_contains, any_name_prefix, min_count。"
+        "每项 match 必须至少有非空的 ext 或 name_contains（二者缺一不可都空）；"
         "ext / name_contains / any_name_prefix 必须是 JSON 字符串数组"
         "（例 name_contains:[\"测试\"]，禁止写成单个字符串）。\n"
         "代码类产物请同时设 ext 与 any_name_prefix:[\"readme\"]。\n"
         "测试报告类请 name_contains:[\"测试\"] 且 ext 含 .md。\n"
-        "不要输出思考过程或其它文字，JSON 之外不要有内容。\n\n"
+        "禁止解释字段含义（不要写「min_count 表示…」这类说明）。"
+        "不要输出思考过程；JSON 之外不要有任何文字。\n\n"
         f"【交付基线提示】\n{skill_hint[:1500] or '（无）'}\n\n"
         f"【材料摘要】\n{materials_text[:6000]}"
     )
@@ -307,25 +350,52 @@ async def extract_manifest_from_materials(
             ],
             4000,
         )
-    # 剥 markdown 围栏；再取首个 JSON 对象（容忍前后噪音）
-    fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
-    if fence:
-        text = fence.group(1).strip()
-    brace = re.search(r"\{[\s\S]*\}", text)
-    if brace:
-        text = brace.group(0)
-    if not text.strip():
-        raise DeliveryManifestError(
-            "模型未返回合法 JSON：空响应"
-            "（推理模型可能把 token 耗在思考上，请重试）"
-        )
     try:
-        raw = json.loads(text)
-    except json.JSONDecodeError as e:
-        raise DeliveryManifestError(
-            f"模型未返回合法 JSON：{e}；片段：{text[:180]}"
-        ) from e
-    return validate_manifest(raw)
+        raw = extract_json_dict(text)
+    except DeliveryManifestError:
+        # 一次纠错：把坏输出喂回，要求只吐根对象
+        text = await _once(
+            [
+                {"role": "user", "content": prompt},
+                {"role": "assistant", "content": (text or "")[:2000]},
+                {
+                    "role": "user",
+                    "content": (
+                        "上一段不是合法的交付清单根对象。"
+                        "请只输出一个 JSON："
+                        '{"version":1,"source":"plan_extract","deliverables":[...]}，'
+                        "deliverables 每项含 id/name/match；"
+                        "不要解释、不要单独输出 match 碎片。"
+                    ),
+                },
+            ],
+            4000,
+        )
+        raw = extract_json_dict(text)
+    try:
+        return validate_manifest(raw)
+    except DeliveryManifestError as ve:
+        # schema 失败再纠一次（常见：ext:[] / 缺 name_contains）
+        text = await _once(
+            [
+                {"role": "user", "content": prompt},
+                {
+                    "role": "assistant",
+                    "content": json.dumps(raw, ensure_ascii=False)[:2500],
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"校验失败：{ve.message}。"
+                        "请输出修正后的完整清单 JSON："
+                        "每项 match 须有非空 ext 或非空 name_contains；"
+                        "禁止空数组；不要解释。"
+                    ),
+                },
+            ],
+            4000,
+        )
+        return validate_manifest(extract_json_dict(text))
 
 
 def assign_ids_heuristic(

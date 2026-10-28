@@ -27,6 +27,18 @@ export interface DashboardData {
   delivery_validator_hash?: string | null;
   delivery_validator_hash_prefix?: string | null;
   delivery_validator_generated_at?: string | null;
+  plan_status?: string | null;
+  delivery_assignment?: {
+    manifest_count: number;
+    assigned_count: number;
+    uncovered_ids: string[];
+    items: Array<{
+      id: string;
+      name?: string | null;
+      owner_task_id: number | null;
+      owner_task_name: string | null;
+    }>;
+  };
   artifacts: Array<{
     id: number;
     name: string;
@@ -217,13 +229,16 @@ export async function runPlanning(
       const code = (body as { error_code?: string }).error_code;
       if (
         code === 'DELIVERY_MANIFEST_INVALID' ||
-        code === 'DELIVERY_VALIDATOR_INVALID'
+        code === 'DELIVERY_VALIDATOR_INVALID' ||
+        code === 'DELIVERY_ASSIGNMENT_INVALID'
       ) {
         const msg =
           (body as { message?: string }).message ||
           (code === 'DELIVERY_VALIDATOR_INVALID'
             ? '交付校验脚本生成失败'
-            : '交付清单 JSON 校验失败');
+            : code === 'DELIVERY_ASSIGNMENT_INVALID'
+              ? '交付清单认领失败'
+              : '交付清单 JSON 校验失败');
         throw new PlanningError(msg, code);
       }
     }

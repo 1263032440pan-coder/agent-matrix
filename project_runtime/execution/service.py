@@ -24,6 +24,37 @@ from project_runtime.execution.repository import ExecutionRepository
 
 logger = logging.getLogger(__name__)
 
+PLAN_STATUS_READY = "READY"
+PLAN_STATUS_ASSIGNING = "ASSIGNING"
+PLAN_STATUS_INVALID = "INVALID"
+
+
+class PlanNotReadyError(Exception):
+    """plan_status ≠ READY 时拒绝 submit / FULL_AUTO / 手动执行。"""
+
+    def __init__(self, plan_status: str | None):
+        self.plan_status = plan_status or "NULL"
+        self.error_code = "PLAN_NOT_READY"
+        super().__init__(
+            f"计划未就绪（plan_status={self.plan_status}），拒绝执行"
+        )
+
+
+async def assert_plan_ready_for_execution(
+    session: AsyncSession, project_id: int,
+) -> None:
+    """SYS-106：仅 READY（或遗留 NULL）允许进入执行通道。"""
+    from project_runtime.project_state.models import Project as ProjectModel
+
+    proj = await session.get(ProjectModel, project_id)
+    if proj is None:
+        raise PlanNotReadyError("MISSING")
+    status = getattr(proj, "plan_status", None)
+    if status is None or status == PLAN_STATUS_READY:
+        return
+    raise PlanNotReadyError(status)
+
+
 # WP-034/WP-035-TD01: composition root — the hook executor is CONSTRUCTED
 # once here and INJECTED into the PipelineEngine (no hidden singleton inside
 # the executor/engine modules). Tests and future multi-registry setups
@@ -862,66 +893,50 @@ async def _delivery_closeout_check(project_id: int) -> None:
                     message="校验脚本无效，未自动补建交付任务",
                 )
                 return
-            ids = [d["id"] for d in (manifest.get("deliverables") or [])]
-            result = await run_validator_script(script, ws_root, ids)
+            # SYS-115: 按 id 逐项跑脚本，不解析 problems 文案、禁止全表补建
+            per_id_results: list[dict] = []
+            for d in manifest.get("deliverables") or []:
+                did = d["id"]
+                one = await run_validator_script(script, ws_root, [did])
+                per_id_results.append({
+                    "id": did,
+                    "ok": bool(one.get("ok")),
+                    "problems": (one.get("problems") or [])[:6],
+                })
+                if not one.get("ok"):
+                    missing_items.append({
+                        "id": did,
+                        "name": d["name"],
+                        "fact": "；".join(
+                            one.get("problems") or ["校验未通过"]
+                        ),
+                        "deliverable_ids": [did],
+                        "delivery_tags": [],
+                        "task_type": "交付打包",
+                    })
             try:
+                all_ok = not missing_items
                 await EventEngine().record(
                     RuntimeEventType.DELIVERY_VALIDATOR_RUN,
                     project_id=project_id,
                     phase="CLOSEOUT",
                     message=(
-                        "ok" if result.get("ok")
-                        else ";".join(result.get("problems") or [])[:100]
+                        "ok" if all_ok
+                        else f"failed_ids={len(missing_items)}"
                     ),
                     payload={
-                        "ok": bool(result.get("ok")),
-                        "problems": (result.get("problems") or [])[:12],
+                        "ok": all_ok,
+                        "per_id": per_id_results[:40],
+                        "problems": [
+                            p for r in per_id_results
+                            for p in (r.get("problems") or [])
+                        ][:12],
                     },
                 )
             except Exception:  # noqa: BLE001
                 logger.debug("closeout RUN event failed", exc_info=True)
-            if result.get("ok"):
-                return
-            # 按 deliverable 拆分补建：problems 含名称前缀
-            by_name = {
-                d["name"]: d for d in (manifest.get("deliverables") or [])
-            }
-            by_id = {
-                d["id"]: d for d in (manifest.get("deliverables") or [])
-            }
-            claimed: set[str] = set()
-            for prob in result.get("problems") or []:
-                matched = None
-                for name, d in by_name.items():
-                    if name in str(prob):
-                        matched = d
-                        break
-                if matched is None:
-                    for did, d in by_id.items():
-                        if did in str(prob):
-                            matched = d
-                            break
-                if matched and matched["id"] not in claimed:
-                    claimed.add(matched["id"])
-                    missing_items.append({
-                        "id": matched["id"],
-                        "name": matched["name"],
-                        "fact": str(prob),
-                        "deliverable_ids": [matched["id"]],
-                        "delivery_tags": [],
-                        "task_type": "交付打包",
-                    })
             if not missing_items:
-                # 无法拆分时按全清单缺件补（保守）
-                for d in manifest.get("deliverables") or []:
-                    missing_items.append({
-                        "id": d["id"],
-                        "name": d["name"],
-                        "fact": "；".join(result.get("problems") or ["缺件"]),
-                        "deliverable_ids": [d["id"]],
-                        "delivery_tags": [],
-                        "task_type": "交付打包",
-                    })
+                return
         elif manifest:
             for d in manifest.get("deliverables") or []:
                 probs = check_match(all_names, d.get("match") or {})
@@ -969,14 +984,44 @@ async def _delivery_closeout_check(project_id: int) -> None:
         if not missing_items:
             return
 
-        existing = {
-            t.name for t in
-            (await session.execute(
-                select(TaskModel).where(
-                    TaskModel.project_id == project_id
+        all_tasks = list(
+            (
+                await session.execute(
+                    select(TaskModel).where(
+                        TaskModel.project_id == project_id
+                    )
                 )
-            )).scalars().all()
-        }
+            ).scalars().all()
+        )
+        existing = {t.name for t in all_tasks}
+        # SYS-116: 原主责节点（playbook_ref.deliverable_ids）
+        owner_by_id: dict[str, int] = {}
+        for ot in all_tasks:
+            try:
+                pref = _json.loads(ot.playbook_ref or "{}")
+            except (ValueError, TypeError):
+                continue
+            for did in pref.get("deliverable_ids") or []:
+                owner_by_id.setdefault(str(did), ot.id)
+        # 拓扑序最末的已完成交付类节点（无主责时兜底）
+        deliver_fallback_id: int | None = None
+        accepted_deliver = [
+            t for t in all_tasks
+            if t.status == TaskStatus.ACCEPTED
+            and (
+                (t.task_type or "") in ("交付打包", "测试验证")
+                or (t.name or "").startswith("交付")
+            )
+        ]
+        if accepted_deliver:
+            deliver_fallback_id = max(accepted_deliver, key=lambda x: x.id).id
+        elif all_tasks:
+            done = [
+                t for t in all_tasks if t.status == TaskStatus.ACCEPTED
+            ]
+            if done:
+                deliver_fallback_id = max(done, key=lambda x: x.id).id
+
         created_ids: list[int] = []
         mgr = TaskGraphManager(session)
         for item in missing_items:
@@ -1003,6 +1048,16 @@ async def _delivery_closeout_check(project_id: int) -> None:
                 f"交付补全任务。缺失事实：{item['fact']}。"
                 f"请产出「{item['name']}」并落盘到工作区。"
             )
+            # SYS-116: 补建依赖原主责（或最末已完成交付节点）
+            dep_id = owner_by_id.get(str(item["id"])) or deliver_fallback_id
+            if dep_id and dep_id != t.id:
+                try:
+                    await mgr.add_dependency(t.id, dep_id)
+                except Exception:  # noqa: BLE001
+                    logger.debug(
+                        "backfill depends_on failed task=%s dep=%s",
+                        t.id, dep_id, exc_info=True,
+                    )
             try:
                 from project_runtime.worker.lifecycle import (
                     provision_after_plan,
@@ -1054,6 +1109,7 @@ class ExecutionService:
         from project_runtime.event import RuntimeEventType
 
         async with AsyncSession(engine) as session:
+            await assert_plan_ready_for_execution(session, project_id)
             repo = ExecutionRepository(session)
             ex = await repo.create(project_id, task_id)
             execution_id = ex.id

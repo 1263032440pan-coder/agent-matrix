@@ -632,6 +632,31 @@ export function Dashboard({ projectId, paused }: { projectId: number; paused?: b
                 ? ` · ${data.delivery_validator_generated_at.slice(0, 19)}`
                 : ''}
             </p>
+            <div
+              data-testid="delivery-assignment"
+              style={{ fontSize: 12, color: '#444', marginTop: 8 }}
+            >
+              <p style={{ margin: '0 0 4px' }}>
+                计划状态 {data.plan_status || 'READY'} · 清单{' '}
+                {data.delivery_assignment?.manifest_count ?? 0} / 已分配{' '}
+                {data.delivery_assignment?.assigned_count ?? 0}
+              </p>
+              {(data.delivery_assignment?.uncovered_ids?.length ?? 0) > 0 && (
+                <p style={{ margin: '0 0 4px', color: '#a61d24' }}>
+                  未覆盖：{data.delivery_assignment!.uncovered_ids.join(', ')}
+                </p>
+              )}
+              <ul style={{ paddingLeft: 18, margin: 0 }}>
+                {(data.delivery_assignment?.items || []).map((it) => (
+                  <li key={it.id}>
+                    {it.name || it.id}
+                    {it.owner_task_name
+                      ? ` → ${it.owner_task_name}`
+                      : ' → （未分配）'}
+                  </li>
+                ))}
+              </ul>
+            </div>
           </section>
 
           <section data-testid="artifacts" style={card}>
