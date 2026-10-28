@@ -7,11 +7,9 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from project_runtime.execution.service import (
     PlanNotReadyError,
-    ExecutionService,
 )
-from project_runtime.project_state.enums import AutomationMode, ProjectStatus
+from project_runtime.project_state.enums import AutomationMode, ProjectStatus, TaskStatus
 from project_runtime.project_state.models import Base, Project, Task
-from project_runtime.project_state.enums import TaskStatus
 
 
 @pytest.fixture
