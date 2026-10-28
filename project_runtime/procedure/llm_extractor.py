@@ -146,8 +146,8 @@ class LLMExtractor:
                 "procedure extract: empty/unparseable after stream; "
                 "retry JSON-only once"
             )
-            from project_runtime.llm.provider import llm_complete
             from project_runtime.llm import llm_message_text
+            from project_runtime.llm.provider import llm_complete
 
             retry = await _asyncio.wait_for(
                 llm_complete(

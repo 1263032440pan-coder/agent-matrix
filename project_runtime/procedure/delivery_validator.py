@@ -208,7 +208,7 @@ async def run_validator_script(
             "timed_out": False,
         }
     text = raw.strip()
-    # 剥可能的前后噪音：取第一个 { ... } 
+    # 剥可能的前后噪音：取第一个 { ... }
     brace = re.search(r"\{[\s\S]*\}", text)
     if not brace:
         err = (stderr_b or b"").decode("utf-8", errors="replace")[:200]

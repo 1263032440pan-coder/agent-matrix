@@ -191,8 +191,8 @@ class TestBudgetGrace:
     async def test_budget_exhaust_stop_fail_raises(self, monkeypatch):
         """Grace 后 Stop 失败 → DeliveryBaselineError（不再工具返工）。"""
         from project_runtime.worker.llm_worker import (
-            DeliveryBaselineError,
             _TOOL_ROUNDS,
+            DeliveryBaselineError,
         )
 
         w = _make_worker()
