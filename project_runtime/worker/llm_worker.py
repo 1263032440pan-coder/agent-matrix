@@ -84,11 +84,11 @@ def _check_delivery_workspace(ws_root: Path, tags: list[str]) -> list[str]:
             has_readme = any(n.lower().startswith("readme") for n in names)
             if not has_code:
                 problems.append(
-                    "可运行代码: 无代码文件——请用 file_rw 落盘源码"
+                    "可运行代码: 无代码文件——请用 write_file 落盘源码"
                 )
             if not has_readme:
                 problems.append(
-                    "README: 缺失——请用 file_rw 落盘 README.md"
+                    "README: 缺失——请用 write_file 落盘 README.md"
                     "（启动方式/依赖/目录结构）"
                 )
         elif tag == "test_report":
@@ -97,7 +97,7 @@ def _check_delivery_workspace(ws_root: Path, tags: list[str]) -> list[str]:
             ):
                 problems.append(
                     "测试报告: 无含「测试」的 md——"
-                    "请用 file_rw 落盘（范围/结果/统计/结论）"
+                    "请用 write_file 落盘（范围/结果/统计/结论）"
                 )
     return problems
 
@@ -135,6 +135,19 @@ def _repair_arguments(raw: str) -> str | None:
     return None  # 中段丢块——无法修复
 
 
+def _tool_result_text(result: dict) -> str:
+    """TOOL 结果 → 喂回模型的文本；结构化失败固定为 [code] error + 建议。"""
+    if not result.get("ok") and result.get("error_code"):
+        text = f"[{result['error_code']}] {result.get('error') or ''}"
+        if result.get("hint"):
+            text += f"\n建议：{result['hint']}"
+        return text[:6000]
+    return str(result.get("stdout")
+               or result.get("result")
+               or result.get("error")
+               or "")[:6000]
+
+
 
 class LLMWorkerAdapter(WorkerAdapter):
     """Real worker: executes tasks via LLM (LiteLLM)."""
@@ -154,7 +167,7 @@ class LLMWorkerAdapter(WorkerAdapter):
         self._current_task_id: int | None = None
         # V1.6b: 交付硬闸返工计数（task_id → 已注入次数；仅提前收工）
         self._delivery_repair_counts: dict[int, int] = {}
-        # V1.6 序0: 任务工作区根（file_rw 写禁闭）
+        # V1.6 序0: 任务工作区根（文件工具写禁闭）
         self._workspace_root: str | None = None
         # 返修单 B: 当前 Agent 归属（实时思维链事件 payload）
         self._current_agent: dict | None = None
@@ -1209,13 +1222,17 @@ class LLMWorkerAdapter(WorkerAdapter):
         """
         from project_runtime.extension.shared import shared_registry
         from project_runtime.plugin.capability import CapabilityType
+        from project_runtime.worker.tools import expand_tool_whitelist
 
         registry = shared_registry()
         providers = registry.list_providers(CapabilityType.RESEARCH)
         search_ok = any(i.enabled for i in providers)
 
         # TOOL 插件面（V1.4: 白名单 ∩ 已注册——裸名比对剥前缀）
-        allowed = None if whitelist is None else set(whitelist)
+        allowed = (
+            None if whitelist is None
+            else set(expand_tool_whitelist(whitelist))
+        )
         tool_defs: list[dict] = []
         for info in registry.list_providers(CapabilityType.TOOL):
             if allowed is not None:
@@ -1291,8 +1308,16 @@ class LLMWorkerAdapter(WorkerAdapter):
         V1.4 纵深防御: whitelist 内不含的工具名直接拒（模型幻觉出
         未暴露但已注册的工具也拒——返回降级文案而非执行）。
         """
+        from project_runtime.worker.tools import (
+            RENAMED_TOOLS,
+            expand_tool_whitelist,
+            renamed_tool_error,
+        )
+
+        if name in RENAMED_TOOLS:
+            return renamed_tool_error(name)
         if whitelist is not None:
-            allowed = set(whitelist)
+            allowed = set(expand_tool_whitelist(whitelist))
             bare = name.split(":", 1)[-1]
             if bare not in allowed and name not in allowed:
                 return {
@@ -1309,10 +1334,11 @@ class LLMWorkerAdapter(WorkerAdapter):
             if info.name == name and info.enabled:
                 try:
                     payload = dict(args)
-                    # V1.6 序0: file_rw 写禁闭——注入任务工作区根
+                    # V1.6 序0: 文件工具写禁闭——注入任务工作区根
                     # （__ 前缀=内部参数, schema 不暴露, Provider 侧剥离）
                     if name in (
-                        "tool:file_rw", "tool:slide_generator",
+                        "tool:read_file", "tool:list_dir",
+                        "tool:write_file", "tool:slide_generator",
                     ) and self._workspace_root:
                         payload["__ws_root"] = self._workspace_root
                     return await info.provider.invoke(payload)
@@ -1322,30 +1348,104 @@ class LLMWorkerAdapter(WorkerAdapter):
 
     async def _emit_tool_result(
         self, task_id: int | None, name: str, ok: bool, text: str,
-        t0: float, round_no: int,
+        t0: float, round_no: int, result: dict | None = None,
     ) -> None:
         """工具结果审计事件（全文不进事件——正文归属 TaskRun）。"""
         import time as _time
 
         from project_runtime.event import EventEngine, RuntimeEventType
 
+        payload = {
+            "tool": name,
+            "ok": ok,
+            "chars": len(text),
+            "duration_ms": int((_time.monotonic() - t0) * 1000),
+            "round": round_no,
+        }
+        if not ok and result:
+            payload["error_code"] = result.get("error_code")
+            payload["error"] = str(result.get("error") or "")[:300]
         try:
             await EventEngine().record(
                 RuntimeEventType.LLM_TOOL_RESULT,
                 task_id=task_id,
                 phase="LLM_TOOL",
-                message=f"{name} ok={ok}",
+                message=(
+                    f"{name} ok={ok}"
+                    + (f" [{payload['error_code']}]"
+                       if payload.get("error_code") else "")
+                ),
                 actor="WORKER",
-                payload={
-                    "tool": name,
-                    "ok": ok,
-                    "chars": len(text),
-                    "duration_ms": int((_time.monotonic() - t0) * 1000),
-                    "round": round_no,
-                },
+                payload=payload,
             )
         except Exception:  # noqa: BLE001
             pass
+
+    async def _emit_tool_call(
+        self, task_id: int | None, name: str, args: dict, round_no: int,
+        *, repaired: bool = False, raw_chars: int | None = None,
+    ) -> None:
+        """工具调用审计事件：只记参数要点与长度，不记正文。"""
+        from project_runtime.event import EventEngine, RuntimeEventType
+
+        if name == "web_search":
+            query = str(args.get("query", ""))[:300]
+            message = f"web_search: {query[:100]}"
+            payload: dict = {"tool": name, "query": query, "round": round_no}
+        else:
+            path = str(args.get("path") or args.get("filename") or "")[:300]
+            kind = str(
+                args.get("kind") or args.get("action")
+                or args.get("runner") or ""
+            )[:50]
+            body = args.get("content", args.get("markdown"))
+            payload = {
+                "tool": name,
+                "round": round_no,
+                "path": path,
+                "kind": kind,
+                "content_chars": None if body is None else len(str(body)),
+                "arg_keys": sorted(k for k in args if not k.startswith("__")),
+                "repaired": repaired,
+            }
+            if raw_chars is not None:
+                payload["raw_chars"] = raw_chars
+            message = f"{name}: {path or kind}"[:200]
+        try:
+            await EventEngine().record(
+                RuntimeEventType.LLM_TOOL_CALL,
+                task_id=task_id,
+                phase="LLM_TOOL",
+                message=message,
+                actor="LLM",
+                payload=payload,
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
+    @staticmethod
+    def _missing_required(name: str, args: dict) -> list[str]:
+        """按已注册 TOOL 的 schema.required 校验参数（未注册/无 schema → []）。"""
+        from project_runtime.extension.shared import shared_registry
+        from project_runtime.plugin.capability import CapabilityType
+
+        for info in shared_registry().list_providers(CapabilityType.TOOL):
+            if info.name != name:
+                continue
+            schema_fn = getattr(info.provider, "tool_schema", None)
+            if not callable(schema_fn):
+                return []
+            try:
+                params = (schema_fn() or {}).get("parameters") or {}
+            except Exception:  # noqa: BLE001
+                return []
+            missing = []
+            for key in params.get("required") or []:
+                v = args.get(key)
+                if v is None or (isinstance(v, str) and not v.strip()):
+                    missing.append(key)
+            return missing
+        return []
 
     async def _run_search_tool(
         self, task_id: int | None, name: str, arguments: str, round_no: int,
@@ -1356,8 +1456,10 @@ class LLMWorkerAdapter(WorkerAdapter):
         import time as _time
 
         from project_runtime.event import EventEngine, RuntimeEventType
+        from project_runtime.worker.tools import tool_error
 
         t0 = _time.monotonic()
+        was_repaired = False
         try:
             args = _json.loads(arguments or "{}")
         except ValueError:
@@ -1370,24 +1472,28 @@ class LLMWorkerAdapter(WorkerAdapter):
                     repaired = None
             if repaired is None:
                 # 无法修复——返回可理解错误（模型可自救: 重试/拆短）
-                return (
-                    "工具调用参数传输不完整（长内容在流式传输中被截断）。"
-                    "请重试该写入——建议将长内容拆分为多次较短的写入，"
-                    "或分多个文件落盘。", False,
+                fail = tool_error(
+                    "TRUNCATED",
+                    "工具调用参数传输不完整（长内容在流式传输中被截断）",
+                    "请重试——把长内容拆成多个较短的文件分别写入",
                 )
+                text = _tool_result_text(fail)
+                await self._emit_tool_call(
+                    task_id, name, {}, round_no,
+                    repaired=True, raw_chars=len(arguments or ""),
+                )
+                await self._emit_tool_result(
+                    task_id, name, False, text, t0, round_no, result=fail,
+                )
+                return text, False
+            was_repaired = True
+        if not isinstance(args, dict):
+            args = {}
         query = str(args.get("query", ""))[:300]
-        # 审计: 调用事件
-        try:
-            await EventEngine().record(
-                RuntimeEventType.LLM_TOOL_CALL,
-                task_id=task_id,
-                phase="LLM_TOOL",
-                message=f"web_search: {query[:100]}",
-                actor="LLM",
-                payload={"tool": name, "query": query, "round": round_no},
-            )
-        except Exception:  # noqa: BLE001
-            pass
+        await self._emit_tool_call(
+            task_id, name, args, round_no, repaired=was_repaired,
+            raw_chars=len(arguments or "") if was_repaired else None,
+        )
 
         results: list[dict] = []
         err = ""
@@ -1398,17 +1504,28 @@ class LLMWorkerAdapter(WorkerAdapter):
                 err = str(e)[:200]
         elif not name.startswith("web_search"):
             # TOOL 插件分发（§4.3 三能力①——注册进循环的插件在此执行）
-            tool_result = await self._run_tool_plugin(
-                name, args, whitelist=whitelist
-            )
+            missing = self._missing_required(name, args)
+            if missing:
+                # 截断修复出的 JSON 合法但可能丢字段——不得带半截参数执行
+                tool_result = tool_error(
+                    "TRUNCATED" if was_repaired else "MISSING_FIELD",
+                    f"{name} 缺少必填参数: {', '.join(missing)}"
+                    + ("（参数在传输中被截断）" if was_repaired else ""),
+                    "请把长内容拆成多个较短的文件分别写入后重试"
+                    if was_repaired else
+                    f"请补齐 {', '.join(missing)} 后重新调用",
+                )
+            else:
+                if was_repaired:
+                    args = {**args, "__repaired": True}
+                tool_result = await self._run_tool_plugin(
+                    name, args, whitelist=whitelist
+                )
             if tool_result is not None:
                 ok = bool(tool_result.get("ok"))
-                text = str(tool_result.get("stdout")
-                           or tool_result.get("result")
-                           or tool_result.get("error")
-                           or "")[:6000]
+                text = _tool_result_text(tool_result)
                 await self._emit_tool_result(
-                    task_id, name, ok, text, t0, round_no
+                    task_id, name, ok, text, t0, round_no, result=tool_result,
                 )
                 return text, ok
             err = f"unknown tool: {name}"

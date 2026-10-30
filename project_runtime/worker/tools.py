@@ -4,7 +4,7 @@
 经 Worker 工具循环由模型自决调用（描述即调用策略——§4.3）。
 
 - webfetch:        拉取指定 URL（markdown/text）
-- file_rw:         产物读写（data/tasks/ 工作区禁闭——防穿越）
+- read_file / list_dir / write_file: 产物读写（读 data/tasks 内，写本任务工作区）
 - shell:           白名单受限执行（cwd 硬锁任务工作区 + 参数模式白名单）
 - code_search:     代码检索（文件名 glob + 内容 grep 简版，ripgrep 批次 3）
 - slide_generator: md → .pptx（python-pptx——批次 1 刚需）
@@ -78,16 +78,118 @@ class WebFetchProvider:
         return {"ok": True, "url": url, "content": text[:_OUTPUT_LIMIT]}
 
 
-# ── file_rw（工作区禁闭）───────────────────────────────────────────
+# ── 文件工具（read_file / list_dir / write_file——工作区禁闭）────────────
+
+# 旧名 file_rw → 拆分后的单一用途工具（USER/CONTROLLER 定义存库不随 seed 更新）
+_TOOL_ALIASES: dict[str, tuple[str, ...]] = {
+    "file_rw": ("read_file", "list_dir", "write_file"),
+}
+RENAMED_TOOLS = frozenset({"file_rw", "tool:file_rw"})
+_FILE_TOOL_EXAMPLES = (
+    '读: read_file {"path": "README.md"}；'
+    '列: list_dir {"path": "."}；'
+    '写: write_file {"path": "README.md", "content": "..."}'
+)
 
 
-class FileRwProvider:
-    """产物读写——限定 data/tasks/{project}/{task}/ 工作区（防穿越）。
+def expand_tool_whitelist(whitelist):
+    """白名单别名展开（保持顺序、去重）；None 原样返回。"""
+    if whitelist is None:
+        return None
+    out: list[str] = []
+    for item in whitelist:
+        bare = str(item).split(":", 1)[-1]
+        for name in _TOOL_ALIASES.get(bare, (str(item),)):
+            if name not in out:
+                out.append(name)
+    return out
 
-    读: 任意工作区内文件；写: 调用方给定的任务工作区。
+
+def tool_error(code: str, error: str, hint: str = "") -> dict:
+    """工具失败统一形态（error_code 供审计统计，hint 给模型下一步）。"""
+    out = {"ok": False, "error_code": code, "error": error}
+    if hint:
+        out["hint"] = hint
+    return out
+
+
+def renamed_tool_error(name: str) -> dict:
+    return tool_error(
+        "TOOL_RENAMED",
+        f"工具 {name} 已拆分为 read_file / list_dir / write_file，不再可用",
+        f"请改用新工具。{_FILE_TOOL_EXAMPLES}",
+    )
+
+
+def _data_tasks_root() -> Path:
+    return (
+        _WORKSPACE_ROOT
+        if _WORKSPACE_ROOT.is_absolute()
+        else Path("data/tasks").resolve()
+    )
+
+
+def _within(p: Path, root: Path) -> bool:
+    try:
+        return p.is_relative_to(root)
+    except ValueError:
+        return False
+
+
+def resolve_workspace_path(path: str) -> Path:
+    """data/tasks 禁闭（防穿越）——相对路径按 cwd 解析。
+
+    根动态计算（cwd/data/tasks）而非模块级固化——
+    测试 chdir 隔离后语义一致（生产 cwd 即项目根，行为不变）。
     """
+    p = Path(path)
+    resolved = (p if p.is_absolute() else Path.cwd() / p).resolve()
+    root = _data_tasks_root()
+    if not _within(resolved, root):
+        raise ValueError(f"路径越界: {path}——只允许 {root} 工作区内")
+    return resolved
 
-    name = "tool:file_rw"
+
+def resolve_task_path(path: str, ws_root: Path) -> Path:
+    """任务级路径解析：相对路径以本任务工作区为根（读/列/写同一语义）。
+
+    'data/tasks/...' 指向别的任务时按 cwd 解析（读上游产物）；
+    指向本任务、或把任务前缀重复拼一层（'1/8/pom.xml'、
+    'data/tasks/1/8/pom.xml'——实例: 任务8 落盘 data/tasks/1/8/1/8/pom.xml）
+    的，剥前缀后落回本任务工作区。不做范围判定——由调用方按读/写分别禁闭。
+    """
+    norm = str(path).replace("\\", "/")
+    if norm.startswith("data/tasks"):
+        candidate = (Path.cwd() / norm).resolve()
+        if not _within(candidate, ws_root):
+            return candidate
+    parts = list(Path(norm).parts)
+    while parts and parts[0] == ".":
+        parts.pop(0)
+    if parts[:2] == ["data", "tasks"]:
+        parts = parts[2:]
+    ws_tail = [str(x) for x in ws_root.parts[-2:]]
+    while len(parts) >= 2 and [str(parts[0]), str(parts[1])] == ws_tail:
+        parts = parts[2:]
+    p = Path(*parts) if parts else Path(".")
+    if p.is_absolute():
+        return p.resolve()
+    if ".." in p.parts:
+        return (Path.cwd() / p).resolve()
+    return (ws_root / p).resolve()
+
+
+def _rel_display(p: Path, ws_root: Path | None) -> str:
+    if ws_root is not None and _within(p, ws_root):
+        rel = p.relative_to(ws_root).as_posix()
+        return rel or "."
+    return str(p)
+
+
+class _FileToolBase:
+    """文件工具公共部分：注册元信息 + 读/写两种禁闭。"""
+
+    name = ""
     capability = None
     permission = "READ_ONLY"
     priority = 150
@@ -101,162 +203,151 @@ class FileRwProvider:
     def __init__(self) -> None:
         from project_runtime.plugin.capability import CapabilityType
 
-        FileRwProvider.capability = CapabilityType.TOOL
+        type(self).capability = CapabilityType.TOOL
 
     async def health(self) -> bool:
         return True
 
-    async def invoke(self, payload: dict) -> dict:
-        action = str(payload.get("action") or "read")
-        path = str(payload.get("path") or "")
-        if not path:
-            return {"ok": False, "error": "path 必填"}
-        # V1.6 序0: write 的禁闭判定在 write 分支内自管（__ws_root 任务级
-        # 优先, 相对路径如 src/main.py 合法）——开头 resolve 只服务 read/list
-        if action != "write":
-            try:
-                resolved = self._resolve(path)
-            except ValueError as e:
-                return {"ok": False, "error": str(e)}
-        if action == "read":
-            if not resolved.is_file():
-                return {"ok": False, "error": f"文件不存在: {path}"}
-            try:
-                content = resolved.read_text(encoding="utf-8", errors="replace")
-            except OSError as e:
-                return {"ok": False, "error": f"读取失败: {e}"}
-            return {"ok": True, "path": str(resolved),
-                    "content": content[:_OUTPUT_LIMIT],
-                    # 分发层取 stdout——模型必须能看到文件内容
-                    "stdout": content[:_OUTPUT_LIMIT]}
-        if action == "list":
-            if not resolved.is_dir():
-                return {"ok": False, "error": f"目录不存在: {path}"}
-            items = [
-                f.name + ("/" if f.is_dir() else "")
-                for f in sorted(resolved.iterdir())
-            ][:100]
-            return {"ok": True, "path": str(resolved), "items": items,
-                    "stdout": "目录 " + resolved.name + "/: " +
-                            ", ".join(items[:30]) if items else "（空目录）"}
-        if action == "write":
-            content = payload.get("content")
-            if content is None or not str(content).strip():
-                return {"ok": False, "error": "write 需要 content"}
-            content = str(content)
-            # V1.6d: 禁止改写项目级冻结校验脚本
-            from project_runtime.procedure.delivery_validator import (
-                SCRIPT_NAME,
-                is_validator_script_path,
-            )
-            if is_validator_script_path(path) or str(path).endswith(
-                SCRIPT_NAME
-            ):
-                return {
-                    "ok": False,
-                    "error": (
-                        f"禁止写入冻结校验脚本 {SCRIPT_NAME}——"
-                        "请重新「生成计划」更新闸门"
-                    ),
-                }
-            # V1.6 序0: 任务级写禁闭——调用方注入 __ws_root 时,
-            # resolved 必须落在该任务工作区内（防写到相邻目录逃逸 harvest）
-            ws_root_raw = payload.get("__ws_root")
-            try:
-                if ws_root_raw:
-                    ws_root = Path(str(ws_root_raw)).resolve()
-                    # 相对路径语义: src/main.py → 拼进任务工作区;
-                    # 但带 ../ 或 data/tasks 前缀的（试图指别的目录）
-                    # 按 cwd 解析再禁闭——两种都逃不出 startswith 检查
-                    # 返修单v2 P4: 剥离路径中重复的任务前缀（'1/8/pom.xml'
-                    # / 'data/tasks/1/8/pom.xml' 这类把任务路径再拼一层
-                    # 的形态——实例: 任务8 落盘 data/tasks/1/8/1/8/pom.xml）
-                    p_ = Path(str(path).replace(chr(92), "/"))
-                    _parts = list(p_.parts)
-                    while _parts and _parts[0] in (".",):
-                        _parts.pop(0)
-                    if _parts[:2] == ["data", "tasks"]:
-                        _parts = _parts[2:]
-                    _ws_tail = [str(x) for x in ws_root.parts[-2:]]
-                    while (
-                        len(_parts) >= 2
-                        and [str(_parts[0]), str(_parts[1])] == _ws_tail
-                    ):
-                        _parts = _parts[2:]
-                    p_ = Path(*_parts) if _parts else Path(path)
-                    # 形态4 修正: 'data/tasks' 前缀先做域内检查——
-                    # 剥前缀只对【本任务自己的】路径合法化, 别的任务的
-                    # data/tasks/{pid}/{tid} 保持越界判定
-                    _norm = str(path).replace(chr(92), "/")
-                    if _norm.startswith("data/tasks"):
-                        _candidate = (Path.cwd() / _norm).resolve()
-                        _in_ws = str(_candidate).startswith(str(ws_root))
-                        if not _in_ws:
-                            # 不在本任务工作区 → 保持原路径按 cwd 判界
-                            resolved = _candidate
-                            if not str(resolved).startswith(str(ws_root)):
-                                return {
-                                    "ok": False,
-                                    "error": (
-                                        f"路径越界: {path}——本任务只允许"
-                                        f"写入 {ws_root} 内。请用相对路径如"
-                                        f" src/main.py、tests/test_x.py、"
-                                        f"README.md"
-                                    ),
-                                }
-                    if p_.is_absolute():
-                        resolved = p_.resolve()
-                    elif '..' in p_.parts or str(p_).replace(
-                        chr(92), '/'
-                    ).startswith('data/tasks'):
-                        resolved = (Path.cwd() / p_).resolve()
-                    else:
-                        resolved = (ws_root / p_).resolve()
-                    if not str(resolved).startswith(str(ws_root)):
-                        return {
-                            "ok": False,
-                            "error": (
-                                f"路径越界: {path}——本任务只允许写入 "
-                                f"{ws_root} 内。请用相对路径如 "
-                                f"src/main.py、tests/test_x.py、README.md"
-                            ),
-                        }
-                else:
-                    resolved = self._resolve(path)
-                resolved.parent.mkdir(parents=True, exist_ok=True)
-                resolved.write_text(content, encoding="utf-8")
-            except (OSError, ValueError) as e:
-                return {"ok": False, "error": f"写入失败: {e}"}
-            return {
-                "ok": True, "path": str(resolved),
-                # 确认文本——工具循环喂回模型（可见自己写了什么）
-                "stdout": (
-                    f"已写入 {resolved.name}: {len(content)} 字符。"
-                ),
-                "bytes": len(content.encode("utf-8")),
-            }
-        return {"ok": False, "error": f"未知 action: {action}"}
+    @staticmethod
+    def _ws_root(payload: dict) -> Path | None:
+        raw = payload.get("__ws_root")
+        return Path(str(raw)).resolve() if raw else None
 
     @staticmethod
-    def _resolve(path: str) -> Path:
-        """工作区禁闭——解析后必须落在 data/tasks/ 下（防穿越）。
+    def _target(path: str, ws_root: Path | None, *, write: bool):
+        """→ (resolved, None) 或 (None, error_dict)。
 
-        根动态计算（cwd/data/tasks）而非模块级固化——
-        测试 chdir 隔离后语义一致（生产 cwd 即项目根，行为不变）。
+        读范围: data/tasks 全域（可读上游产物）；写范围: 本任务工作区。
         """
-        p = Path(path)
-        resolved = (p if p.is_absolute() else Path.cwd() / p).resolve()
-        # 根: 测试可注入 _WORKSPACE_ROOT; 未注入则 cwd 动态计算
-        root = (
-            _WORKSPACE_ROOT
-            if _WORKSPACE_ROOT.is_absolute()
-            else Path("data/tasks").resolve()
-        )
-        if not str(resolved).startswith(str(root)):
-            raise ValueError(
-                f"路径越界: {path}——只允许 {root} 工作区内"
+        try:
+            if ws_root is None:
+                return resolve_workspace_path(path), None
+            resolved = resolve_task_path(path, ws_root)
+        except ValueError as e:
+            return None, tool_error(
+                "OUT_OF_SCOPE", str(e),
+                "请用相对路径（以本任务工作区为根），如 README.md、src/main.py",
             )
-        return resolved
+        allowed = ws_root if write else _data_tasks_root()
+        if not _within(resolved, allowed):
+            scope = "本任务工作区" if write else "data/tasks"
+            return None, tool_error(
+                "OUT_OF_SCOPE",
+                f"路径越界: {path}——只允许{scope}内（{allowed}）",
+                "请用相对路径（以本任务工作区为根），如 README.md、"
+                "src/main.py、tests/test_x.py；其他任务目录只读",
+            )
+        return resolved, None
+
+
+class ReadFileProvider(_FileToolBase):
+    """读文件（data/tasks 内）。"""
+
+    name = "tool:read_file"
+
+    async def invoke(self, payload: dict) -> dict:
+        path = str(payload.get("path") or "").strip()
+        if not path:
+            return tool_error(
+                "MISSING_FIELD", "read_file 缺少 path",
+                '示例: read_file {"path": "README.md"}',
+            )
+        ws_root = self._ws_root(payload)
+        resolved, err = self._target(path, ws_root, write=False)
+        if err:
+            return err
+        if not resolved.is_file():
+            return tool_error(
+                "NOT_FOUND", f"文件不存在: {path}",
+                "用 list_dir 查看目录；要新建文件请用 write_file",
+            )
+        try:
+            content = resolved.read_text(encoding="utf-8", errors="replace")
+        except OSError as e:
+            return tool_error("IO_ERROR", f"读取失败: {e}")
+        return {"ok": True, "path": str(resolved),
+                "content": content[:_OUTPUT_LIMIT],
+                # 分发层取 stdout——模型必须能看到文件内容
+                "stdout": content[:_OUTPUT_LIMIT]}
+
+
+class ListDirProvider(_FileToolBase):
+    """列目录；条目为相对本任务工作区的路径（可原样用于读写）。"""
+
+    name = "tool:list_dir"
+
+    async def invoke(self, payload: dict) -> dict:
+        ws_root = self._ws_root(payload)
+        path = str(payload.get("path") or "").strip()
+        if not path:
+            path = "." if ws_root is not None else "data/tasks"
+        resolved, err = self._target(path, ws_root, write=False)
+        if err:
+            return err
+        if not resolved.is_dir():
+            return tool_error(
+                "NOT_FOUND", f"目录不存在: {path}",
+                '用 list_dir {"path": "."} 查看本任务工作区根目录',
+            )
+        rel_dir = _rel_display(resolved, ws_root)
+        items = []
+        for f in sorted(resolved.iterdir())[:100]:
+            name = f.name + ("/" if f.is_dir() else "")
+            items.append(name if rel_dir in (".", str(resolved))
+                         else f"{rel_dir}/{name}")
+        stdout = (f"目录 {rel_dir}: " + ", ".join(items[:30])
+                  if items else f"目录 {rel_dir}: （空目录）")
+        return {"ok": True, "path": str(resolved), "items": items,
+                "stdout": stdout}
+
+
+class WriteFileProvider(_FileToolBase):
+    """新建或覆盖文件（仅本任务工作区；无写入配额）。"""
+
+    name = "tool:write_file"
+
+    async def invoke(self, payload: dict) -> dict:
+        path = str(payload.get("path") or "").strip()
+        content = payload.get("content")
+        missing = [k for k, v in (("path", path), ("content", content))
+                   if v is None or not str(v).strip()]
+        if missing:
+            return tool_error(
+                "MISSING_FIELD", f"write_file 缺少 {', '.join(missing)}",
+                '示例: write_file {"path": "README.md", "content": "..."}',
+            )
+        content = str(content)
+        # V1.6d: 禁止改写项目级冻结校验脚本
+        from project_runtime.procedure.delivery_validator import (
+            SCRIPT_NAME,
+            is_validator_script_path,
+        )
+        if is_validator_script_path(path) or path.endswith(SCRIPT_NAME):
+            return tool_error(
+                "FORBIDDEN_PATH",
+                f"禁止写入冻结校验脚本 {SCRIPT_NAME}",
+                "请重新「生成计划」更新闸门",
+            )
+        ws_root = self._ws_root(payload)
+        resolved, err = self._target(path, ws_root, write=True)
+        if err:
+            return err
+        try:
+            resolved.parent.mkdir(parents=True, exist_ok=True)
+            resolved.write_text(content, encoding="utf-8")
+        except OSError as e:
+            return tool_error("IO_ERROR", f"写入失败: {e}")
+        nbytes = len(content.encode("utf-8"))
+        stdout = (f"已写入 {_rel_display(resolved, ws_root)}: "
+                  f"{len(content)} 字符（{nbytes} 字节）。")
+        if ws_root is not None:
+            n_files = sum(1 for f in ws_root.rglob("*") if f.is_file())
+            stdout += f"本任务工作区现有 {n_files} 个文件。"
+        if payload.get("__repaired"):
+            stdout += ("注意：本次参数在传输中被截断后修复，内容可能不完整，"
+                       "请用 read_file 检查文件末尾。")
+        return {"ok": True, "path": str(resolved), "stdout": stdout,
+                "bytes": nbytes}
 
 
 # ── shell（三防禁闭——§4.1 P2-1 返修条款）─────────────────────────
@@ -333,7 +424,7 @@ class ShellProvider:
         workspace = payload.get("workspace")  # data/tasks/{pid}/{tid}
         if workspace:
             try:
-                cwd = FileRwProvider._resolve(str(workspace))
+                cwd = resolve_workspace_path(str(workspace))
             except ValueError as e:
                 return {"ok": False, "error": str(e)}
             if not cwd.is_dir():
@@ -432,7 +523,7 @@ class CodeSearchProvider:
         if not pattern:
             return {"ok": False, "error": "pattern 必填"}
         try:
-            root = FileRwProvider._resolve(str(scope))
+            root = resolve_workspace_path(str(scope))
         except ValueError as e:
             return {"ok": False, "error": str(e)}
 
@@ -510,14 +601,14 @@ class SlideGeneratorProvider:
         if not markdown.strip():
             return {"ok": False, "error": "markdown 必填"}
         # 返修单-slide_generator落点逃逸: 任务级禁闭——__ws_root 注入时
-        # 输出目录强制= 任务工作区, workspace 参数被忽略（与 file_rw 同构;
+        # 输出目录强制= 任务工作区, workspace 参数被忽略（与 write_file 同构;
         # 实测 5 个 pptx 散落工位外, harvest 收割不到 → Gate 误判死循环）
         ws_root_raw = payload.get("__ws_root")
         if ws_root_raw:
             out_dir = Path(str(ws_root_raw)).resolve()
         else:
             try:
-                out_dir = FileRwProvider._resolve(str(workspace))
+                out_dir = resolve_workspace_path(str(workspace))
             except ValueError as e:
                 return {"ok": False, "error": str(e)}
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -696,7 +787,9 @@ def register_worker_tools(registry) -> None:
     搜索 provider（web_search）在 research.providers 注册——本函数只管 TOOL 面。
     """
     registry.register(WebFetchProvider())
-    registry.register(FileRwProvider())
+    registry.register(ReadFileProvider())
+    registry.register(ListDirProvider())
+    registry.register(WriteFileProvider())
     registry.register(ShellProvider())
     registry.register(CodeSearchProvider())
     registry.register(SlideGeneratorProvider())

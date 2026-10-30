@@ -3,7 +3,8 @@
 覆盖（返修单 §1.5）:
   [x] 交集正/反: 白名单内工具可见、外不出现在工具面且分发拒绝
   [x] None vs [] 两态语义（None=全量 / []=零）
-  [x] 无 Agent 绑定路径工具面不变（11 个）
+  [x] 无 Agent 绑定路径工具面不变（13 个）
+  [x] SYS-147: 旧白名单 file_rw 别名展开 / 调用旧名 TOOL_RENAMED
   [x] web_search 按 Agent 白名单门控
   [x] skill 白名单: restrict_to 过滤候选 / None 全局
   [x] 修订后五模板含三能力基线、skills=None、lsp 摘除
@@ -56,6 +57,9 @@ def _worker():
     return LLMWorkerAdapter.__new__(LLMWorkerAdapter)
 
 
+_FILE_TOOLS = ("tool:read_file", "tool:list_dir", "tool:write_file")
+
+
 def _names(tools) -> set[str]:
     return {t["function"]["name"] for t in (tools or [])}
 
@@ -68,29 +72,31 @@ class TestToolLoopWhitelist:
         """coder 白名单 → 5 工具（白名单外 slide_generator 等不可见）。"""
         w = _worker()
         tools = w._search_tools(whitelist=[
-            "file_rw", "web_search", "shell", "code_search", "git",
+            "read_file", "list_dir", "write_file",
+            "web_search", "shell", "code_search", "git",
         ])
         assert _names(tools) == {
-            "web_search", "tool:file_rw", "tool:shell",
+            "web_search", *_FILE_TOOLS, "tool:shell",
             "tool:code_search", "tool:git",
         }
 
     def test_analyst_view_intersected(self, full_registry):
         w = _worker()
         tools = w._search_tools(whitelist=[
-            "file_rw", "web_search", "webfetch", "slide_generator",
+            "read_file", "list_dir", "write_file",
+            "web_search", "webfetch", "slide_generator",
         ])
         assert _names(tools) == {
-            "web_search", "tool:file_rw",
+            "web_search", *_FILE_TOOLS,
             "tool:webfetch", "tool:slide_generator",
         }
         # shell 对 analyst 不可见（环节边界——护栏生效）
         assert "tool:shell" not in _names(tools)
 
     def test_none_means_all(self, full_registry):
-        """None = 不限（老路径语义零回归——11 个全量）。"""
+        """None = 不限（老路径语义零回归——13 个全量）。"""
         w = _worker()
-        assert len(w._search_tools(whitelist=None)) == 11
+        assert len(w._search_tools(whitelist=None)) == 13
 
     def test_empty_list_fail_closed(self, full_registry):
         """[] = 零工具（fail-closed，Hermes #82010 约定）。"""
@@ -100,9 +106,41 @@ class TestToolLoopWhitelist:
     def test_web_search_gated(self, full_registry):
         """白名单不含 web_search → 搜索工具不可见（护栏优先）。"""
         w = _worker()
-        tools = w._search_tools(whitelist=["file_rw"])
+        tools = w._search_tools(whitelist=["write_file"])
         assert "web_search" not in _names(tools)
-        assert _names(tools) == {"tool:file_rw"}
+        assert _names(tools) == {"tool:write_file"}
+
+    def test_legacy_file_rw_whitelist_expands(self, full_registry):
+        """SYS-147: 存库旧白名单 file_rw → 三个新文件工具，旧名不暴露。"""
+        w = _worker()
+        names = _names(w._search_tools(whitelist=["file_rw"]))
+        assert names == set(_FILE_TOOLS)
+
+    @pytest.mark.asyncio
+    async def test_legacy_file_rw_whitelist_dispatches(
+        self, full_registry, tmp_path, monkeypatch
+    ):
+        monkeypatch.chdir(tmp_path)
+        (tmp_path / "data/tasks/w1").mkdir(parents=True, exist_ok=True)
+        w = _worker()
+        w._workspace_root = None
+        result = await w._run_tool_plugin(
+            "tool:write_file",
+            {"path": "data/tasks/w1/a.md", "content": "x"},
+            whitelist=["file_rw"],
+        )
+        assert result is not None and result["ok"] is True
+
+    @pytest.mark.asyncio
+    async def test_calling_file_rw_returns_renamed(self, full_registry):
+        w = _worker()
+        result = await w._run_tool_plugin(
+            "tool:file_rw", {"action": "write", "path": "a.md"},
+            whitelist=["file_rw"],
+        )
+        assert result is not None and result["ok"] is False
+        assert result["error_code"] == "TOOL_RENAMED"
+        assert "write_file" in result["hint"]
 
     @pytest.mark.asyncio
     async def test_dispatch_rejects_outside_whitelist(self, full_registry):
@@ -193,10 +231,12 @@ class TestSkillWhitelist:
 
 class TestTemplateRevisionAndSeed:
     def test_five_templates_have_baseline(self):
-        """修订后五模板必含三能力基线（file_rw + web_search）。"""
+        """修订后五模板必含三能力基线（文件工具 + web_search）。"""
         for tpl in BUILT_IN_TEMPLATES:
             plugins = tpl["plugins"]
-            assert "file_rw" in plugins, tpl["agent_id"]
+            assert "file_rw" not in plugins, tpl["agent_id"]
+            for name in ("read_file", "list_dir", "write_file"):
+                assert name in plugins, (tpl["agent_id"], name)
             assert "web_search" in plugins, tpl["agent_id"]
 
     def test_lsp_removed(self):

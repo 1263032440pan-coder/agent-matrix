@@ -84,7 +84,7 @@ class ArtifactManager:
         """V1.5a-1 序6: 工作区文件批量登记（harvest）。
 
         files = 快照 diff 出的新增/变更文件（调用方算好）。
-        文件已存在于磁盘（模型 file_rw 写的）——只登记不重写。
+        文件已存在于磁盘（模型 write_file 写的）——只登记不重写。
         logical_id = task-{tid}-{相对路径}——路径结构天然构成文件树。
         已登记过的（同 logical_id 同 sha256）跳过（幂等）。
         """

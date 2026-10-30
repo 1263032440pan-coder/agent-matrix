@@ -373,11 +373,11 @@ class TestNestedPath:
         import os
 
         monkeypatch.chdir(tmp_path)
-        from project_runtime.worker.tools import FileRwProvider
+        from project_runtime.worker.tools import WriteFileProvider
 
-        prov = FileRwProvider()
+        prov = WriteFileProvider()
         r = await prov.invoke({
-            "action": "write", "path": "1/8/pom.xml",
+            "path": "1/8/pom.xml",
             "content": "x", "__ws_root": "data/tasks/1/8",
         })
         assert r["ok"] and os.path.exists(

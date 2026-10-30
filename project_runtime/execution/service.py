@@ -411,7 +411,7 @@ class ExecutionRunner:
                     ),
                     # V1.5a-1: code_stage 透传（playbook_ref 解析——软提醒用）
                     code_stage=_code_stage_of(task_playbook_ref_snapshot),
-                    # V1.6 序0: 任务工作区根（file_rw 写禁闭）
+                    # V1.6 序0: 任务工作区根（文件工具写禁闭）
                     workspace_root=f"data/tasks/{project_id}/{task_id}",
                     # V1.6 序3: delivery_tags 透传（收工自查钩子消费）
                     delivery_tags=_delivery_tags_of(

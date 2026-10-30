@@ -292,7 +292,9 @@ class WorkerRegistry:
             if d is None or not d.enabled:
                 continue
             if required_plugins:
-                have = set(d.plugins or [])
+                from project_runtime.worker.tools import expand_tool_whitelist
+
+                have = set(expand_tool_whitelist(d.plugins or []))
                 if not set(required_plugins).issubset(have):
                     continue
             pool.append((d.agent_id, inst, d))
@@ -485,13 +487,15 @@ class WorkerRegistry:
 
 # ── AgentProvisioner（§2.2 路径 1——规划后自动创建）────────────────
 
+FILE_TOOLS = ("read_file", "list_dir", "write_file")
+
 BUILT_IN_TEMPLATES = [
     {
         "agent_id": "analyst",
         "name": "分析智能体",
         "role_description": "负责项目理解与需求基线阶段——理解输入材料、"
                             "定义结构化需求并产出汇报材料（PPT）。",
-        "plugins": ["file_rw", "web_search", "webfetch", "slide_generator"],
+        "plugins": [*FILE_TOOLS, "web_search", "webfetch", "slide_generator"],
         "skills": None,
         "stage_affinity": ["项目理解", "需求基线"],
         "source": AgentSource.BUILT_IN,
@@ -501,7 +505,7 @@ BUILT_IN_TEMPLATES = [
         "name": "设计智能体",
         "role_description": "负责解决方案、原型设计与架构设计阶段——"
                             "产出方案文档、架构图与评审材料。",
-        "plugins": ["file_rw", "web_search", "webfetch",
+        "plugins": [*FILE_TOOLS, "web_search", "webfetch",
                     "slide_generator", "arch_diagram"],
         "skills": None,
         "stage_affinity": ["解决方案", "原型设计", "架构设计"],
@@ -512,7 +516,7 @@ BUILT_IN_TEMPLATES = [
         "name": "编码智能体",
         "role_description": "负责开发实现阶段——按契约实现功能代码。",
         # V1.4: +web_search（三能力③基线）; lsp 摘除（provider 未实现）
-        "plugins": ["file_rw", "web_search", "shell", "code_search", "git"],
+        "plugins": [*FILE_TOOLS, "web_search", "shell", "code_search", "git"],
         # V1.4: skills None=不限（[] 是 fail-closed 零 skill——违反
         # "安装即可被程序利用"定则）
         "skills": None,
@@ -523,7 +527,8 @@ BUILT_IN_TEMPLATES = [
         "agent_id": "tester",
         "name": "测试智能体",
         "role_description": "负责测试验证阶段——编写与执行测试、产出报告。",
-        "plugins": ["file_rw", "web_search", "shell", "test_runner", "code_search"],
+        "plugins": [*FILE_TOOLS, "web_search", "shell", "test_runner",
+                    "code_search"],
         "skills": None,
         "stage_affinity": ["测试验证"],
         "source": AgentSource.BUILT_IN,
@@ -532,7 +537,8 @@ BUILT_IN_TEMPLATES = [
         "agent_id": "releaser",
         "name": "交付智能体",
         "role_description": "负责交付打包与使用文档阶段——构建交付物与文档。",
-        "plugins": ["file_rw", "web_search", "shell", "builder", "slide_generator"],
+        "plugins": [*FILE_TOOLS, "web_search", "shell", "builder",
+                    "slide_generator"],
         "skills": None,
         "stage_affinity": ["交付打包", "使用文档"],
         "source": AgentSource.BUILT_IN,

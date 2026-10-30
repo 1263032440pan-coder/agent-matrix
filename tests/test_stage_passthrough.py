@@ -120,7 +120,7 @@ class TestProvisionMiscFallback:
             assert len(insts) == 1
             d = await s.get(AgentDefinition, insts[0].definition_id)
             assert d.source is AgentSource.CONTROLLER_GENERATED
-            assert set(d.plugins) >= {"file_rw", "web_search"}
+            assert set(d.plugins) >= {"write_file", "web_search"}
 
     @pytest.mark.asyncio
     async def test_provision_idempotent_with_derive(self, dbengine):

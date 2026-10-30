@@ -115,11 +115,21 @@ class TestTestRunner:
 
 class TestBuilderAndDiagram:
     @pytest.mark.asyncio
+    async def test_kind_required(self, reg):
+        p = _provider(reg, "tool:builder")
+        r = await p.invoke({})
+        assert r["ok"] is False
+        assert r["error_code"] == "MISSING_FIELD"
+        assert "kind" in r["error"]
+
+    @pytest.mark.asyncio
     async def test_kind_whitelist(self, reg):
         p = _provider(reg, "tool:builder")
         r = await p.invoke({"kind": "cargo_build"})
         assert r["ok"] is False
+        assert r["error_code"] == "INVALID_ACTION"
         assert "npm_build/docker_build" in r["error"]
+        assert "hint" in r
 
     @pytest.mark.asyncio
     async def test_tag_pattern(self, reg):

@@ -270,12 +270,12 @@ class BackfillValidator(Validator):
                 )
                 if not has_code:
                     problems.append(
-                        "可运行代码: 无代码文件——用 file_rw 落盘 src/ 下"
+                        "可运行代码: 无代码文件——用 write_file 落盘 src/ 下"
                         "源码（多文件组织）"
                     )
                 if not has_readme:
                     problems.append(
-                        "README: 缺失——用 file_rw 落盘 README.md"
+                        "README: 缺失——用 write_file 落盘 README.md"
                         "（启动方式/依赖/目录结构）"
                     )
             elif tag == "test_report":
@@ -284,7 +284,7 @@ class BackfillValidator(Validator):
                     for n in names
                 ):
                     problems.append(
-                        "测试报告: 无含'测试'的 md——用 file_rw 落盘"
+                        "测试报告: 无含'测试'的 md——用 write_file 落盘"
                         "（测试范围/结果/统计/结论）"
                     )
         if problems:

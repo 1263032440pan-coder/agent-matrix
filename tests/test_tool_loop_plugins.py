@@ -1,7 +1,7 @@
 """20号规范三能力① 接线测试: 工具循环暴露全部 TOOL 插件（§4.3）.
 
 验证:
-  [x] 工具面 = web_search + 批次1五件 + 批次3五件（11 个）
+  [x] 工具面 = web_search + 批次1七件 + 批次3五件（13 个）
   [x] 每个工具描述非空（描述即调用策略）+ parameters 是合法 schema
   [x] TOOL provider 分发: 注册的插件名经 _run_tool_plugin 命中 invoke
   [x] 未注册名返回 None（unknown tool 语义）
@@ -34,7 +34,8 @@ def _worker_with(registry):
 
 _EXPECTED_TOOLS = {
     "web_search",
-    "tool:webfetch", "tool:file_rw", "tool:shell",
+    "tool:webfetch", "tool:read_file", "tool:list_dir", "tool:write_file",
+    "tool:shell",
     "tool:code_search", "tool:slide_generator",
     "tool:git", "tool:test_runner", "tool:builder",
     "tool:arch_diagram", "tool:todo",
@@ -42,8 +43,8 @@ _EXPECTED_TOOLS = {
 
 
 class TestToolLoopExposure:
-    def test_all_eleven_tools_exposed(self, monkeypatch):
-        """工具面 = 搜索 + 十插件（11 个——三能力① 完整面）。"""
+    def test_all_tools_exposed(self, monkeypatch):
+        """工具面 = 搜索 + 十二插件（13 个——三能力① 完整面）。"""
         reg = _full_registry()
         import project_runtime.extension.shared as shared_mod
 

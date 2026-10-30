@@ -31,24 +31,52 @@ WEBFETCH_SCHEMA = {
     },
 }
 
-FILE_RW_SCHEMA = {
+_REL_PATH_DESC = (
+    "相对路径以本任务工作区为根（如 README.md、src/main.py）；"
+    "读上游产物可用 data/tasks/{项目}/{任务}/文件"
+)
+
+READ_FILE_SCHEMA = {
     "description": (
-        "读写本项目工作区文件（data/tasks/ 内——防穿越）。"
-        "action: read 读文件 / list 列目录 / write 写文件。"
-        "读取历史产物、查看已生成文件、落盘新产物时使用。"
-        "参数: action, path（工作区相对路径）, content（write 时必填）。"
+        "读取文件内容。查看已生成文件、读取上游任务产物时使用。"
+        "只读，不会创建或修改文件；要新建/修改文件请用 write_file。"
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "action": {
-                "type": "string",
-                "enum": ["read", "list", "write"],
-            },
-            "path": {"type": "string", "description": "工作区内相对路径"},
-            "content": {"type": "string", "description": "write 时的内容"},
+            "path": {"type": "string", "description": _REL_PATH_DESC},
         },
-        "required": ["action", "path"],
+        "required": ["path"],
+    },
+}
+
+LIST_DIR_SCHEMA = {
+    "description": (
+        "列出目录内容（返回可直接用于 read_file / write_file 的相对路径）。"
+        "不传 path 即列本任务工作区根目录。"
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": _REL_PATH_DESC},
+        },
+        "required": [],
+    },
+}
+
+WRITE_FILE_SCHEMA = {
+    "description": (
+        "在本任务工作区新建或覆盖文件（目录自动创建）。落盘源码、README、"
+        "文档等产物时使用。没有写入次数或配额限制；只能写本任务工作区，"
+        "其他任务目录只读。内容很长时拆成多个文件分别写入。"
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": _REL_PATH_DESC},
+            "content": {"type": "string", "description": "完整文件内容"},
+        },
+        "required": ["path", "content"],
     },
 }
 
@@ -211,7 +239,9 @@ TODO_SCHEMA = {
 # name → schema 映射（tool_schema() 通用实现的查表源）
 TOOL_SCHEMAS: dict[str, dict] = {
     "tool:webfetch": WEBFETCH_SCHEMA,
-    "tool:file_rw": FILE_RW_SCHEMA,
+    "tool:read_file": READ_FILE_SCHEMA,
+    "tool:list_dir": LIST_DIR_SCHEMA,
+    "tool:write_file": WRITE_FILE_SCHEMA,
     "tool:shell": SHELL_SCHEMA,
     "tool:code_search": CODE_SEARCH_SCHEMA,
     "tool:slide_generator": SLIDE_SCHEMA,

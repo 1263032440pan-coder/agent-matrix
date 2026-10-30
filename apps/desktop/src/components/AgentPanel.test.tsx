@@ -17,7 +17,7 @@ vi.mock('../api', () => ({
       fail_count: 0,
       context_tokens: 45000,
       context_threshold: 112000,
-      plugins: ['file_rw', 'web_search', 'shell', 'code_search', 'git'],
+      plugins: ['read_file', 'list_dir', 'write_file', 'web_search', 'shell', 'code_search', 'git'],
       skills: [],
       stage_affinity: ['开发实现'],
     },
@@ -32,7 +32,7 @@ vi.mock('../api', () => ({
       fail_count: 3,
       context_tokens: 105000,
       context_threshold: 112000,
-      plugins: ['file_rw', 'web_search'],
+      plugins: ['read_file', 'list_dir', 'write_file', 'web_search'],
       skills: [],
       stage_affinity: ['misc'],
     },
@@ -82,8 +82,8 @@ describe('AgentPanel（20号规范 §9 双视图+六态+压力条）', () => {
   it('能力徽章: 工具/技能/环节可见（白名单护栏可视化）', async () => {
     render(<AgentPanel projectId={1} onChanged={() => {}} />);
     const cap = await screen.findByTestId('capability-1');
-    // coder 实例: 5 工具徽章 + 环节徽章
-    expect(cap.textContent).toContain('file_rw');
+    // coder 实例: 7 工具徽章 + 环节徽章
+    expect(cap.textContent).toContain('write_file');
     expect(cap.textContent).toContain('shell');
     expect(cap.textContent).toContain('git');
     expect(cap.textContent).toContain('开发实现');

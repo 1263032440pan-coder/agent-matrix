@@ -87,9 +87,9 @@ class GitProvider:
         ws = payload.get("workspace")
         if ws:
             try:
-                from project_runtime.worker.tools import FileRwProvider
+                from project_runtime.worker.tools import resolve_workspace_path
 
-                cwd = FileRwProvider._resolve(str(ws))  # noqa: SLF001
+                cwd = resolve_workspace_path(str(ws))
                 if not cwd.is_dir():
                     cwd.mkdir(parents=True, exist_ok=True)
                 return cwd
@@ -219,7 +219,14 @@ class BuilderProvider:
         return True
 
     async def invoke(self, payload: dict) -> dict:
-        kind = str(payload.get("kind") or "npm_build")
+        kind = str(payload.get("kind") or "").strip()
+        if not kind:
+            from project_runtime.worker.tools import tool_error
+
+            return tool_error(
+                "MISSING_FIELD", "builder 缺少 kind",
+                '示例: builder {"kind": "npm_build"}（可选 npm_build / docker_build）',
+            )
         cwd = GitProvider._workspace(payload)  # noqa: SLF001
         if kind == "npm_build":
             cmd = "npm run build"
@@ -229,8 +236,13 @@ class BuilderProvider:
                 return {"ok": False, "error": "tag 参数模式不合规"}
             cmd = f"docker build -t {tag} ." if tag else "docker build ."
         else:
-            return {"ok": False,
-                    "error": "kind 只支持 npm_build/docker_build"}
+            from project_runtime.worker.tools import tool_error
+
+            return tool_error(
+                "INVALID_ACTION",
+                "kind 只支持 npm_build/docker_build",
+                '示例: builder {"kind": "npm_build"}',
+            )
         return await _run_cmd(cmd, cwd, timeout=_PROC_TIMEOUT_S)
 
 
@@ -271,10 +283,10 @@ class ArchDiagramProvider:
             return {"ok": False,
                     "error": "mermaid 必须以 graph/flowchart/sequenceDiagram/"
                              "classDiagram/stateDiagram 开头"}
-        from project_runtime.worker.tools import FileRwProvider
+        from project_runtime.worker.tools import resolve_workspace_path
 
         try:
-            out_dir = FileRwProvider._resolve(  # noqa: SLF001
+            out_dir = resolve_workspace_path(
                 str(payload.get("out_dir") or "data/tasks"))
         except ValueError as e:
             return {"ok": False, "error": str(e)}
@@ -324,11 +336,20 @@ class TodoProvider:
         return True
 
     async def invoke(self, payload: dict) -> dict:
-        action = str(payload.get("action") or "list")
-        from project_runtime.worker.tools import FileRwProvider
+        from project_runtime.worker.tools import (
+            resolve_workspace_path,
+            tool_error,
+        )
+
+        action = str(payload.get("action") or "").strip()
+        if not action:
+            return tool_error(
+                "MISSING_FIELD", "todo 缺少 action",
+                '示例: todo {"action": "add", "text": "..."}（可选 list / add / toggle）',
+            )
 
         try:
-            ws = FileRwProvider._resolve(  # noqa: SLF001
+            ws = resolve_workspace_path(
                 str(payload.get("workspace") or "data/tasks"))
         except ValueError as e:
             return {"ok": False, "error": str(e)}

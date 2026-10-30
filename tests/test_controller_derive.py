@@ -107,9 +107,9 @@ class TestDerivePure:
     def test_baseline_always_present(self):
         """基线保底（旧库天花板缺基线的防御）。"""
         plugins, _ = derive_controller_whitelist(
-            "开发实现", "", ["shell"]  # 异常旧值: 无 file_rw/web_search
+            "开发实现", "", ["shell"]  # 异常旧值: 无文件工具/web_search
         )
-        assert "file_rw" in plugins and "web_search" in plugins
+        assert "write_file" in plugins and "web_search" in plugins
 
     def test_signature_stable(self):
         """幂等闸签名: 同 stage+能力词 → 同签名; 变化 → 变。"""

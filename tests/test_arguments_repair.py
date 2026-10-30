@@ -97,16 +97,131 @@ class TestRunSearchToolDegrade:
         from project_runtime.worker.llm_worker import LLMWorkerAdapter
 
         w = LLMWorkerAdapter.__new__(LLMWorkerAdapter)
-        broken = '{"action": "write", "path": "a.md", "content": "x' + (
-            "y" * 400
+        monkeypatch.setattr(
+            "project_runtime.event.EventEngine.record", _noop_record,
         )
+        broken = '{"path": "a.md", "content": "x' + ("y" * 400)
         # 中段丢块形态（不可修复）
-        full = '{"action": "write", "path": "a.md", "content": "' + "y" * 400 + '"}'
-        mid_broken = full[:50] + full[250:]
+        full = '{"path": "a.md", "content": "' + "y" * 400 + '"}'
+        mid_broken = full[:20] + full[250:]
         for args_json in (broken, mid_broken):
             if _repair_arguments(args_json) is not None:
                 continue  # 可修复的走正常路径——只测不可修复
-            text, ok = await w._run_search_tool(1, "tool:file_rw", args_json, 1)
+            text, ok = await w._run_search_tool(1, "tool:write_file", args_json, 1)
             assert ok is False
+            assert text.startswith("[TRUNCATED]")
             assert "传输不完整" in text
-            assert "重试" in text or "拆分" in text  # 可自救的指引
+            assert "拆" in text  # 可自救的指引
+
+
+async def _noop_record(self, *a, **kw):
+    return None
+
+
+@pytest.fixture
+def file_tools_registry(monkeypatch):
+    from project_runtime.extension.registry import ExtensionRegistry
+    from project_runtime.worker.tools import register_worker_tools
+
+    reg = ExtensionRegistry()
+    register_worker_tools(reg)
+    monkeypatch.setattr(
+        "project_runtime.extension.shared.shared_registry", lambda: reg,
+    )
+    monkeypatch.setattr(
+        "project_runtime.event.EventEngine.record", _noop_record,
+    )
+    return reg
+
+
+class TestToolAuditPayload:
+    """SYS-151: 调用/结果事件记参数要点与错误码，不记正文。"""
+
+    @pytest.mark.asyncio
+    async def test_call_and_result_payload(
+        self, file_tools_registry, tmp_path, monkeypatch,
+    ):
+        from project_runtime.worker.llm_worker import LLMWorkerAdapter
+
+        recorded: list[tuple] = []
+
+        async def _capture(self, event_type, **kw):
+            recorded.append((str(event_type), kw))
+
+        monkeypatch.setattr(
+            "project_runtime.event.EventEngine.record", _capture,
+        )
+        monkeypatch.chdir(tmp_path)
+        w = LLMWorkerAdapter.__new__(LLMWorkerAdapter)
+        w._workspace_root = "data/tasks/2/15"
+        secret = "SECRET-BODY-" * 20
+        await w._run_search_tool(
+            1, "tool:write_file",
+            json.dumps({"path": "data/tasks/2/20/x.md", "content": secret}),
+            3,
+        )
+        (call_t, call), (res_t, res) = recorded
+        assert "LLM_TOOL_CALL" in call_t and "LLM_TOOL_RESULT" in res_t
+        cp = call["payload"]
+        assert cp["path"] == "data/tasks/2/20/x.md"
+        assert cp["content_chars"] == len(secret)
+        assert cp["repaired"] is False
+        assert cp["arg_keys"] == ["content", "path"]
+        rp = res["payload"]
+        assert rp["ok"] is False and rp["error_code"] == "OUT_OF_SCOPE"
+        assert "越界" in rp["error"]
+        dumped = json.dumps([call, res], ensure_ascii=False, default=str)
+        assert "SECRET-BODY" not in dumped
+
+
+class TestRepairedRequiredFields:
+    """SYS-148: 修复出的 JSON 合法但缺必填字段 → TRUNCATED，不执行。"""
+
+    @pytest.mark.asyncio
+    async def test_repaired_missing_content_not_executed(
+        self, file_tools_registry, tmp_path, monkeypatch,
+    ):
+        from project_runtime.worker.llm_worker import LLMWorkerAdapter
+
+        monkeypatch.chdir(tmp_path)
+        w = LLMWorkerAdapter.__new__(LLMWorkerAdapter)
+        w._workspace_root = "data/tasks/2/15"
+        args_json = '{"path": "README.md"'
+        assert _repair_arguments(args_json) is not None
+        text, ok = await w._run_search_tool(
+            1, "tool:write_file", args_json, 1,
+        )
+        assert ok is False
+        assert text.startswith("[TRUNCATED]") and "content" in text
+        assert not (tmp_path / "data/tasks/2/15/README.md").exists()
+
+    @pytest.mark.asyncio
+    async def test_missing_field_without_repair(
+        self, file_tools_registry, tmp_path, monkeypatch,
+    ):
+        from project_runtime.worker.llm_worker import LLMWorkerAdapter
+
+        monkeypatch.chdir(tmp_path)
+        w = LLMWorkerAdapter.__new__(LLMWorkerAdapter)
+        w._workspace_root = "data/tasks/2/15"
+        text, ok = await w._run_search_tool(
+            1, "tool:write_file", '{"path": "README.md"}', 1,
+        )
+        assert ok is False and text.startswith("[MISSING_FIELD]")
+
+    @pytest.mark.asyncio
+    async def test_repaired_complete_args_written_with_warning(
+        self, file_tools_registry, tmp_path, monkeypatch,
+    ):
+        from project_runtime.worker.llm_worker import LLMWorkerAdapter
+
+        monkeypatch.chdir(tmp_path)
+        w = LLMWorkerAdapter.__new__(LLMWorkerAdapter)
+        w._workspace_root = "data/tasks/2/15"
+        args_json = '{"path": "README.md", "content": "# 半截'
+        text, ok = await w._run_search_tool(
+            1, "tool:write_file", args_json, 1,
+        )
+        assert ok is True and "可能不完整" in text
+        assert (tmp_path / "data/tasks/2/15/README.md").read_text(
+            encoding="utf-8") == "# 半截"

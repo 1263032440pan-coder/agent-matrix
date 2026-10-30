@@ -1,7 +1,7 @@
 """20号规范批次 1: 底座插件测试（全离线）.
 
 覆盖:
-  [x] file_rw 工作区禁闭（越界拒绝/不存在 404 语义/合法读）
+  [x] read_file / list_dir 工作区禁闭（越界拒绝/不存在 404 语义/合法读）
   [x] shell 三防（白名单/参数模式/注入黑名单/cd 逃逸/git 只读子命令）
   [x] code_search 正则命中+glob+越界拒绝
   [x] slide_generator md→pptx（读回验证页数/标题）+ 文件名清洗
@@ -45,14 +45,16 @@ def workspace(tmp_path, monkeypatch):
 def providers(workspace):
     from project_runtime.worker.tools import (
         CodeSearchProvider,
-        FileRwProvider,
+        ListDirProvider,
+        ReadFileProvider,
         ShellProvider,
         SlideGeneratorProvider,
         WebFetchProvider,
     )
 
     return {
-        "frw": FileRwProvider(),
+        "read": ReadFileProvider(),
+        "list": ListDirProvider(),
         "shell": ShellProvider(),
         "search": CodeSearchProvider(),
         "slide": SlideGeneratorProvider(),
@@ -63,29 +65,27 @@ def providers(workspace):
 class TestFileRw:
     @pytest.mark.asyncio
     async def test_read_within_workspace(self, providers, workspace):
-        r = await providers["frw"].invoke({
-            "action": "read", "path": str(workspace / "p1" / "t1" / "doc.md")
+        r = await providers["read"].invoke({
+            "path": str(workspace / "p1" / "t1" / "doc.md")
         })
         assert r["ok"] and "hello world" in r["content"]
 
     @pytest.mark.asyncio
     async def test_traversal_rejected(self, providers):
-        r = await providers["frw"].invoke({
-            "action": "read", "path": "C:/Windows/win.ini"
-        })
+        r = await providers["read"].invoke({"path": "C:/Windows/win.ini"})
         assert not r["ok"] and "越界" in r["error"]
 
     @pytest.mark.asyncio
     async def test_missing_file(self, providers, workspace):
-        r = await providers["frw"].invoke({
-            "action": "read", "path": str(workspace / "p1" / "nope.md")
+        r = await providers["read"].invoke({
+            "path": str(workspace / "p1" / "nope.md")
         })
         assert not r["ok"] and "不存在" in r["error"]
 
     @pytest.mark.asyncio
     async def test_list_dir(self, providers, workspace):
-        r = await providers["frw"].invoke({
-            "action": "list", "path": str(workspace / "p1" / "t1")
+        r = await providers["list"].invoke({
+            "path": str(workspace / "p1" / "t1")
         })
         assert r["ok"] and "doc.md" in r["items"]
 
@@ -241,7 +241,8 @@ class TestRegistration:
         register_worker_tools(reg)
         names = {i.name for i in reg.list_providers(CapabilityType.TOOL)}
         assert names == {
-            "tool:webfetch", "tool:file_rw", "tool:shell",
+            "tool:webfetch", "tool:read_file", "tool:list_dir",
+            "tool:write_file", "tool:shell",
             "tool:code_search", "tool:slide_generator",
         }
 

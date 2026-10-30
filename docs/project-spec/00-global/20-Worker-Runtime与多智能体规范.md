@@ -61,7 +61,7 @@ Project Runtime（大脑）
 AgentDefinition（agent_definition 表——静态配置，长期存在，跨项目复用）
   ├─ agent_id / name / role_description（→自动生成 system prompt）
   ├─ model_config（模型名——可与全局不同；空=用全局）
-  ├─ plugins: JSON（插件白名单：["shell","file_rw","slide_generator",…]）
+  ├─ plugins: JSON（插件白名单：["shell","read_file","list_dir","write_file","slide_generator",…]）
   ├─ skills: JSON（skill 白名单：skill_id 列表；AI 在白名单内自决）
   ├─ stage_affinity: JSON（环节亲和：["设计","架构"]——路由依据）
   ├─ scope: GLOBAL（全局模板）/ PROJECT（项目实例化）
@@ -91,11 +91,11 @@ AgentInstance（agent_instance 表——运行时状态机，项目内实体）
 
 | 模板 | stage_affinity | 插件集 | 说明 |
 |---|---|---|---|
-| analyst | 项目理解,需求基线 | file_rw, web_search, webfetch, slide_generator | 前期调研+汇报 PPT |
-| designer | 解决方案,原型设计,架构设计 | file_rw, web_search, webfetch, slide_generator, arch_diagram | 方案+图 |
-| coder | 开发实现 | file_rw, shell, code_search, git, lsp | 编码三件套 |
-| tester | 测试验证 | file_rw, shell, test_runner, code_search | 跑测+报告 |
-| releaser | 交付打包,使用文档 | file_rw, shell, builder, slide_generator | 打包+交付文档 |
+| analyst | 项目理解,需求基线 | read_file, list_dir, write_file, web_search, webfetch, slide_generator | 前期调研+汇报 PPT |
+| designer | 解决方案,原型设计,架构设计 | read_file, list_dir, write_file, web_search, webfetch, slide_generator, arch_diagram | 方案+图 |
+| coder | 开发实现 | read_file, list_dir, write_file, shell, code_search, git, lsp | 编码三件套 |
+| tester | 测试验证 | read_file, list_dir, write_file, shell, test_runner, code_search | 跑测+报告 |
+| releaser | 交付打包,使用文档 | read_file, list_dir, write_file, shell, builder, slide_generator | 打包+交付文档 |
 
 **术语澄清（2026-10-12 用户问询补充）**：
 - **模板库** = `agent_definition` 表里全部 Definition 的集合（内置五个 seed + 用户自建 + Controller 动态生成的都在同一张表，scope 字段区分 GLOBAL/PROJECT）
@@ -115,7 +115,7 @@ Controller 动态派生（§2.2 路径 3）的 plugins/skills **不允许自由�
 
 1. **环节上限（天花板）**：继承该环节内置模板的 plugins 全集——上限是人工评审过的静态代码（本节三层依据），非 LLM 推导物；Controller 只能在天花板之下做减法，加不出天花板外的东西
 2. **契约增量（只加安全集）**：扫 Task.contract 能力词，从安全增量集 `{arch_diagram, slide_generator, todo, builder, test_runner}` 加——全部只读或工作区禁闭型，无文件系统越界面；**shell / git 永不进增量集**（只能经 ① 环节上限获得——LLM 推导 LLM 的权限必须有不可推导的硬门）
-3. **misc 兜底**：无对应环节 → 三能力基线（file_rw + web_search）+ 契约安全增量
+3. **misc 兜底**：无对应环节 → 三能力基线（文件工具 + web_search）+ 契约安全增量
 4. **skills 恒 None**（skill 选择由内容匹配负责——"安装即可用"定则；用户对派生模板的 skill 限制可在 UI 手工改）
 
 **硬门语义**：推导结果恒 ⊆ 人工定义的环节上限——最坏是给少了（能力降级、任务继续），不会给多了（越权）。
@@ -180,7 +180,7 @@ CREATED ──→ IDLE ⇄ BUSY ──→ PAUSED ──→ TERMINATED
   4. **全局死循环熔断**：连续 8 次任务终态均 FAIL/REWORK → 判定系统性问题 → 项目自动 PAUSED + 报告用户，停止消耗 token
   5. **循环成本可见**：UI 任务卡显示 rework_round ×/3；项目页显示"对账第 N 轮 | 补给 m/预算 | 累计消耗"
   - **设计原则**："完成"必须有限可判定——验收条款有限集 + REWORK 有限轮 + 补给有限额 + 熔断有限触发，四层有限叠加数学上保证循环必然终止（完成或升级人类，无第三种无限状态）；宽松度旋钮只留两个且都归用户（max_rework_rounds / WAIVED 降级接受开关），不留给 LLM
-- 插件配置：管理类（web_search/file_rw/code_search 只读），不挂 shell 执行/测试运行等干活插件
+- 插件配置：管理类（web_search/read_file/list_dir/code_search 只读），不挂 shell 执行/测试运行等干活插件
 - 偏移检测复用 Gate 语义：CompletionCheck 七条件 + 任务契约对照——检测依据正是自己构建的契约（构建者最清楚验收标准，语义自洽）
 
 ---
@@ -194,7 +194,7 @@ CREATED ──→ IDLE ⇄ BUSY ──→ PAUSED ──→ TERMINATED
 | web_search | RESEARCH | ✅ 已交付 | 19 号规范（Exa/scrape Provider） |
 | skill 加载 | — | ✅ 已交付 | skill 体系 |
 | **webfetch** | RESEARCH | 新增 | 拉取指定 URL 文档（API 文档页）；复用 Provider 契约注册 |
-| **file_rw** | TOOL | 新增 | 产物读写（在 Artifact 体系上适配——限定 data/tasks/ 工作区，防穿越沿用既有防线） |
+| **read_file / list_dir / write_file** | TOOL | 新增（SYS-147 由 file_rw 拆分） | 产物读写（读 data/tasks 内、写本任务工作区；相对路径以任务工作区为根；旧白名单 `file_rw` 别名展开，调用旧名返回 `TOOL_RENAMED`） |
 | **shell**（白名单版） | TOOL | 新增 | 受限命令执行三防+工作区禁闭（返修补充 P2-1）：①白名单命令（pytest/npm/git/python/pip/ls/cat 等）**且白名单同时限定参数模式**（如 pytest 只准路径与 -k，禁 -c/--rootdir 等可注入配置的参数；git 只准 status/diff/log/add/commit）②**cwd 硬锁 `data/tasks/{project}/{task}/`**（工作目录逃逸防护——cd/绝对路径参数拒绝；跑在与 Runtime 同权限的进程内执行，不锁 cwd 等于裸奔数据库文件）③超时 120s + 输出截断 + 注入黑名单；审计事件 TOOL_STARTED/COMPLETED 复用既有类型 |
 | **code_search** | TOOL | 新增 | 代码检索（ripgrep 包装：pattern/glob/路径；先于 LSP 交付） |
 | **slide_generator** | TOOL | 新增（**批次 1 刚需**） | md → .pptx（python-pptx）；批次 1 基础版式（标题页/目录/内容页/要点页/结尾），产物进 Artifact（UI 下载预览）；批次 3 模板系统+图表 |
@@ -227,7 +227,7 @@ CREATED ──→ IDLE ⇄ BUSY ──→ PAUSED ──→ TERMINATED
 - **新插件对存量 Agent 默认不可见（V1.4 定，与 Hermes 反向）**：Hermes 新 toolset 默认启用 + 台账区分"见过且关掉"（个人工具可用性优先）；我们白名单是角色护栏——新装插件只进 registry，不自动出现在任何存量模板面前（护栏优先于新能力可用性），进白名单须显式修订模板
 - 全部调用走 LLM_TOOL_CALL/RESULT 审计（已建）；skill 注入走 SKILL_RESOLVED 事件（已建）
 - **白名单是护栏不是开关**：护栏决定"能给什么"，AI 决定"什么时候用什么"——用户不逐次指挥（用户决策②的原话语义）
-- **三能力基线（V1.4 修订）**：`file_rw + web_search` 每内置模板必含（③ 联网 RAG 是标配——coder/tester 原缺 web_search 属数据缺陷已修）；`webfetch` 不进基线（搜索配套，按需加）；skills 模板缺省 `None`（不限——`[]` 是 fail-closed 零 skill，违反"安装即可被程序利用"定则）；内置模板 seed 为 **BUILT_IN upsert**（出厂配置随代码更新，USER/CONTROLLER_GENERATED 永不覆盖）
+- **三能力基线（V1.4 修订）**：文件工具（`read_file/list_dir/write_file`）+ `web_search` 每内置模板必含（③ 联网 RAG 是标配——coder/tester 原缺 web_search 属数据缺陷已修）；`webfetch` 不进基线（搜索配套，按需加）；skills 模板缺省 `None`（不限——`[]` 是 fail-closed 零 skill，违反"安装即可被程序利用"定则）；内置模板 seed 为 **BUILT_IN upsert**（出厂配置随代码更新，USER/CONTROLLER_GENERATED 永不覆盖）
 
 ### 4.4 行业差异（本规范只做软件开发的理由落地）
 
@@ -337,7 +337,7 @@ CREATED ──→ IDLE ⇄ BUSY ──→ PAUSED ──→ TERMINATED
 │   摘要者 = 主模型（DeepSeek 网关内，无新增成本类型）
 └ 外置层（数据库/磁盘——冷，指针不占窗口）
     全部产物原文（artifact 表）+ 全部事件流（runtime_event）
-    取回 = file_rw 插件（Agent 判"需要原文"时读——恢复指针语义）
+    取回 = read_file 插件（Agent 判"需要原文"时读——恢复指针语义）
     检索 = FTS5 关键词（既有 Retrieval 域）→ search_memory 工具
     （BM25 查事件/产物文本——"我之前在哪提过 User 模块"）
 ```
@@ -359,7 +359,7 @@ CREATED ──→ IDLE ⇄ BUSY ──→ PAUSED ──→ TERMINATED
 |---|---|---|
 | 头尾结构 | 头 = system（角色 prompt，永不动）+ 压缩摘要 + 恢复指针；尾 = 当前任务全部 + 最近 2 任务原文（Hermes protect_last_n 的任务粒度适配——本项目任务边界清晰的优势） | Hermes 头尾结构 |
 | 关键串保真 | 压缩时正则提取文件路径/接口名/artifact sha/URL——原文嵌入摘要永不转述 | Hermes lean tail 模式 |
-| 恢复指针 | 摘要尾部附被压内容检索入口——落地为 artifact sha + file_rw 取回（批次 1）；search_memory（FTS5）批次 3 | Hermes session_search 指针的结构化版 |
+| 恢复指针 | 摘要尾部附被压内容检索入口——落地为 artifact sha + read_file 取回（批次 1）；search_memory（FTS5）批次 3 | Hermes session_search 指针的结构化版 |
 | 审计 | AGENT_CONTEXT_COMPRESSED 事件（何时/压掉多少 token/保了什么/蓝本路径） | 可观测性 |
 
 ### 7.4 约束下的能力边界（如实声明）
@@ -446,7 +446,7 @@ Prune 保护带（PRUNE_PROTECT=40K）同样按窗口比例适配：`min(40000, 
                 写的工作内容/验收标准）+ ContextBuilder 产出的项目
                 上下文（复用既有 WP-010 六件套）+ skill 方法体
   ③ 工具循环（19 号）: 模型在这份 messages 上推理——
-     遇知识缺口 → web_search / 需要原文 → file_rw 读 artifact /
+     遇知识缺口 → web_search / 需要原文 → read_file 读 artifact /
      找历史 → search_memory（批次 3）
      （外置层不进窗口——Agent 主动取用时才进来，取回的内容
        属于当前任务消息，随任务结束一起滑入"最近任务"区）
@@ -514,7 +514,7 @@ Migration：一张 migration 建三表 + 索引（project_id/definition_id/statu
 - AgentDefinition/AgentInstance + migration + 六态 FSM（含 actor 防护/非法转移拒绝测试）
 - WorkerRegistry：路由（stage_affinity + 空闲优先）+ 多 Agent 并存执行（复用 19 号工具循环，每 Agent 独立实例）
 - AgentProvisioner（规划自动创建五模板）
-- 插件: webfetch / file_rw / shell 白名单版 / code_search / **slide_generator（python-pptx 基础版式）**
+- 插件: webfetch / read_file / list_dir / write_file / shell 白名单版 / code_search / **slide_generator（python-pptx 基础版式）**
 - **会话压缩全量（§7.5 批次 1 定稿——真实项目 50-150 任务必触发）**：SessionStore（任务终态归档）/ 组装时序五段（§7.6）/ 触发公式（模型适配）/ Prune+Summarize 两步 / 头尾结构+关键串保真 / 恢复指针（artifact sha+file_rw）/ 冷却 600s / AGENT_CONTEXT_COMPRESSED 事件 / context_tokens+threshold 写入（UI 压力条数据源）/ 大历史 fixture 测试（15 任务塞满窗口断言压缩发生）
 - UI: 智能体管理面板 + pptx 产物卡片
 - 生命周期七事件接线

@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 from project_runtime.worker.llm_worker import (
-    DeliveryBaselineError,
+    DeliveryGapSoftAcceptError,
     LLMWorkerAdapter,
     _check_delivery_workspace,
     _delivery_tags_for_wp,
@@ -138,7 +138,7 @@ async def test_stop_gate_blocks_then_passes(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_stop_gate_fails_after_3_repairs(tmp_path, monkeypatch):
-    """3 次返工仍缺 → DeliveryBaselineError。"""
+    """3 次返工仍缺 → 软放行（SYS-138），不再 FAILED。"""
     ws = tmp_path / "ws"
     ws.mkdir()
     monkeypatch.chdir(tmp_path)
@@ -197,6 +197,6 @@ async def test_stop_gate_fails_after_3_repairs(tmp_path, monkeypatch):
 
     w._archive_session = _arch
 
-    with pytest.raises(DeliveryBaselineError) as ei:
+    with pytest.raises(DeliveryGapSoftAcceptError) as ei:
         await w._execute_llm(_WP(tags=["ppt"], task_id=7))
-    assert "3" in str(ei.value) or "返工" in str(ei.value)
+    assert "3" in str(ei.value) or "返工" in str(ei.value) or "软放行" in str(ei.value)

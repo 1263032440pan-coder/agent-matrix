@@ -3,7 +3,7 @@
 覆盖设计单 §六测试计划:
 - 判定器: SOFTWARE_DEV 正例/反例/无 LLM 兜底/双失败保守
 - 注入断言: SOFTWARE_DEV → extractor prompt 含基线约定; NOT_SOFTWARE 零注入
-- file_rw 禁闭: __ws_root 内 ok / 越界拒（指引文案）
+- write_file 禁闭: __ws_root 内 ok / 越界拒（指引文案）
 - stage_outputs 四件套: code_stage 空 outputs → 补默认
 - delivery_tags 归一: 词表命中
 - 收工自查: tags 任务注入自查消息+文件树; 一次性; 无 tags 零注入
@@ -189,17 +189,17 @@ class TestExtractorInjection:
         assert "交付基线" not in captured.get("prompt", "")
 
 
-# ═══ file_rw 禁闭 ════════════════════════════════════════════════
+# ═══ write_file 禁闭 ═════════════════════════════════════════════
 
 class TestFileRwConfinement:
     @pytest.mark.asyncio
     async def test_write_inside_ws_ok(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
-        from project_runtime.worker.tools import FileRwProvider
+        from project_runtime.worker.tools import WriteFileProvider
 
-        prov = FileRwProvider()
+        prov = WriteFileProvider()
         r = await prov.invoke({
-            "action": "write", "path": "src/main.py",
+            "path": "src/main.py",
             "content": "print(1)",
             "__ws_root": "data/tasks/1/5",
         })
@@ -210,27 +210,27 @@ class TestFileRwConfinement:
     async def test_write_outside_ws_rejected(self, tmp_path, monkeypatch):
         """越界（写到相邻任务目录）→ 指引文案, 不落盘。"""
         monkeypatch.chdir(tmp_path)
-        from project_runtime.worker.tools import FileRwProvider
+        from project_runtime.worker.tools import WriteFileProvider
 
-        prov = FileRwProvider()
+        prov = WriteFileProvider()
         r = await prov.invoke({
-            "action": "write", "path": "data/tasks/login_api/main.py",
+            "path": "data/tasks/login_api/main.py",
             "content": "x",
             "__ws_root": "data/tasks/1/5",
         })
         assert r["ok"] is False
-        assert "路径越界" in r["error"] and "src/main.py" in r["error"]
+        assert "路径越界" in r["error"] and "src/main.py" in r["hint"]
         assert not (tmp_path / "data/tasks/login_api").exists()
 
     @pytest.mark.asyncio
     async def test_no_ws_root_legacy_semantics(self, tmp_path, monkeypatch):
         """无 __ws_root → data/tasks 原语义（向后兼容）。"""
         monkeypatch.chdir(tmp_path)
-        from project_runtime.worker.tools import FileRwProvider
+        from project_runtime.worker.tools import WriteFileProvider
 
-        prov = FileRwProvider()
+        prov = WriteFileProvider()
         r = await prov.invoke({
-            "action": "write", "path": "data/tasks/anywhere/x.py",
+            "path": "data/tasks/anywhere/x.py",
             "content": "x",
         })
         assert r["ok"] is True
