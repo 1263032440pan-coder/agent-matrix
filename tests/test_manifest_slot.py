@@ -7,11 +7,11 @@ from pathlib import Path
 
 import pytest
 
+from project_runtime.procedure import delivery_manifest as dm
 from project_runtime.procedure.delivery_manifest import (
     check_match,
     validate_manifest,
 )
-from project_runtime.procedure import delivery_manifest as dm
 from project_runtime.procedure.task_load import expand_obligation_tokens
 from project_runtime.procedure.token_stop import check_obligation_tokens
 
