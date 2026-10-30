@@ -44,7 +44,16 @@ _BUDGET_GRACE_NUDGE = (
 
 
 class DeliveryBaselineError(RuntimeError):
-    """交付基线校验失败（返工轮次用尽）——Worker 应 success=False → Task FAILED。"""
+    """交付基线校验失败（篡改等硬故障）——Worker 应 success=False → Task FAILED。"""
+
+
+class DeliveryGapSoftAcceptError(Exception):
+    """预算用尽/返工用尽仍缺件——软放行：success=True → EXECUTION_DONE → Gate PASS_WITH_GAP。"""
+
+    def __init__(self, message: str, *, delivery_gap: dict):
+        super().__init__(message)
+        self.delivery_gap = dict(delivery_gap or {})
+        self.delivery_gap.setdefault("soft_accepted", True)
 
 
 def _delivery_tags_for_wp(wp) -> list[str]:
@@ -191,10 +200,19 @@ class LLMWorkerAdapter(WorkerAdapter):
         ws_snapshot = self._workspace_snapshot()
 
         # Execute via LLM (zero DB transaction held — network call)
-        # V1.6b: 交付硬闸在工具循环内；用尽返工 → DeliveryBaselineError → FAILED
+        # 软放行：DeliveryGapSoftAcceptError → success=True + delivery_gap 进 TaskRun
+        # 硬故障：DeliveryBaselineError → FAILED
+        delivery_gap: dict | None = None
         try:
             output = await self._execute_llm(wp)
             success = True
+        except DeliveryGapSoftAcceptError as e:
+            logger.warning(
+                "Delivery gap soft-accept task %d: %s", wp.task_id, e,
+            )
+            output = str(e)
+            success = True
+            delivery_gap = dict(e.delivery_gap)
         except DeliveryBaselineError as e:
             logger.error(
                 "Delivery baseline failed for task %d: %s", wp.task_id, e
@@ -242,7 +260,12 @@ class LLMWorkerAdapter(WorkerAdapter):
             from project_runtime.project_state.models import TaskRun
 
             now = datetime.datetime.now(datetime.timezone.utc)
-            run_payload: dict = {"output": output[:2000]}
+            run_payload: dict = {
+                "output": output[:2000],
+                "run_mode": "llm",
+            }
+            if delivery_gap:
+                run_payload["delivery_gap"] = delivery_gap
             if wp.skill_context is not None:
                 run_payload["skill"] = {
                     "skill_id": wp.skill_context.skill_id,
@@ -337,10 +360,14 @@ class LLMWorkerAdapter(WorkerAdapter):
         return Path(f"data/tasks/0/{self._current_task_id or 0}")
 
     async def _delivery_stop_problems(self, wp) -> list[str]:
-        """V1.6d: 收工硬闸——优先冻结脚本子进程；无 ids 则不拦。
+        """兼容旧调用：仅返回 problems 文案列表。"""
+        report = await self._delivery_stop_report(wp)
+        return list(report.problems)
 
-        脚本缺失/hash 不符 → DeliveryBaselineError（不降级 match）。
-        无脚本且仅有 legacy tags → V1.6b 工作区检查。
+    async def _delivery_stop_report(self, wp):
+        """V1.6d + SYS-139: 收工硬闸报告（problems/unmet/scan_*）。
+
+        脚本缺失/hash 不符 → DeliveryBaselineError（不降级、不软放行）。
         """
         import json as _json
         import time
@@ -349,6 +376,10 @@ class LLMWorkerAdapter(WorkerAdapter):
             run_validator_script,
             sha256_file,
             validator_path,
+        )
+        from project_runtime.procedure.token_stop import (
+            ObligationStopResult,
+            check_obligation_tokens_detailed,
         )
 
         ws = self._task_ws_root()
@@ -365,6 +396,7 @@ class LLMWorkerAdapter(WorkerAdapter):
             ref = {}
         ids = [str(x) for x in (ref.get("deliverable_ids") or []) if x]
         tags = _delivery_tags_for_wp(wp)
+        tokens = list(ref.get("obligation_tokens") or [])
 
         pid = getattr(self, "_current_project_id", None)
         proj = None
@@ -375,6 +407,30 @@ class LLMWorkerAdapter(WorkerAdapter):
                 proj = await self._session.get(Project, pid)
             except Exception:  # noqa: BLE001
                 logger.debug("load project for validator failed", exc_info=True)
+
+        if tokens:
+            deliverables_by_id: dict = {}
+            if proj is not None and proj.delivery_manifest:
+                try:
+                    from project_runtime.procedure.delivery_manifest import (
+                        validate_manifest,
+                    )
+
+                    man = validate_manifest(proj.delivery_manifest)
+                    deliverables_by_id = {
+                        str(d["id"]): d
+                        for d in (man.get("deliverables") or [])
+                    }
+                except Exception:  # noqa: BLE001
+                    logger.debug(
+                        "manifest for token stop failed", exc_info=True,
+                    )
+            return check_obligation_tokens_detailed(
+                ws,
+                tokens,
+                deliverables_by_id=deliverables_by_id,
+                scan_path=str(ws).replace("\\", "/"),
+            )
 
         if ids and proj is not None and pid is not None:
             expected = proj.delivery_validator_hash
@@ -399,8 +455,9 @@ class LLMWorkerAdapter(WorkerAdapter):
                 raise DeliveryBaselineError(
                     "交付校验脚本缺失或被篡改，请重新生成计划"
                 )
+            project_root = Path(f"data/tasks/{int(pid)}")
             t0 = time.monotonic()
-            result = await run_validator_script(script, ws, ids)
+            result = await run_validator_script(script, project_root, ids)
             elapsed = int((time.monotonic() - t0) * 1000)
             try:
                 from project_runtime.event import (
@@ -421,18 +478,64 @@ class LLMWorkerAdapter(WorkerAdapter):
                         "ok": bool(result.get("ok")),
                         "problems": (result.get("problems") or [])[:8],
                         "elapsed_ms": elapsed,
+                        "scan_root": "project",
                     },
                 )
             except Exception:  # noqa: BLE001
                 logger.debug("emit VALIDATOR_RUN failed", exc_info=True)
-            if result.get("ok"):
-                return []
-            return list(result.get("problems") or ["校验未通过"])
+            problems = [] if result.get("ok") else list(
+                result.get("problems") or ["校验未通过"]
+            )
+            unmet = [
+                {"token_id": None, "kind": "manifest", "hint": p}
+                for p in problems
+            ]
+            return ObligationStopResult(
+                problems=problems,
+                unmet=unmet,
+                scan_root="project",
+                scan_path=str(project_root).replace("\\", "/"),
+            )
 
-        # 无 deliverable_ids：legacy tags 兜底（旧任务）
         if tags:
-            return _check_delivery_workspace(ws, tags)
-        return []
+            problems = _check_delivery_workspace(ws, tags)
+            unmet = [
+                {"token_id": None, "kind": "tag", "hint": p}
+                for p in problems
+            ]
+            return ObligationStopResult(
+                problems=problems,
+                unmet=unmet,
+                scan_root="task",
+                scan_path=str(ws).replace("\\", "/"),
+            )
+        return ObligationStopResult(
+            scan_root="task",
+            scan_path=str(ws).replace("\\", "/"),
+        )
+
+    def _raise_delivery_gap_soft(
+        self,
+        *,
+        reason: str,
+        report,
+        message: str,
+        tool_rounds: int | None = None,
+    ) -> None:
+        import datetime as _dt
+
+        gap = {
+            "reason": reason,
+            "soft_accepted": True,
+            "problems": list(report.problems),
+            "unmet": list(report.unmet),
+            "scan_root": report.scan_root,
+            "scan_path": report.scan_path,
+            "at": _dt.datetime.now(_dt.timezone.utc).isoformat(),
+        }
+        if tool_rounds is not None:
+            gap["tool_rounds"] = tool_rounds
+        raise DeliveryGapSoftAcceptError(message, delivery_gap=gap)
 
     async def cancel(self, task_id: int) -> None:
         async with self._db_lock:
@@ -509,6 +612,93 @@ class LLMWorkerAdapter(WorkerAdapter):
             prompt_parts.append(f"契约：{wp.contract}")
         if wp.skill_context:
             prompt_parts.append(f"方法指导：\n{wp.skill_context.skill_body[:3000]}")
+        # SYS-137: slot:/count: → 必写槽目录（分片仅有 count 时也要提示）
+        slot_dirs: list[str] = []
+        try:
+            from project_runtime.procedure.token_stop import (
+                slot_dirs_for_tokens,
+            )
+
+            raw_ref = getattr(wp, "playbook_ref", None)
+            ref = json.loads(raw_ref) if isinstance(raw_ref, str) else (
+                raw_ref if isinstance(raw_ref, dict) else {}
+            )
+            tokens = list((ref or {}).get("obligation_tokens") or [])
+            deliverables_by_id: dict = {}
+            pid = getattr(self, "_current_project_id", None)
+            if pid is not None and self._session is not None:
+                from project_runtime.project_state.models import Project
+
+                proj = await self._session.get(Project, pid)
+                if proj is not None and proj.delivery_manifest:
+                    from project_runtime.procedure.delivery_manifest import (
+                        validate_manifest,
+                    )
+
+                    man = validate_manifest(proj.delivery_manifest)
+                    deliverables_by_id = {
+                        str(d["id"]): d
+                        for d in (man.get("deliverables") or [])
+                    }
+            slot_dirs = slot_dirs_for_tokens(
+                tokens, deliverables_by_id,
+            )
+        except Exception:  # noqa: BLE001
+            slot_dirs = []
+        if slot_dirs:
+            uniq = list(dict.fromkeys(slot_dirs))
+            prompt_parts.append(
+                "【交付槽目录·必写】请将对应产物写入本任务工作区内下列相对路径"
+                "（目录内文件名可中可英，但必须落在该目录下）：\n- "
+                + "\n- ".join(uniq)
+            )
+        # 令牌硬清单：避免只埋头写工程却漏 readme / 扩展名
+        try:
+            raw_ref2 = getattr(wp, "playbook_ref", None)
+            ref2 = json.loads(raw_ref2) if isinstance(raw_ref2, str) else (
+                raw_ref2 if isinstance(raw_ref2, dict) else {}
+            )
+            tok_lines: list[str] = []
+            for t in (ref2 or {}).get("obligation_tokens") or []:
+                tid = str((t or {}).get("id") or "")
+                if tid.startswith("prefix:"):
+                    lab = str((t or {}).get("label") or tid.split(":")[-1])
+                    tok_lines.append(f"文件名以 `{lab}` 开头（如 {lab}.md）")
+                elif tid.startswith("ext:"):
+                    parts = tid.split(":", 2)
+                    e = parts[2] if len(parts) >= 3 else ""
+                    if e and e != "any":
+                        tok_lines.append(
+                            f"至少一种源码扩展名（本分片候选含 `{e}`；"
+                            "同清单项多种扩展名交其一即可）"
+                        )
+                    elif e == "any":
+                        exts = (t or {}).get("exts") or []
+                        tok_lines.append(
+                            "至少一种源码扩展名（需其一）："
+                            + ",".join(str(x) for x in exts)
+                        )
+                elif tid.startswith("count:"):
+                    q = (t or {}).get("quota") or 1
+                    tok_lines.append(f"槽内普通文件数量 ≥ {q}")
+                elif tid.startswith("slot:"):
+                    lab = str((t or {}).get("label") or tid)
+                    tok_lines.append(f"槽目录有文件：{lab}")
+            if tok_lines:
+                # 去重保序
+                seen: set[str] = set()
+                uniq_lines: list[str] = []
+                for line in tok_lines:
+                    if line in seen:
+                        continue
+                    seen.add(line)
+                    uniq_lines.append(line)
+                prompt_parts.append(
+                    "【义务令牌·收工必过】本任务目录必须同时满足：\n- "
+                    + "\n- ".join(uniq_lines)
+                )
+        except Exception:  # noqa: BLE001
+            pass
         prompt_parts.append(
             "\n请完成上述任务，输出具体的交付内容（markdown 格式）。"
             "不要输出思考过程，直接给出结果。"
@@ -727,15 +917,20 @@ class LLMWorkerAdapter(WorkerAdapter):
                 if not content.strip():
                     content = "".join(reasoning_parts)[-2000:]
                 # V1.6c Claude Stop: 清单 match 硬闸（兼容 legacy tags）
-                problems = await self._delivery_stop_problems(wp)
+                report = await self._delivery_stop_report(wp)
+                problems = list(report.problems)
                 if problems:
                     tid = int(getattr(wp, "task_id", 0) or 0)
                     used = self._delivery_repair_counts.get(tid, 0)
                     if used >= _DELIVERY_REPAIR_MAX:
-                        raise DeliveryBaselineError(
-                            "交付校验失败（已返工"
-                            f"{_DELIVERY_REPAIR_MAX}次仍缺）："
-                            + "；".join(problems)
+                        self._raise_delivery_gap_soft(
+                            reason="UNMET_AFTER_EARLY_STOP",
+                            report=report,
+                            message=(
+                                "交付校验未齐（已返工"
+                                f"{_DELIVERY_REPAIR_MAX}次仍缺，软放行）："
+                                + "；".join(problems)
+                            ),
                         )
                     self._delivery_repair_counts[tid] = used + 1
                     if content.strip():
@@ -826,7 +1021,7 @@ class LLMWorkerAdapter(WorkerAdapter):
                 })
             # 继续下一轮（模型基于工具结果继续推理/产出）
 
-        # 预算用尽：Continue nudge → Grace（禁工具）→ 必跑 Stop（失败=FAILED）
+        # 预算用尽：Continue nudge → Grace（禁工具）→ 必跑 Stop（不过=软放行）
         return await self._budget_grace_close(
             wp, task_id, messages, cfg, model, content, tool_history,
             session_store, context_stats,
@@ -846,7 +1041,7 @@ class LLMWorkerAdapter(WorkerAdapter):
     ) -> str:
         """工具预算用尽：Continue nudge → Grace（无 tools）→ Stop。
 
-        Grace 后 Stop 失败直接 FAILED（不再给工具返工）。
+        Grace 后 Stop 不过 → DeliveryGapSoftAcceptError（软放行，不再给工具返工）。
         """
         messages.append({
             "role": "user",
@@ -895,11 +1090,16 @@ class LLMWorkerAdapter(WorkerAdapter):
             task_id, grace_text, tool_history,
         )
 
-        problems = await self._delivery_stop_problems(wp)
-        if problems:
-            raise DeliveryBaselineError(
-                "工具轮次用尽后校验未通过："
-                + "；".join(problems)
+        report = await self._delivery_stop_report(wp)
+        if report.problems:
+            self._raise_delivery_gap_soft(
+                reason="DELIVERY_GAP_AFTER_BUDGET",
+                report=report,
+                message=(
+                    "工具轮次用尽后校验未齐（软放行）："
+                    + "；".join(report.problems)
+                ),
+                tool_rounds=_TOOL_ROUNDS,
             )
         return await self._archive_session(
             task_id, wp, session_store, content, context_stats,

@@ -223,7 +223,8 @@ class BackfillValidator(Validator):
             )
 
             script = validator_path(int(task.project_id))
-            ws = Path(f"data/tasks/{task.project_id}/{task.id}")
+            # SYS-123: 清单验收扫项目根（与 Stop/收口同口径）
+            ws = Path(f"data/tasks/{task.project_id}")
             if not script.exists():
                 return ValidatorResult(
                     GateStatus.FAIL,
@@ -346,32 +347,62 @@ class GateCore:
         stmt = select(Artifact).where(Artifact.task_id == task.id)
         artifacts = list((await self._session.execute(stmt)).scalars().all())
 
-        # Run validators
+        # SYS-138: 软放行——最新 TaskRun 带 delivery_gap.soft_accepted
+        # → PASS_WITH_GAP，跳过会把缺口打成 FAIL 的校验器
+        soft_gap: dict | None = None
+        try:
+            from sqlalchemy import select as _sel_tr
+
+            from project_runtime.project_state.models import TaskRun as TaskRunRow
+
+            _runs = (
+                await self._session.execute(
+                    _sel_tr(TaskRunRow)
+                    .where(TaskRunRow.task_id == task.id)
+                    .order_by(TaskRunRow.id.desc())
+                    .limit(1)
+                )
+            ).scalars().all()
+            if _runs and _runs[0].result:
+                import json as _json
+
+                _payload = _json.loads(_runs[0].result)
+                _gap = (_payload or {}).get("delivery_gap")
+                if isinstance(_gap, dict) and _gap.get("soft_accepted"):
+                    soft_gap = _gap
+        except Exception:  # noqa: BLE001
+            soft_gap = None
+
         details: list[str] = []
         final = GateStatus.PASS
-        # 返修单-REWORK轮sha256误拦: REWORK 链判定注入（该任务 FAIL 史）
-        # ——经 task._gate_fail_history 槽传给 Validator（无 session 依赖）
         from sqlalchemy import select as _sel
 
-        _fail_hist = (
-            await self._session.execute(
-                _sel(GateResult.id).where(
-                    GateResult.task_id == task.id,
-                    GateResult.status == GateStatus.FAIL,
-                )
+        if soft_gap is not None:
+            reason = str(soft_gap.get("reason") or "DELIVERY_GAP")
+            details.append(
+                f"[delivery_gap] PASS_WITH_GAP: {reason}; "
+                f"problems={soft_gap.get('problems') or []}"
             )
-        ).first()
-        task._gate_fail_history = _fail_hist is not None
-        for v in self._validators:
-            r = await v.validate(task, artifacts)
-            details.append(f"[{v.name}] {r.status.value}: {r.message}")
-            if r.status == GateStatus.FAIL:
-                final = GateStatus.FAIL
-                break  # fail fast
-            # WARNING treated as PASS（ValidatorResult 契约）——
-            # 但 FileValidator 的 WARNING 尾随 hash 刷新工单, 收口消费
-            if r.status == GateStatus.BLOCKED and final == GateStatus.PASS:
-                final = GateStatus.BLOCKED
+            final = GateStatus.PASS
+        else:
+            # 返修单-REWORK轮sha256误拦: REWORK 链判定注入（该任务 FAIL 史）
+            _fail_hist = (
+                await self._session.execute(
+                    _sel(GateResult.id).where(
+                        GateResult.task_id == task.id,
+                        GateResult.status == GateStatus.FAIL,
+                    )
+                )
+            ).first()
+            task._gate_fail_history = _fail_hist is not None
+            for v in self._validators:
+                r = await v.validate(task, artifacts)
+                details.append(f"[{v.name}] {r.status.value}: {r.message}")
+                if r.status == GateStatus.FAIL:
+                    final = GateStatus.FAIL
+                    break  # fail fast
+                if r.status == GateStatus.BLOCKED and final == GateStatus.PASS:
+                    final = GateStatus.BLOCKED
 
         # 返修单-REWORK轮sha256误拦: 消费 FileValidator 的刷新工单——
         # WARNING/PASS 落定后, 对 mismatch 文件把 artifact.sha256 刷成
@@ -412,6 +443,37 @@ class GateCore:
             # WARNING treated as PASS（REWORK 轮重写文件的合法放行——
             # sha256 已由上面的工单消费刷新, 下轮校验自然干净）
             await self._fsm.transition_task(task, TaskStatus.ACCEPTED, actor=self.ACTOR)
+            if soft_gap is not None:
+                try:
+                    from project_runtime.event.models import (
+                        RuntimeEvent,
+                        RuntimeEventType,
+                    )
+
+                    self._session.add(
+                        RuntimeEvent(
+                            event_type=RuntimeEventType.DELIVERY_GAP_ACCEPTED.value,
+                            project_id=task.project_id,
+                            task_id=task_id,
+                            phase="GATE",
+                            actor=self.ACTOR,
+                            message=(
+                                f"soft-accept {soft_gap.get('reason')}"
+                            )[:120],
+                            payload=json.dumps(
+                                {
+                                    "reason": soft_gap.get("reason"),
+                                    "scan_root": soft_gap.get("scan_root"),
+                                    "problems": (
+                                        soft_gap.get("problems") or []
+                                    )[:8],
+                                },
+                                ensure_ascii=False,
+                            ),
+                        )
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.debug("emit DELIVERY_GAP_ACCEPTED failed", exc_info=True)
         else:
             # 返修单v2 P2 防死循环接线（五闸②）: FAIL→REWORK 前查轮次——
             # 同任务 Gate FAIL 累计达 MAX_REWORK_ROUNDS(3) 不再无限打回,

@@ -196,6 +196,26 @@ DOING
 | SYS-115 | 收口按 id 逐项跑脚本；禁止全表补建 | Closeout | 认领方案 | closeout | execution/service.py | 收口逻辑 | DONE（2026-10-28） |
 | SYS-116 | 补建任务带 depends_on | Closeout | 认领方案 | add_dependency | execution/service.py | 补建入边 | DONE（2026-10-28） |
 | SYS-117 | Dashboard 交付认领区（plan_status/主责） | Desktop UI | 认领方案 | dashboard 字段 | Dashboard + api | delivery-assignment | DONE（2026-10-28） |
+| SYS-118 | 义务令牌展开与 load（§四） | Plan Load | 过载拆分方案 | — | procedure/task_load.py | test_task_load | DONE（2026-10-28） |
+| SYS-119 | 认领后过载检测，READY 前拆分 | Plan Lifecycle | 过载拆分方案 | /plan 阶段 | delivery_assignment.assign_in_session | 无过载不拆 | DONE（2026-10-28） |
+| SYS-120 | 逐节点 LLM 拆 + 全局快照 | Plan Decompose | 过载拆分方案 | 规划期 LLM | procedure/plan_decompose.py | test_plan_decompose | DONE（2026-10-28） |
+| SYS-121 | 片级硬门 + 整闸一次短事务；失败不落库 | Decompose Gate | 过载拆分方案 | PLAN_DECOMPOSE_INVALID | plan_decompose + api + toast | 丢 id/令牌拒收 | DONE（2026-10-28） |
+| SYS-122 | 与 skill 正交：打分不读 stages | Planning | 过载拆分方案 | — | task_load（无 skill 输入） | 粗骨架仍可拆 | DONE（2026-10-28） |
+| SYS-123 | 令牌 Stop 本任务目录；清单 Stop 项目根 | Worker Stop | 过载拆分方案 | Stop 钩子 | token_stop + llm_worker | test_token_stop | DONE（2026-10-28） |
+| SYS-124 | SYS-113 后复跑过载检测（assign_in_session 内） | Replanner | 过载拆分方案 | — | delivery_assignment | replan 钩子复用 | DONE（2026-10-28） |
+| SYS-125 | Dashboard load/令牌/兜底/拆分；失败 toast | Desktop UI | 过载拆分方案 | dashboard 字段 | Dashboard + api | vitest task-load | DONE（2026-10-28） |
+| SYS-126 | 确定性装箱兜底（容量 5，id 链尾） | Plan Decompose | 过载拆分方案 | — | plan_decompose.bin_pack | llm 失败仍 READY | DONE（2026-10-28） |
+| SYS-127 | 清单抽取提示：源码≠纯 zip | Manifest Extract | 认领必成方案 | prompt | delivery_manifest.py | 提示 | DONE（2026-10-29） |
+| SYS-128 | 源码类纯压缩 ext 改写为默认源码后缀 | Manifest Gate | 认领必成方案 | coerced_from_archive | delivery_manifest.py | test_manifest_source_coerce | DONE（2026-10-29） |
+| SYS-129 | 认领失败禁止删任务图 | Plan Lifecycle | 认领必成方案 | — | delivery_assignment.assign_in_session | 不删 task | DONE（2026-10-29） |
+| SYS-130 | 确定性兜底分配必过硬门 | Delivery Assignment | 认领必成方案 | assignment_mode | deterministic_assign | test_deterministic_assign | DONE（2026-10-29） |
+| SYS-131 | 认领不以模型失败置 INVALID（仅不可修复） | Plan Lifecycle | 认领必成方案 | — | assign_in_session | 坏 llm 仍 READY | DONE（2026-10-29） |
+| SYS-132 | Dashboard 兜底标记 / INVALID 提示 | Desktop UI | 认领必成方案 | dashboard 字段 | Dashboard + api | assignment_mode | DONE（2026-10-29） |
+| SYS-133 | validate：位图多选或位图+pdf → 收束单一主后缀；抽取提示不限制多 ext | Manifest Gate | 清单多扩展名收束方案 | coerced_ext_singleton | delivery_manifest.py | test_manifest_media_ext_coerce | DONE（2026-10-29） |
+| SYS-134 | match.slot/rel_dir；name_contains 收束为类型槽 | Manifest Gate | 类型槽与相对路径方案 | coerced_to_slot | delivery_manifest.py | test_manifest_slot | DONE（2026-10-29） |
+| SYS-135 | 令牌 slot: 展开；有 slot 不展 name: | Task Load | 类型槽与相对路径方案 | slot: token | task_load.py | test_manifest_slot | DONE（2026-10-29） |
+| SYS-136 | token_stop + check_match + 冻结脚本认槽相对路径 | Worker Stop / Validator | 类型槽与相对路径方案 | deliverables/{slot}/ | token_stop + delivery_validator | test_manifest_slot / monotonicity | DONE（2026-10-29） |
+| SYS-137 | 抽取提示引导 slot；Worker 提示写入 rel_dir | Manifest Extract / Worker | 类型槽与相对路径方案 | prompt | delivery_manifest + llm_worker | prompt 断言 | DONE（2026-10-29） |
 
 ### 本批追踪说明
 

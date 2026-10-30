@@ -17,6 +17,21 @@ export interface DashboardData {
       match?: Record<string, unknown> | null;
     }>;
     stage_outputs?: string[];
+    /** SYS-125: 计划期义务负荷 */
+    task_load?: number | null;
+    load_max?: number | null;
+    obligation_token_ids?: string[];
+    bin_packed?: boolean;
+    decomposed_from?: string | null;
+    /** SYS-140: 软放行未兑现（预算/返工用尽） */
+    delivery_gap?: {
+      reason?: string;
+      soft_accepted?: boolean;
+      problems?: string[];
+      unmet?: Array<{ token_id?: string | null; kind?: string; hint?: string }>;
+      scan_root?: string;
+      scan_path?: string;
+    } | null;
   }>;
   current_task: { id: number; name: string } | null;
   worker_status: { running: number; ready: number };
@@ -32,6 +47,8 @@ export interface DashboardData {
     manifest_count: number;
     assigned_count: number;
     uncovered_ids: string[];
+    /** SYS-132: llm | deterministic_fallback */
+    assignment_mode?: string | null;
     items: Array<{
       id: string;
       name?: string | null;

@@ -16,7 +16,168 @@ logger = logging.getLogger(__name__)
 ERROR_CODE = "DELIVERY_MANIFEST_INVALID"
 _ALLOWED_MATCH_KEYS = frozenset({
     "ext", "name_contains", "any_name_prefix", "min_count",
+    "slot", "rel_dir",
 })
+
+# SYS-134: 文档类针 → 类型槽（约定相对目录，不验中英文件名）
+NEEDLE_TO_SLOT: dict[str, str] = {
+    "需求": "requirements",
+    "架构": "architecture",
+    "原型": "prototype",
+    "流程图": "flowchart",
+    "解决方案": "solution",
+    "开发": "development",
+    "测试": "testing",
+    "理解": "understanding",
+}
+_SLOT_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
+
+# SYS-128: 源码类纯压缩包 → 改写为默认源码后缀
+DEFAULT_SOURCE_EXTS: tuple[str, ...] = (".py", ".md", ".toml", ".json")
+_ARCHIVE_EXTS = frozenset({
+    ".zip", ".tar", ".tar.gz", ".tgz", ".7z", ".rar",
+})
+_SOURCE_NAME_RE = re.compile(
+    r"源码|源代码|代码|\bcode\b|\bsource\b", re.I,
+)
+_RELEASE_NAME_RE = re.compile(
+    r"安装包|发行包|发布包|release|installer|安装程序", re.I,
+)
+
+# SYS-133: 等价媒体/图类多选 → 单一主后缀（令牌 Stop 合取前收束）
+BITMAP_EXT_PRIORITY: tuple[str, ...] = (
+    ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp",
+)
+_BITMAP_EXTS = frozenset(BITMAP_EXT_PRIORITY)
+_SVG_EXT = ".svg"
+_PDF_EXT = ".pdf"
+
+
+def is_source_like_item(name: str, match: dict | None = None) -> bool:
+    """名称/针像源码，且不是明确发行包。"""
+    blob = name or ""
+    if match:
+        for n in match.get("name_contains") or []:
+            blob += " " + str(n)
+    if _RELEASE_NAME_RE.search(blob):
+        return False
+    return bool(_SOURCE_NAME_RE.search(blob))
+
+
+def _coerce_source_archive_exts(
+    name: str, norm_match: dict[str, Any],
+) -> tuple[dict[str, Any], bool]:
+    """源码类纯/混压缩 ext → 改写；返回 (match, coerced)."""
+    if not is_source_like_item(name, norm_match):
+        return norm_match, False
+    exts = list(norm_match.get("ext") or [])
+    if not exts:
+        return norm_match, False
+    archives = [e for e in exts if e in _ARCHIVE_EXTS or e.endswith(".gz")]
+    # also treat .tar.gz already normalized as single token
+    code = [e for e in exts if e not in _ARCHIVE_EXTS]
+    if not archives:
+        return norm_match, False
+    out = dict(norm_match)
+    if not code:
+        out["ext"] = list(DEFAULT_SOURCE_EXTS)
+        return out, True
+    out["ext"] = code
+    return out, True
+
+
+def coerce_equivalent_media_exts(
+    norm_match: dict[str, Any],
+) -> tuple[dict[str, Any], bool]:
+    """位图多选或位图+pdf/svg → 收束为单一主后缀；返回 (match, coerced)."""
+    exts = list(norm_match.get("ext") or [])
+    if len(exts) <= 1:
+        return norm_match, False
+    bitmap = [e for e in exts if e in _BITMAP_EXTS]
+    has_pdf = _PDF_EXT in exts
+    has_svg = _SVG_EXT in exts
+    if not (
+        len(bitmap) >= 2
+        or (len(bitmap) >= 1 and has_pdf)
+        or (len(bitmap) >= 1 and has_svg)
+    ):
+        return norm_match, False
+    primary = next(
+        (p for p in BITMAP_EXT_PRIORITY if p in bitmap),
+        bitmap[0],
+    )
+    out = dict(norm_match)
+    out["ext"] = [primary]
+    return out, True
+
+
+def default_rel_dir(slot: str) -> str:
+    return f"deliverables/{slot}"
+
+
+def infer_slot_from_text(blob: str) -> str | None:
+    """从名称/针文本推断类型槽；先长短语后单词。"""
+    text = blob or ""
+    # longer needles first
+    for needle in sorted(NEEDLE_TO_SLOT.keys(), key=len, reverse=True):
+        if needle in text:
+            return NEEDLE_TO_SLOT[needle]
+    lower = text.lower()
+    for needle, slot in NEEDLE_TO_SLOT.items():
+        if slot in lower.replace("-", "_"):
+            return slot
+    return None
+
+
+def coerce_doc_slot(
+    name: str, norm_match: dict[str, Any],
+) -> tuple[dict[str, Any], bool]:
+    """文档类 name_contains/名称 → slot+rel_dir；有槽则去掉 name_contains。"""
+    out = dict(norm_match)
+    coerced = False
+    slot = str(out.get("slot") or "").strip().lower().replace("-", "_")
+    if slot and not _SLOT_RE.match(slot):
+        slot = ""
+    if not slot:
+        blob = name or ""
+        for n in out.get("name_contains") or []:
+            blob += " " + str(n)
+        slot = infer_slot_from_text(blob) or ""
+        if slot:
+            coerced = True
+    if not slot:
+        return norm_match, False
+    out["slot"] = slot
+    rel = str(out.get("rel_dir") or "").strip().replace("\\", "/")
+    rel = rel.strip("/")
+    expected = default_rel_dir(slot)
+    if not rel:
+        out["rel_dir"] = expected
+        coerced = True
+    else:
+        out["rel_dir"] = rel
+    if "name_contains" in out:
+        del out["name_contains"]
+        coerced = True
+    return out, coerced
+
+
+def path_in_rel_dir(path_str: str, rel_dir: str) -> bool:
+    """相对路径是否落在槽目录下（允许任务/part 等前缀嵌套）。
+
+    例：``deliverables/requirements/a.md``、
+    ``1/deliverables/requirements/a.md``、
+    ``part_0/deliverables/requirements/a.md`` 均命中。
+    """
+    p = str(path_str or "").replace("\\", "/").strip("/")
+    root = str(rel_dir or "").replace("\\", "/").strip("/")
+    if not p or not root:
+        return False
+    pl, rl = p.lower(), root.lower()
+    if pl == rl or pl.startswith(rl + "/"):
+        return True
+    # 项目根扫描：路径形如 {task_id}/deliverables/{slot}/...
+    return ("/" + pl + "/").find("/" + rl + "/") >= 0
 
 
 class DeliveryManifestError(ValueError):
@@ -159,6 +320,27 @@ def validate_manifest(data: Any) -> dict:
                     )
                 if val:
                     norm_match[key] = val
+        if "slot" in match and match["slot"] is not None:
+            raw_slot = match["slot"]
+            if not isinstance(raw_slot, str):
+                raise DeliveryManifestError(
+                    f"deliverables[{i}].match.slot 须为字符串"
+                )
+            slot_s = raw_slot.strip().lower().replace("-", "_")
+            if slot_s:
+                if not _SLOT_RE.match(slot_s):
+                    raise DeliveryManifestError(
+                        f"deliverables[{i}].match.slot 非法：{raw_slot!r}"
+                    )
+                norm_match["slot"] = slot_s
+        if "rel_dir" in match and match["rel_dir"] is not None:
+            if not isinstance(match["rel_dir"], str):
+                raise DeliveryManifestError(
+                    f"deliverables[{i}].match.rel_dir 须为字符串"
+                )
+            rd = match["rel_dir"].strip().replace("\\", "/").strip("/")
+            if rd:
+                norm_match["rel_dir"] = rd
         min_count = int(match.get("min_count") or 1)
         if min_count < 1:
             raise DeliveryManifestError(
@@ -166,14 +348,42 @@ def validate_manifest(data: Any) -> dict:
             )
         norm_match["min_count"] = min_count
         if not any(k in norm_match for k in (
-            "ext", "name_contains",
+            "ext", "name_contains", "slot",
         )):
             raise DeliveryManifestError(
-                f"deliverables[{i}].match 至少须有 ext 或 name_contains"
+                f"deliverables[{i}].match 至少须有 ext、name_contains 或 slot"
             )
-        normalized.append({
+        norm_match, coerced_archive = _coerce_source_archive_exts(
+            name, norm_match,
+        )
+        norm_match, coerced_media = coerce_equivalent_media_exts(norm_match)
+        norm_match, coerced_slot = coerce_doc_slot(name, norm_match)
+        if not any(k in norm_match for k in ("ext", "name_contains", "slot")):
+            raise DeliveryManifestError(
+                f"deliverables[{i}].match 纠偏后仍缺 ext/name_contains/slot"
+            )
+        row: dict[str, Any] = {
             "id": did, "name": name, "match": norm_match,
-        })
+        }
+        if coerced_archive:
+            row["coerced_from_archive"] = True
+            logger.info(
+                "manifest coerce source archive → code exts id=%s name=%s",
+                did, name,
+            )
+        if coerced_media:
+            row["coerced_ext_singleton"] = True
+            logger.info(
+                "manifest coerce media exts → singleton id=%s name=%s ext=%s",
+                did, name, norm_match.get("ext"),
+            )
+        if coerced_slot:
+            row["coerced_to_slot"] = True
+            logger.info(
+                "manifest coerce → slot id=%s name=%s slot=%s rel_dir=%s",
+                did, name, norm_match.get("slot"), norm_match.get("rel_dir"),
+            )
+        normalized.append(row)
     return {
         "version": int(data.get("version") or 1),
         "source": str(data.get("source") or "plan_extract"),
@@ -182,34 +392,53 @@ def validate_manifest(data: Any) -> dict:
 
 
 def check_match(file_names: list[str], match: dict) -> list[str]:
-    """对一组文件名做 match 检查；返回问题文案列表（空=通过）。"""
+    """对一组文件名（可为相对路径）做 match 检查；返回问题文案（空=通过）。"""
     names = list(file_names)
-    lower = [n.lower() for n in names]
+    basenames_lower = [
+        Path(str(n).replace("\\", "/")).name.lower() for n in names
+    ]
     problems: list[str] = []
     min_count = int(match.get("min_count") or 1)
 
     def _primary_hits() -> list[str]:
         hits = names
+        slot = match.get("slot")
+        rel_dir = match.get("rel_dir") or (
+            default_rel_dir(str(slot)) if slot else ""
+        )
+        if slot:
+            hits = [n for n in hits if path_in_rel_dir(str(n), rel_dir)]
         if "ext" in match:
             exts = match["ext"]
             hits = [
                 n for n in hits
-                if any(n.lower().endswith(e) for e in exts)
+                if any(
+                    Path(str(n).replace("\\", "/")).name.lower().endswith(e)
+                    for e in exts
+                )
             ]
-        if "name_contains" in match:
+        # 有槽则不再用 name_contains（SYS-134）；无槽时保留旧语义（仅 basename）
+        if not slot and "name_contains" in match:
             needles = match["name_contains"]
             hits = [
                 n for n in hits
-                if any(nd in n for nd in needles)
+                if any(
+                    nd in Path(str(n).replace("\\", "/")).name
+                    for nd in needles
+                )
             ]
         return hits
 
     primary = _primary_hits()
     if len(primary) < min_count:
         bits = []
+        if match.get("slot"):
+            bits.append(
+                f"槽目录 {match.get('rel_dir') or default_rel_dir(match['slot'])}/"
+            )
         if match.get("ext"):
             bits.append(f"扩展名 {match['ext']}")
-        if match.get("name_contains"):
+        if not match.get("slot") and match.get("name_contains"):
             bits.append(f"文件名含 {match['name_contains']}")
         problems.append(
             f"缺少满足条件的文件（需 ≥{min_count}）："
@@ -218,7 +447,7 @@ def check_match(file_names: list[str], match: dict) -> list[str]:
     if "any_name_prefix" in match:
         prefixes = [p.lower() for p in match["any_name_prefix"]]
         if not any(
-            any(n.startswith(p) for p in prefixes) for n in lower
+            any(n.startswith(p) for p in prefixes) for n in basenames_lower
         ):
             problems.append(
                 f"另需文件名以前缀之一开头：{match['any_name_prefix']}"
@@ -303,12 +532,21 @@ async def extract_manifest_from_materials(
         '  {"id":"d1","name":"产物中文名","match":{"ext":[".pptx"],'
         '"min_count":1}}\n'
         "]}\n"
-        "match 只允许键: ext, name_contains, any_name_prefix, min_count。"
-        "每项 match 必须至少有非空的 ext 或 name_contains（二者缺一不可都空）；"
-        "ext / name_contains / any_name_prefix 必须是 JSON 字符串数组"
-        "（例 name_contains:[\"测试\"]，禁止写成单个字符串）。\n"
+        "match 允许键: ext, name_contains, any_name_prefix, min_count, slot, rel_dir。"
+        "每项 match 必须至少有非空的 ext、name_contains 或 slot；"
+        "文档/图示类（需求/架构/原型/流程图/解决方案/开发/测试/理解等）"
+        "优先写 slot（snake_case）与 rel_dir（默认 deliverables/{slot}），"
+        "例如 slot:\"requirements\", rel_dir:\"deliverables/requirements\"；"
+        "验收看槽目录内是否有文件，不依赖中英文件名子串。"
+        "ext / name_contains / any_name_prefix 若出现必须是 JSON 字符串数组"
+        "（禁止写成单个字符串）。\n"
         "代码类产物请同时设 ext 与 any_name_prefix:[\"readme\"]。\n"
-        "测试报告类请 name_contains:[\"测试\"] 且 ext 含 .md。\n"
+        "测试报告类可 slot:\"testing\" 或 name_contains:[\"测试\"]，ext 含 .md。\n"
+        "【重要】项目源码/源代码/代码：ext 须含源码后缀"
+        "（如 .py/.ts/.js/.go/.java/.rs/.md），可同时 any_name_prefix:[\"readme\"]；"
+        "禁止把整项 ext 写成仅 [\".zip\"]。"
+        "仅发行包/安装包/发布包/交付压缩包才允许 .zip/.tar.gz 为主要 ext；"
+        "材料只要可运行源码时，不得用 zip 项替代源码项。\n"
         "禁止解释字段含义（不要写「min_count 表示…」这类说明）。"
         "不要输出思考过程；JSON 之外不要有任何文字。\n\n"
         f"【交付基线提示】\n{skill_hint[:1500] or '（无）'}\n\n"
@@ -388,7 +626,8 @@ async def extract_manifest_from_materials(
                     "content": (
                         f"校验失败：{ve.message}。"
                         "请输出修正后的完整清单 JSON："
-                        "每项 match 须有非空 ext 或非空 name_contains；"
+                        "每项 match 须有非空 ext、name_contains 或 slot；"
+                        "文档类优先 slot+rel_dir（deliverables/{{slot}}）；"
                         "禁止空数组；不要解释。"
                     ),
                 },

@@ -145,11 +145,19 @@ def _make_fixture_files(root: Path, manifest: dict, *, filled: bool) -> None:
         ext = exts[0] if exts else ".txt"
         if not ext.startswith("."):
             ext = f".{ext}"
-        contains = match.get("name_contains") or []
-        stem = contains[0] if contains else (d.get("id") or "item")
-        # 安全文件名
-        safe = re.sub(r"[^\w\u4e00-\u9fff\-]+", "_", str(stem))[:40] or "item"
-        (root / f"{safe}{ext}").write_text("fixture", encoding="utf-8")
+        slot = match.get("slot")
+        rel_dir = match.get("rel_dir") or (
+            f"deliverables/{slot}" if slot else ""
+        )
+        if slot and rel_dir:
+            dest = root / Path(str(rel_dir).replace("\\", "/"))
+            dest.mkdir(parents=True, exist_ok=True)
+            (dest / f"fixture{ext}").write_text("fixture", encoding="utf-8")
+        else:
+            contains = match.get("name_contains") or []
+            stem = contains[0] if contains else (d.get("id") or "item")
+            safe = re.sub(r"[^\w\u4e00-\u9fff\-]+", "_", str(stem))[:40] or "item"
+            (root / f"{safe}{ext}").write_text("fixture", encoding="utf-8")
         for pref in match.get("any_name_prefix") or []:
             (root / f"{pref}README.md").write_text("# ok", encoding="utf-8")
 
@@ -320,27 +328,45 @@ from pathlib import Path
 MANIFEST = json.loads({payload!r})
 
 
-def check_match(names, match):
+def _in_slot(path, rel_dir):
+    p = str(path).replace("\\\\", "/").strip("/")
+    r = str(rel_dir).replace("\\\\", "/").strip("/")
+    if not p or not r:
+        return False
+    pl, rl = p.lower(), r.lower()
+    if pl == rl or pl.startswith(rl + "/"):
+        return True
+    # 允许 1/ 或 part_0/ 等前缀嵌套（项目根 / 单调性合并）
+    return ("/" + pl + "/").find("/" + rl + "/") >= 0
+
+
+def check_match(paths, match):
     problems = []
     min_count = int(match.get("min_count") or 1)
-    hits = list(names)
+    hits = list(paths)
+    slot = match.get("slot")
+    rel_dir = match.get("rel_dir") or (("deliverables/" + str(slot)) if slot else "")
+    if slot:
+        hits = [n for n in hits if _in_slot(n, rel_dir)]
     if "ext" in match:
         exts = match["ext"]
-        hits = [n for n in hits if any(n.lower().endswith(e) for e in exts)]
-    if "name_contains" in match:
+        hits = [n for n in hits if any(Path(str(n)).name.lower().endswith(e) for e in exts)]
+    if (not slot) and "name_contains" in match:
         needles = match["name_contains"]
-        hits = [n for n in hits if any(nd in n for nd in needles)]
+        hits = [n for n in hits if any(nd in Path(str(n)).name for nd in needles)]
     if len(hits) < min_count:
         bits = []
+        if slot:
+            bits.append("slot=" + str(rel_dir) + "/")
         if match.get("ext"):
             bits.append("ext=" + str(match["ext"]))
-        if match.get("name_contains"):
+        if (not slot) and match.get("name_contains"):
             bits.append("contains=" + str(match["name_contains"]))
         problems.append("缺少满足条件的文件（需>=" + str(min_count) + "）：" + "、".join(bits))
     if "any_name_prefix" in match:
         prefixes = [p.lower() for p in match["any_name_prefix"]]
-        lower = [n.lower() for n in names]
-        if not any(any(n.startswith(p) for p in prefixes) for n in lower):
+        basenames = [Path(str(n)).name.lower() for n in paths]
+        if not any(any(n.startswith(p) for p in prefixes) for n in basenames):
             problems.append("另需文件名前缀：" + str(match["any_name_prefix"]))
     return problems
 
@@ -355,9 +381,14 @@ def main():
     if not ids:
         print(json.dumps({{"ok": False, "problems": ["ids 为空"]}}, ensure_ascii=False))
         sys.exit(1)
-    names = []
+    paths = []
     if ws.exists():
-        names = [p.name for p in ws.rglob("*") if p.is_file()]
+        for p in ws.rglob("*"):
+            if p.is_file():
+                try:
+                    paths.append(p.relative_to(ws).as_posix())
+                except ValueError:
+                    paths.append(p.name)
     by_id = {{d["id"]: d for d in MANIFEST.get("deliverables") or []}}
     problems = []
     for did in ids:
@@ -365,7 +396,7 @@ def main():
         if item is None:
             problems.append("未知交付项 id=" + did)
             continue
-        for p in check_match(names, item.get("match") or {{}}):
+        for p in check_match(paths, item.get("match") or {{}}):
             problems.append((item.get("name") or did) + ": " + p)
     ok = len(problems) == 0
     print(json.dumps({{"ok": ok, "problems": problems}}, ensure_ascii=False))
@@ -406,8 +437,9 @@ async def extract_validator_source_from_llm(
         "5. 只读 workspace 下文件；禁止网络、subprocess、sqlite、importlib、"
         "eval/exec。\n"
         "6. 必须含 if __name__ == '__main__':\n"
-        "7. 对每个 id 按清单 match（ext/name_contains/any_name_prefix/"
-        "min_count）检查，不得弱于 match。\n"
+        "7. 对每个 id 按清单 match（ext/slot/rel_dir/name_contains/"
+        "any_name_prefix/min_count）检查；有 slot 时用相对路径落在 "
+        "rel_dir（默认 deliverables/{{slot}}）下计数，不得弱于 match。\n"
         "可参考下列示例结构（允许等价实现）：\n"
         f"```python\n{example[:3500]}\n```\n\n"
         f"【清单 JSON】\n{json.dumps(manifest, ensure_ascii=False)[:4000]}\n\n"

@@ -55,6 +55,14 @@ interface TaskNode {
     match?: Record<string, unknown> | null;
   }>;
   stage_outputs?: string[];
+  delivery_gap?: {
+    reason?: string;
+    soft_accepted?: boolean;
+    problems?: string[];
+    unmet?: Array<{ token_id?: string | null; kind?: string; hint?: string }>;
+    scan_root?: string;
+    scan_path?: string;
+  } | null;
 }
 
 /** WP-018: Current Frontier——READY 任务（可推进边界）。 */
@@ -109,7 +117,11 @@ function layoutTasks(tasks: TaskNode[], deps: Array<[number, number]>) {
     const shown = Math.min(all.length, 3);
     const extra = all.length > 3 ? 1 : 0; // "+N 项" 行
     const lines = shown + extra;
-    heights.set(t.id, BASE_H + (lines > 0 ? 4 + lines * 14 : 0));
+    const gapExtra = t.delivery_gap?.soft_accepted ? 14 : 0;
+    heights.set(
+      t.id,
+      BASE_H + gapExtra + (lines > 0 ? 4 + lines * 14 : 0),
+    );
   });
   const positions = new Map<number, { x: number; y: number }>();
   [...layers.entries()].forEach(([d, ts]) => {
@@ -220,13 +232,26 @@ export function TaskGraphView({
               <text x={12} y={38} fontSize={11} fill={STATUS_COLORS[t.status] ?? '#888'}>
                 {t.status}
               </text>
+              {t.delivery_gap?.soft_accepted && (
+                <text
+                  x={12}
+                  y={50}
+                  fontSize={10}
+                  fill="#d48806"
+                  data-testid={`delivery-gap-badge-${t.id}`}
+                >
+                  {t.delivery_gap.reason === 'UNMET_AFTER_EARLY_STOP'
+                    ? '返工用尽·未齐（已放行）'
+                    : '预算用尽·未齐（已放行）'}
+                </text>
+              )}
               {products.length > 0 && (
                 <g data-testid={`task-products-${t.id}`}>
                   {products.map((name, i) => (
                     <text
                       key={`${t.id}-p-${i}`}
                       x={12}
-                      y={54 + i * 14}
+                      y={(t.delivery_gap?.soft_accepted ? 66 : 54) + i * 14}
                       fontSize={10}
                       fill="#595959"
                     >
@@ -236,7 +261,10 @@ export function TaskGraphView({
                   {more > 0 && (
                     <text
                       x={12}
-                      y={54 + products.length * 14}
+                      y={
+                        (t.delivery_gap?.soft_accepted ? 66 : 54) +
+                        products.length * 14
+                      }
                       fontSize={10}
                       fill="#8c8c8c"
                     >
@@ -369,6 +397,69 @@ export function Dashboard({ projectId, paused }: { projectId: number; paused?: b
               <p style={{ color: '#555', fontSize: 13, margin: 0 }}>
                 Task #{selected.id}
               </p>
+              {(selected.task_load != null ||
+                (selected.obligation_token_ids?.length ?? 0) > 0 ||
+                selected.decomposed_from ||
+                selected.bin_packed) && (
+                <div
+                  data-testid="task-load"
+                  style={{ fontSize: 12, color: '#444', marginTop: 6 }}
+                >
+                  <div>
+                    负荷{' '}
+                    {selected.task_load ?? '—'}
+                    {selected.load_max != null
+                      ? ` / ${selected.load_max}`
+                      : ''}
+                    {selected.bin_packed ? ' · 兜底装箱' : ''}
+                    {selected.decomposed_from
+                      ? ` · 拆自 ${selected.decomposed_from}`
+                      : ''}
+                  </div>
+                  {(selected.obligation_token_ids?.length ?? 0) > 0 && (
+                    <div style={{ color: '#666', wordBreak: 'break-all' }}>
+                      令牌：{selected.obligation_token_ids!.join(', ')}
+                    </div>
+                  )}
+                </div>
+              )}
+              {selected.delivery_gap?.soft_accepted && (
+                <div
+                  data-testid="delivery-gap-detail"
+                  style={{
+                    marginTop: 8,
+                    padding: '8px 10px',
+                    background: '#fffbe6',
+                    border: '1px solid #ffe58f',
+                    borderRadius: 6,
+                    fontSize: 12,
+                    color: '#614700',
+                  }}
+                >
+                  <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                    {selected.delivery_gap.reason === 'UNMET_AFTER_EARLY_STOP'
+                      ? '返工用尽·未齐（已放行）'
+                      : '预算用尽·未齐（已放行）'}
+                    {selected.delivery_gap.scan_root
+                      ? ` · 扫描：${
+                          selected.delivery_gap.scan_root === 'project'
+                            ? '项目目录'
+                            : '本任务目录'
+                        }`
+                      : ''}
+                  </div>
+                  <ul style={{ margin: 0, paddingLeft: 18 }}>
+                    {(selected.delivery_gap.problems?.length
+                      ? selected.delivery_gap.problems
+                      : (selected.delivery_gap.unmet ?? []).map(
+                          (u) => u.hint || u.token_id || u.kind || '未兑现项',
+                        )
+                    ).map((p, i) => (
+                      <li key={i}>{p}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               {(() => {
                 const evs = data.runtime_events ?? [];
                 const graceEv = [...evs]
@@ -640,7 +731,20 @@ export function Dashboard({ projectId, paused }: { projectId: number; paused?: b
                 计划状态 {data.plan_status || 'READY'} · 清单{' '}
                 {data.delivery_assignment?.manifest_count ?? 0} / 已分配{' '}
                 {data.delivery_assignment?.assigned_count ?? 0}
+                {data.delivery_assignment?.assignment_mode ===
+                'deterministic_fallback'
+                  ? ' · 认领兜底'
+                  : ''}
               </p>
+              {data.plan_status === 'INVALID' && (
+                <p
+                  data-testid="plan-invalid-hint"
+                  style={{ margin: '0 0 4px', color: '#a61d24' }}
+                >
+                  计划未就绪（INVALID）：任务图保留时可查看节点；请根据 toast /
+                  事件problems 处理后重新生成计划
+                </p>
+              )}
               {(data.delivery_assignment?.uncovered_ids?.length ?? 0) > 0 && (
                 <p style={{ margin: '0 0 4px', color: '#a61d24' }}>
                   未覆盖：{data.delivery_assignment!.uncovered_ids.join(', ')}

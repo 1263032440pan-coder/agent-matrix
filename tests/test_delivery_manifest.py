@@ -83,7 +83,7 @@ def test_validate_unknown_match_key():
 
 
 def test_validate_coerces_string_match_fields():
-    """LLM 把 name_contains/ext 写成单字符串 → 归一为数组。"""
+    """LLM 把 name_contains/ext 写成单字符串 → 归一；文档针再收束为 slot。"""
     m = validate_manifest({
         "deliverables": [{
             "id": "d1",
@@ -95,8 +95,11 @@ def test_validate_coerces_string_match_fields():
             },
         }],
     })
-    assert m["deliverables"][0]["match"]["ext"] == [".md"]
-    assert m["deliverables"][0]["match"]["name_contains"] == ["测试"]
+    match = m["deliverables"][0]["match"]
+    assert match["ext"] == [".md"]
+    assert match["slot"] == "testing"
+    assert match["rel_dir"] == "deliverables/testing"
+    assert "name_contains" not in match
 
 
 def test_validate_rejects_non_string_list_items():
@@ -277,13 +280,15 @@ async def test_stop_problems_uses_frozen_validator(tmp_path, monkeypatch):
 
             return P()
 
-    ws = tmp_path / "ws"
-    ws.mkdir()
-    (ws / "readme.md").write_text("x", encoding="utf-8")
+    # SYS-123: 清单 Stop 扫项目根 data/tasks/{pid}/（可见各任务子目录）
+    project_root = tmp_path / "data" / "tasks" / "1"
+    task_ws = project_root / "1"
+    task_ws.mkdir(parents=True)
+    (task_ws / "readme.md").write_text("x", encoding="utf-8")
 
     class WP:
         task_id = 1
-        workspace_root = str(ws)
+        workspace_root = str(task_ws)
         playbook_ref = json.dumps({"deliverable_ids": ["d_ppt"]})
         delivery_tags = None
         code_stage = False
@@ -291,8 +296,8 @@ async def test_stop_problems_uses_frozen_validator(tmp_path, monkeypatch):
     worker = LLMWorkerAdapter.__new__(LLMWorkerAdapter)
     worker._current_project_id = 1
     worker._session = _Sess()
-    worker._task_ws_root = lambda: ws
+    worker._task_ws_root = lambda: task_ws
     problems = await worker._delivery_stop_problems(WP())
     assert problems and ("方案PPT" in problems[0] or "pptx" in problems[0].lower())
-    (ws / "方案.pptx").write_bytes(b"PK")
+    (task_ws / "方案.pptx").write_bytes(b"PK")
     assert await worker._delivery_stop_problems(WP()) == []

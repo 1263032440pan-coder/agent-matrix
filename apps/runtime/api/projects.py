@@ -708,6 +708,7 @@ async def run_planning(project_id: int):
             complete_delivery_assignment,
             default_llm_fn,
         )
+        from project_runtime.procedure.plan_decompose import PlanDecomposeError
 
         try:
             return await complete_delivery_assignment(
@@ -715,10 +716,15 @@ async def run_planning(project_id: int):
                 llm=default_llm_fn,
                 freeze_accepted=False,
             )
-        except DeliveryAssignmentError as e:
+        except (DeliveryAssignmentError, PlanDecomposeError) as e:
+            evt = (
+                RuntimeEventType.PLAN_DECOMPOSE_INVALID
+                if isinstance(e, PlanDecomposeError)
+                else RuntimeEventType.DELIVERY_ASSIGNMENT_INVALID
+            )
             try:
                 await EventEngine().record(
-                    RuntimeEventType.DELIVERY_ASSIGNMENT_INVALID,
+                    evt,
                     project_id=project_id,
                     phase="PLAN",
                     message=e.message,
@@ -728,10 +734,7 @@ async def run_planning(project_id: int):
                     },
                 )
             except Exception:  # noqa: BLE001
-                logger.debug(
-                    "emit DELIVERY_ASSIGNMENT_INVALID failed",
-                    exc_info=True,
-                )
+                logger.debug("emit plan gate invalid failed", exc_info=True)
             raise HTTPException(
                 status_code=422,
                 detail={
@@ -1029,6 +1032,36 @@ async def project_dashboard(project_id: int, session: AsyncSession = Depends(get
                     node_outputs_by_name[n.name] = n.outputs
     except Exception:  # noqa: BLE001
         logger.debug("dashboard node outputs lookup failed", exc_info=True)
+    # SYS-140: 最新 TaskRun.delivery_gap（软放行未兑现）
+    gap_by_task: dict[int, dict] = {}
+    try:
+        from project_runtime.project_state.models import TaskRun as _TaskRunDash
+
+        if tasks:
+            run_rows = (
+                await session.execute(
+                    select(_TaskRunDash)
+                    .where(_TaskRunDash.task_id.in_([t.id for t in tasks]))
+                    .order_by(_TaskRunDash.id.desc())
+                )
+            ).scalars().all()
+            seen_tid: set[int] = set()
+            for run in run_rows:
+                if run.task_id in seen_tid:
+                    continue
+                seen_tid.add(run.task_id)
+                if not run.result:
+                    continue
+                try:
+                    payload = json.loads(run.result)
+                except (TypeError, ValueError):
+                    continue
+                gap = (payload or {}).get("delivery_gap")
+                if isinstance(gap, dict) and gap.get("soft_accepted"):
+                    gap_by_task[run.task_id] = gap
+    except Exception:  # noqa: BLE001
+        logger.debug("dashboard delivery_gap lookup failed", exc_info=True)
+
     task_list = [
         {
             "id": t.id,
@@ -1044,6 +1077,8 @@ async def project_dashboard(project_id: int, session: AsyncSession = Depends(get
                 t.playbook_ref,
                 node_outputs_by_name.get(t.name),
             ),
+            "delivery_gap": gap_by_task.get(t.id),
+            **_task_load_fields(t.playbook_ref),
         }
         for t in tasks
     ]
@@ -1261,6 +1296,35 @@ def _stage_outputs_of(
     return _split_output_blob(ref.get("outputs") or fallback_outputs)
 
 
+def _task_load_fields(playbook_ref: str | None) -> dict:
+    """SYS-125: Dashboard 负荷 / 令牌 / 拆分标记。"""
+    ref = _parse_playbook_ref(playbook_ref)
+    tokens = ref.get("obligation_tokens") or []
+    token_ids = []
+    for t in tokens:
+        if isinstance(t, dict) and t.get("id"):
+            token_ids.append(str(t["id"]))
+        elif isinstance(t, str):
+            token_ids.append(t)
+    load = ref.get("task_load")
+    if load is None and tokens:
+        try:
+            from project_runtime.procedure.task_load import compute_task_load
+
+            load = compute_task_load(
+                [t if isinstance(t, dict) else {"id": t} for t in tokens]
+            )
+        except Exception:  # noqa: BLE001
+            load = None
+    return {
+        "task_load": load,
+        "load_max": ref.get("load_max"),
+        "obligation_token_ids": token_ids,
+        "bin_packed": bool(ref.get("bin_packed")),
+        "decomposed_from": ref.get("decomposed_from"),
+    }
+
+
 def _required_deliverables_of(
     playbook_ref: str | None,
     manifest: dict | None,
@@ -1361,10 +1425,21 @@ def _delivery_assignment_view(
         })
     assigned = sum(1 for i in items if i["owner_task_id"] is not None)
     uncovered = [i["id"] for i in items if i["owner_task_id"] is None]
+    assignment_mode = None
+    for t in tasks:
+        try:
+            pref = json.loads(t.playbook_ref or "{}")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        mode = pref.get("assignment_mode")
+        if mode:
+            assignment_mode = str(mode)
+            break
     return {
         "manifest_count": len(items),
         "assigned_count": assigned,
         "uncovered_ids": uncovered,
+        "assignment_mode": assignment_mode,
         "items": items,
     }
 

@@ -227,6 +227,147 @@ def apply_assignment_to_playbook_refs(
     return out
 
 
+def coerce_package_marked_source(
+    deliverables: list[dict],
+    categories: dict[str, dict],
+) -> dict[str, dict]:
+    """源码类名称却标成 package → 强制 source（§4.3 轻量纠偏）。"""
+    from project_runtime.procedure.delivery_manifest import is_source_like_item
+
+    out = {k: dict(v) for k, v in categories.items()}
+    for d in deliverables:
+        did = str(d.get("id") or "")
+        if not did or did not in out:
+            continue
+        if out[did].get("category") != "package":
+            continue
+        if is_source_like_item(str(d.get("name") or ""), d.get("match") or {}):
+            out[did]["category"] = "source"
+            out[did]["reason"] = "runtime_coerce"
+    return out
+
+
+def deterministic_assign(
+    *,
+    manifest: dict,
+    tasks: list[dict],
+    topo_order: list[str],
+    roles: dict[str, str],
+    categories: dict[str, dict],
+    frozen_assignment: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """确定性兜底：构造必过 SYS-109/110 的 id→task_key（SYS-130）。"""
+    deliverables = list(manifest.get("deliverables") or [])
+    all_ids = [str(d["id"]) for d in deliverables]
+    if not all_ids:
+        return dict(frozen_assignment or {})
+    if not topo_order:
+        raise DeliveryAssignmentError(
+            "无可分配任务（空拓扑）",
+            problems=["empty topo"],
+        )
+
+    last = topo_order[-1]
+    implements = [k for k in topo_order if roles.get(k) == "implement"]
+    verifies = [k for k in topo_order if roles.get(k) == "verify"]
+    delivers = [k for k in topo_order if roles.get(k) == "deliver"]
+    non_process = [k for k in topo_order if roles.get(k) != "process"]
+
+    source_anchor = (
+        implements[-1] if implements
+        else (non_process[-1] if non_process else last)
+    )
+    verify_anchor = verifies[-1] if verifies else last
+    # verification 不得早于 implement
+    if implements and verify_anchor in topo_order:
+        if topo_order.index(verify_anchor) < max(
+            topo_order.index(i) for i in implements
+        ):
+            verify_anchor = last
+    package_anchor = delivers[-1] if delivers else last
+
+    cat_of = {
+        str(c): str((categories.get(c) or {}).get("category") or "other")
+        for c in all_ids
+    }
+    # also accept categories as id→{category}
+    for d in deliverables:
+        did = str(d["id"])
+        if did in categories and isinstance(categories[did], dict):
+            cat_of[did] = str(categories[did].get("category") or "other")
+
+    assignment: dict[str, str] = dict(frozen_assignment or {})
+    load: dict[str, int] = {k: 0 for k in topo_order}
+    for tk in assignment.values():
+        if tk in load:
+            load[tk] += 1
+
+    def _place(did: str, tk: str) -> None:
+        assignment[did] = tk
+        load[tk] = load.get(tk, 0) + 1
+
+    # order: source → document/other → verification → package
+    buckets: dict[str, list[str]] = {
+        "source": [], "document": [], "other": [],
+        "verification": [], "package": [],
+    }
+    for did in all_ids:
+        if did in assignment:
+            continue
+        cat = cat_of.get(did, "other")
+        buckets.setdefault(cat if cat in buckets else "other", []).append(did)
+
+    for did in buckets["source"]:
+        _place(did, source_anchor)
+
+    for did in buckets["document"] + buckets["other"]:
+        # 负载最低，平局取更靠后
+        candidates = non_process or list(topo_order)
+        best = min(
+            candidates,
+            key=lambda k: (load.get(k, 0), -topo_order.index(k)),
+        )
+        _place(did, best)
+
+    for did in buckets["verification"]:
+        _place(did, verify_anchor)
+
+    for did in buckets["package"]:
+        _place(did, package_anchor)
+
+    cats_list = [
+        {"id": did, "category": cat_of.get(did, "other")} for did in all_ids
+    ]
+    problems = validate_assignment_hard_gate(
+        assignment=assignment,
+        manifest=manifest,
+        tasks=tasks,
+        categories=cats_list,
+        roles=roles,
+        topo_order=topo_order,
+    )
+    if problems:
+        # 塌缩：全部非冻结挤到 last
+        frozen = set((frozen_assignment or {}).keys())
+        for did in all_ids:
+            if did not in frozen:
+                assignment[did] = last
+        problems = validate_assignment_hard_gate(
+            assignment=assignment,
+            manifest=manifest,
+            tasks=tasks,
+            categories=cats_list,
+            roles=roles,
+            topo_order=topo_order,
+        )
+    if problems:
+        raise DeliveryAssignmentError(
+            "确定性兜底仍未过硬门：" + "；".join(problems[:8]),
+            problems=problems,
+        )
+    return assignment
+
+
 def topo_keys_from_deps(
     task_keys: list[str],
     deps: Iterable[tuple[str, str]],
@@ -435,19 +576,27 @@ async def run_assignment(
     topo_order: list[str],
     llm: LlmFn | None,
     frozen_assignment: dict[str, str] | None = None,
-) -> dict[str, str]:
-    """主路径：标注 → 分次分配 → 硬门 → 可选复核。返回 id→task_key。
+) -> tuple[dict[str, str], str]:
+    """主路径：标注 → 分次分配 → 硬门 → 可选复核；失败则确定性兜底。
 
+    返回 (id→task_key, assignment_mode) — mode 为 llm | deterministic_fallback。
     frozen_assignment: ACCEPTED 认领冻结（重规划复检）。
     """
     deliverables = list(manifest.get("deliverables") or [])
     if not deliverables:
-        return dict(frozen_assignment or {})
+        return dict(frozen_assignment or {}), "llm"
 
     task_keys = {str(t["task_key"]) for t in tasks}
+    if not task_keys or not topo_order:
+        raise DeliveryAssignmentError(
+            "无可分配任务",
+            problems=["no_tasks"],
+        )
+
     role_ann = await annotate_roles(tasks, llm=llm)
     roles = {k: v["role"] for k, v in role_ann.items()}
     cat_ann = await annotate_categories(deliverables, llm=llm)
+    cat_ann = coerce_package_marked_source(deliverables, cat_ann)
 
     accepted: dict[str, str] = dict(frozen_assignment or {})
     for did, tk in list(accepted.items()):
@@ -466,22 +615,19 @@ async def run_assignment(
         for i in all_ids if i in cat_ann
     ]
 
+    if llm is None:
+        assignment = deterministic_assign(
+            manifest=manifest,
+            tasks=tasks,
+            topo_order=topo_order,
+            roles=roles,
+            categories=cat_ann,
+            frozen_assignment=accepted or None,
+        )
+        return assignment, "deterministic_fallback"
+
     async def _try_fill() -> dict[str, str]:
         nonlocal accepted, remaining, load
-        if llm is None:
-            # 测试/无 LLM：均匀挂到第一个 implement，否则第一个任务
-            prefer = next(
-                (k for k, r in roles.items() if r == "implement"),
-                next(iter(task_keys), None),
-            )
-            if prefer is None:
-                raise DeliveryAssignmentError("无可用任务")
-            for did in sorted(remaining):
-                accepted[did] = prefer
-                load[prefer] = load.get(prefer, 0) + 1
-            remaining.clear()
-            return accepted
-
         if len(remaining) <= 3:
             items = [
                 d for d in deliverables if str(d["id"]) in remaining
@@ -600,15 +746,25 @@ async def run_assignment(
                         if problems2:
                             last_problems = problems2
                             continue
-                        return accepted
+                        return accepted, "llm"
             except Exception:  # noqa: BLE001
                 logger.debug("assignment review failed", exc_info=True)
-        return accepted
+        return accepted, "llm"
 
-    raise DeliveryAssignmentError(
-        "交付认领硬门未通过：" + "；".join(last_problems[:8]),
-        problems=last_problems,
+    # SYS-130: LLM 耗尽 → 确定性兜底（认领必成）
+    logger.warning(
+        "assignment llm path failed, using deterministic fallback: %s",
+        "；".join(last_problems[:6]),
     )
+    assignment = deterministic_assign(
+        manifest=manifest,
+        tasks=tasks,
+        topo_order=topo_order,
+        roles=roles,
+        categories=cat_ann,
+        frozen_assignment=dict(frozen_assignment or {}) or None,
+    )
+    return assignment, "deterministic_fallback"
 
 
 async def assign_in_session(
@@ -620,7 +776,6 @@ async def assign_in_session(
 ) -> dict[str, Any]:
     """在给定 AsyncSession 上完成认领（不 commit）。供 Replanner 同库复用。"""
     from sqlalchemy import select
-    from sqlalchemy import text as _text
 
     from project_runtime.execution.service import (
         PLAN_STATUS_INVALID,
@@ -651,7 +806,14 @@ async def assign_in_session(
             )
         ).scalars().all()
     )
+    # SYS-131: 有清单无任务 → INVALID，但不删图（无图可删）
     if not tasks:
+        if manifest.get("deliverables"):
+            project.plan_status = PLAN_STATUS_INVALID
+            raise DeliveryAssignmentError(
+                "无可分配任务但清单非空",
+                problems=["no_tasks"],
+            )
         project.plan_status = PLAN_STATUS_READY
         return {"delivery_assignment": "no_tasks", "plan_status": "READY"}
 
@@ -689,7 +851,7 @@ async def assign_in_session(
                 frozen[str(did)] = t.name
 
     try:
-        assignment = await run_assignment(
+        assignment, assignment_mode = await run_assignment(
             manifest=manifest,
             tasks=task_specs,
             topo_order=topo,
@@ -697,20 +859,8 @@ async def assign_in_session(
             frozen_assignment=frozen or None,
         )
     except DeliveryAssignmentError:
+        # SYS-129/131: 不可修复才 INVALID；禁止删任务图
         project.plan_status = PLAN_STATUS_INVALID
-        drop = [t.id for t in tasks if t.status != TaskStatus.ACCEPTED]
-        if drop:
-            idlist = ",".join(str(x) for x in drop)
-            await session.execute(
-                _text(
-                    f'DELETE FROM "task_dependency" '
-                    f'WHERE task_id IN ({idlist}) '
-                    f'OR depends_on_id IN ({idlist})'
-                )
-            )
-            await session.execute(
-                _text(f'DELETE FROM task WHERE id IN ({idlist})')
-            )
         raise
 
     new_refs = apply_assignment_to_playbook_refs(refs, assignment)
@@ -721,13 +871,135 @@ async def assign_in_session(
         if t.name in accepted_names:
             continue
         if t.name in new_refs:
-            t.playbook_ref = new_refs[t.name]
+            try:
+                pref = json.loads(new_refs[t.name])
+            except (json.JSONDecodeError, TypeError):
+                pref = {}
+            if isinstance(pref, dict):
+                pref["assignment_mode"] = assignment_mode
+                t.playbook_ref = json.dumps(pref, ensure_ascii=False)
+            else:
+                t.playbook_ref = new_refs[t.name]
+    await session.flush()
+
+    # SYS-119: 认领后过载检测 / 拆分（内存图；失败不落拆分）
+    from project_runtime.procedure.plan_decompose import (
+        PlanDecomposeError,
+        build_memory_graph_from_tasks,
+        check_graph_loads,
+        commit_decomposed_graph,
+        decompose_memory_graph,
+        seed_obligation_tokens,
+    )
+    from project_runtime.procedure.task_load import (
+        LOAD_MAX,
+        compute_task_load,
+    )
+
+    # refresh tasks after assignment write
+    tasks = list(
+        (
+            await session.execute(
+                select(Task).where(Task.project_id == project_id)
+            )
+        ).scalars().all()
+    )
+    deps = list(
+        (
+            await session.execute(
+                select(TaskDependency).where(
+                    TaskDependency.task_id.in_([t.id for t in tasks])
+                )
+            )
+        ).scalars().all()
+    )
+    name_by_id = {t.id: t.name for t in tasks}
+    dep_pairs = [
+        (name_by_id[d.task_id], name_by_id[d.depends_on_id])
+        for d in deps
+        if d.task_id in name_by_id and d.depends_on_id in name_by_id
+    ]
+    # roles from assignment annotations stored? use fallback via build
+    graph = build_memory_graph_from_tasks(tasks, dep_pairs)
+    deliverables_by_id = {
+        str(d["id"]): d for d in (manifest.get("deliverables") or [])
+    }
+    categories = {
+        str(d["id"]): str(d.get("category") or "other")
+        for d in (manifest.get("deliverables") or [])
+    }
+    seed_obligation_tokens(graph, deliverables_by_id=deliverables_by_id)
+    overload = check_graph_loads(graph)
+    decompose_stats: dict[str, Any] = {
+        "decomposed": 0, "bin_packed": 0, "overloads": 0,
+    }
+    original_ids = {t.name: t.id for t in tasks}
+    if overload:
+        try:
+            decompose_stats = await decompose_memory_graph(
+                graph,
+                manifest=manifest,
+                categories=categories,
+                llm=llm,
+            )
+            await commit_decomposed_graph(
+                session, project_id, graph,
+                original_task_ids=original_ids,
+            )
+        except PlanDecomposeError:
+            project.plan_status = PLAN_STATUS_INVALID
+            # 回写令牌到认领后、拆分前的节点（便于观测）；不落拆分图
+            from project_runtime.procedure.task_load import (
+                expand_obligation_tokens,
+            )
+
+            for t in tasks:
+                if t.name in accepted_names:
+                    continue
+                try:
+                    pref = json.loads(t.playbook_ref or "{}")
+                except (json.JSONDecodeError, TypeError):
+                    pref = {}
+                if not isinstance(pref, dict):
+                    pref = {}
+                toks = expand_obligation_tokens(
+                    deliverable_ids=list(pref.get("deliverable_ids") or []),
+                    deliverables_by_id=deliverables_by_id,
+                    stage_outputs=list(pref.get("stage_outputs") or []),
+                )
+                pref["obligation_tokens"] = toks
+                pref["task_load"] = compute_task_load(toks)
+                pref["load_max"] = LOAD_MAX
+                t.playbook_ref = json.dumps(pref, ensure_ascii=False)
+            raise
+    else:
+        # 无过载：仍写入令牌与 load，便于 Dashboard / Stop
+        for t in tasks:
+            if t.name in accepted_names:
+                continue
+            nd = graph["nodes"].get(t.name)
+            if not nd:
+                continue
+            try:
+                pref = json.loads(t.playbook_ref or "{}")
+            except (json.JSONDecodeError, TypeError):
+                pref = {}
+            if not isinstance(pref, dict):
+                pref = {}
+            pref["obligation_tokens"] = list(nd.get("obligation_tokens") or [])
+            pref["task_load"] = int(nd.get("load") or 0)
+            pref["load_max"] = LOAD_MAX
+            pref["assignment_role"] = nd.get("role")
+            t.playbook_ref = json.dumps(pref, ensure_ascii=False)
+
     project.plan_status = PLAN_STATUS_READY
     return {
         "delivery_assignment": "ok",
         "plan_status": "READY",
         "assigned": len(assignment),
         "frozen": len(frozen),
+        "assignment_mode": assignment_mode,
+        "plan_decompose": decompose_stats,
     }
 
 
@@ -744,6 +1016,7 @@ async def complete_delivery_assignment(
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from infrastructure.database import engine
+    from project_runtime.procedure.plan_decompose import PlanDecomposeError
 
     async with AsyncSession(engine) as session:
         try:
@@ -755,7 +1028,7 @@ async def complete_delivery_assignment(
             )
             await session.commit()
             return result
-        except DeliveryAssignmentError:
+        except (DeliveryAssignmentError, PlanDecomposeError):
             await session.commit()
             raise
 

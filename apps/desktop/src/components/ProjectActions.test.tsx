@@ -73,6 +73,23 @@ describe('ProjectActions V1.6c toast', () => {
     });
   });
 
+  it('PLAN_DECOMPOSE_INVALID → toast', async () => {
+    vi.mocked(runPlanning).mockRejectedValue(
+      new PlanningError('过载拆分失败', 'PLAN_DECOMPOSE_INVALID'),
+    );
+    render(
+      <ProjectActions
+        projectId={1}
+        onCreated={() => undefined}
+        onImported={() => undefined}
+      />,
+    );
+    await userEvent.click(screen.getByText('生成计划'));
+    await waitFor(() => {
+      expect(toastError).toHaveBeenCalledWith('过载拆分失败', 8);
+    });
+  });
+
   it('DELIVERY_VALIDATOR_INVALID → toast', async () => {
     vi.mocked(runPlanning).mockRejectedValue(
       new PlanningError(

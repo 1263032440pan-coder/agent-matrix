@@ -72,6 +72,55 @@ describe('Dashboard 节点要求产物', () => {
     );
   });
 
+  it('认领兜底时交付区显示标记', async () => {
+    vi.mocked(fetchDashboard).mockResolvedValue({
+      ...base,
+      plan_status: 'READY',
+      delivery_assignment: {
+        manifest_count: 1,
+        assigned_count: 1,
+        uncovered_ids: [],
+        assignment_mode: 'deterministic_fallback',
+        items: [
+          {
+            id: 'd_ppt',
+            name: '方案PPT',
+            owner_task_id: 10,
+            owner_task_name: '做PPT',
+          },
+        ],
+      },
+    });
+    render(<Dashboard projectId={1} />);
+    const box = await screen.findByTestId('delivery-assignment');
+    expect(box).toHaveTextContent('认领兜底');
+  });
+
+  it('任务详情展示 load / 令牌 / 兜底装箱', async () => {
+    vi.mocked(fetchDashboard).mockResolvedValue({
+      ...base,
+      tasks: [
+        {
+          ...base.tasks[0],
+          task_load: 5,
+          load_max: 6,
+          obligation_token_ids: ['ext:d1:.py', 'count:d1:1'],
+          bin_packed: true,
+          decomposed_from: 'Worker执行',
+        },
+        base.tasks[1],
+      ],
+    });
+    render(<Dashboard projectId={1} />);
+    await screen.findByTestId('task-graph');
+    await userEvent.click(screen.getByTestId('task-node-10'));
+    const load = await screen.findByTestId('task-load');
+    expect(load).toHaveTextContent('负荷 5 / 6');
+    expect(load).toHaveTextContent('兜底装箱');
+    expect(load).toHaveTextContent('拆自 Worker执行');
+    expect(load).toHaveTextContent('ext:d1:.py');
+  });
+
   it('TOOL_BUDGET_GRACE 在任务详情可见，并展示随后 Stop', async () => {
     vi.mocked(fetchDashboard).mockResolvedValue({
       ...base,

@@ -159,7 +159,7 @@ Runtime 的一致性规则（硬门，少而明确）：
 | 建任务段 | 任务落库后 `plan_status=ASSIGNING` |
 | 分配段 | 独立阶段：LLM 不持事务；结果短事务写入 |
 | 通过 | 写 `deliverable_ids` → `plan_status=READY` |
-| 失败 | 删除本轮新建任务（或 `plan_status=INVALID`）+ toast |
+| 失败 | **已修订（认领必成方案）**：模型分派不佳 → 确定性兜底仍写 ids；禁止删图。仅不可修复结构才 `INVALID`（且不删图）+ toast |
 | 执行入口 | `submit` / FULL_AUTO 推进 / 手动执行：**`plan_status != READY` 一律拒绝** |
 
 ### 4.6 重规划与删任务（覆盖门复检）

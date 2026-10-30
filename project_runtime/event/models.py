@@ -73,6 +73,8 @@ class RuntimeEventType(str, enum.Enum):
     DELIVERY_VALIDATOR_RUN = "DELIVERY_VALIDATOR_RUN"  # V1.6d: 子进程校验一次
     TOOL_BUDGET_GRACE = "TOOL_BUDGET_GRACE"  # 工具预算用尽后 Grace 收尾（须上屏）
     DELIVERY_ASSIGNMENT_INVALID = "DELIVERY_ASSIGNMENT_INVALID"  # 认领硬门失败
+    DELIVERY_GAP_ACCEPTED = "DELIVERY_GAP_ACCEPTED"  # 预算/返工用尽软放行 ACCEPTED
+    PLAN_DECOMPOSE_INVALID = "PLAN_DECOMPOSE_INVALID"  # 过载拆分整闸失败
 
 
 class RuntimeEvent(Base):
