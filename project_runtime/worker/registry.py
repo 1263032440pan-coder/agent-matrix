@@ -487,7 +487,7 @@ class WorkerRegistry:
 
 # ── AgentProvisioner（§2.2 路径 1——规划后自动创建）────────────────
 
-FILE_TOOLS = ("read_file", "list_dir", "write_file")
+FILE_TOOLS = ("read_file", "list_dir", "write_file", "append_file")
 
 BUILT_IN_TEMPLATES = [
     {

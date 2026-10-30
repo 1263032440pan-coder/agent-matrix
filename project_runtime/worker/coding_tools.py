@@ -29,6 +29,21 @@ _OUTPUT_LIMIT = 8000
 _PROC_TIMEOUT_S = 600
 
 
+def _missing_bin(name: str) -> dict | None:
+    import shutil
+
+    from project_runtime.worker.tools import tool_error
+
+    if shutil.which(name):
+        return None
+    return tool_error(
+        "TOOLCHAIN_MISSING",
+        f"当前环境没有 {name}，无法编译验证",
+        "请确保源码完整，并在 README 中写明构建命令；"
+        "不要把缺工具链当成写入失败",
+    )
+
+
 # ── git（白名单只读 + 常用安全写操作）──────────────────────────────
 
 _GIT_READ = re.compile(r"^(status|diff|log|show|branch)( .*)?$")
@@ -225,7 +240,8 @@ class BuilderProvider:
 
             return tool_error(
                 "MISSING_FIELD", "builder 缺少 kind",
-                '示例: builder {"kind": "npm_build"}（可选 npm_build / docker_build）',
+                '示例: builder {"kind": "npm_build"}'
+                "（npm_build/docker_build/mvn_compile/py_compile/tsc_noemit）",
             )
         cwd = GitProvider._workspace(payload)  # noqa: SLF001
         if kind == "npm_build":
@@ -235,12 +251,32 @@ class BuilderProvider:
             if not re.match(r"^[a-z0-9/:_.-]{1,80}$", tag or "x"):
                 return {"ok": False, "error": "tag 参数模式不合规"}
             cmd = f"docker build -t {tag} ." if tag else "docker build ."
+        elif kind == "mvn_compile":
+            miss = _missing_bin("mvn")
+            if miss:
+                return miss
+            cmd = "mvn -q compile"
+        elif kind == "py_compile":
+            pys = list(cwd.rglob("*.py")) if cwd.is_dir() else []
+            if not pys:
+                return {
+                    "ok": True,
+                    "stdout": "工作区无 .py 文件，跳过 py_compile",
+                }
+            quoted = " ".join(str(p) for p in pys[:40])
+            cmd = f"python -m py_compile {quoted}"
+        elif kind == "tsc_noemit":
+            miss = _missing_bin("tsc")
+            if miss:
+                return miss
+            cmd = "tsc --noEmit"
         else:
             from project_runtime.worker.tools import tool_error
 
             return tool_error(
                 "INVALID_ACTION",
-                "kind 只支持 npm_build/docker_build",
+                "kind 只支持 npm_build/docker_build/mvn_compile/"
+                "py_compile/tsc_noemit",
                 '示例: builder {"kind": "npm_build"}',
             )
         return await _run_cmd(cmd, cwd, timeout=_PROC_TIMEOUT_S)

@@ -135,6 +135,26 @@ def _repair_arguments(raw: str) -> str | None:
     return None  # 中段丢块——无法修复
 
 
+def _extract_planned_paths(content: str) -> list[str] | None:
+    """从首轮回复里抽出相对路径 JSON 数组；没有则 None。"""
+    text = (content or "").strip()
+    if not text:
+        return None
+    start = text.find("[")
+    end = text.rfind("]")
+    if start < 0 or end <= start:
+        return None
+    try:
+        raw = json.loads(text[start:end + 1])
+    except ValueError:
+        return None
+    if not isinstance(raw, list) or not raw:
+        return None
+    if not all(isinstance(x, str) for x in raw):
+        return None
+    return [str(x).replace("\\", "/") for x in raw]
+
+
 def _tool_result_text(result: dict) -> str:
     """TOOL 结果 → 喂回模型的文本；结构化失败固定为 [code] error + 建议。"""
     if not result.get("ok") and result.get("error_code"):
@@ -173,6 +193,10 @@ class LLMWorkerAdapter(WorkerAdapter):
         self._current_agent: dict | None = None
         self._current_project_id: int | None = None
         self._db_lock = asyncio.Lock()
+        # SYS-152～157
+        self._obligation_tokens: list[dict] = []
+        self._tool_failures: list[dict] = []
+        self._diagnosis_injected: int = 0
 
     async def assign(self, wp: WorkPackage) -> ExecutionResult:
         # Phase 1 (short tx): validate READY + RUNNING transition, commit
@@ -614,6 +638,9 @@ class LLMWorkerAdapter(WorkerAdapter):
         cfg = load_llm_settings()
         if not (cfg.base_url and cfg.api_key and cfg.model):
             raise RuntimeError("LLM not configured")
+        self._tool_failures = []
+        self._diagnosis_injected = 0
+        self._plan_list_checked = False
 
         model = normalize_model_for_gateway(cfg.model, cfg.base_url)
 
@@ -671,45 +698,38 @@ class LLMWorkerAdapter(WorkerAdapter):
             ref2 = json.loads(raw_ref2) if isinstance(raw_ref2, str) else (
                 raw_ref2 if isinstance(raw_ref2, dict) else {}
             )
-            tok_lines: list[str] = []
-            for t in (ref2 or {}).get("obligation_tokens") or []:
-                tid = str((t or {}).get("id") or "")
-                if tid.startswith("prefix:"):
-                    lab = str((t or {}).get("label") or tid.split(":")[-1])
-                    tok_lines.append(f"文件名以 `{lab}` 开头（如 {lab}.md）")
-                elif tid.startswith("ext:"):
-                    parts = tid.split(":", 2)
-                    e = parts[2] if len(parts) >= 3 else ""
-                    if e and e != "any":
-                        tok_lines.append(
-                            f"至少一种源码扩展名（本分片候选含 `{e}`；"
-                            "同清单项多种扩展名交其一即可）"
-                        )
-                    elif e == "any":
-                        exts = (t or {}).get("exts") or []
-                        tok_lines.append(
-                            "至少一种源码扩展名（需其一）："
-                            + ",".join(str(x) for x in exts)
-                        )
-                elif tid.startswith("count:"):
-                    q = (t or {}).get("quota") or 1
-                    tok_lines.append(f"槽内普通文件数量 ≥ {q}")
-                elif tid.startswith("slot:"):
-                    lab = str((t or {}).get("label") or tid)
-                    tok_lines.append(f"槽目录有文件：{lab}")
-            if tok_lines:
-                # 去重保序
-                seen: set[str] = set()
-                uniq_lines: list[str] = []
-                for line in tok_lines:
-                    if line in seen:
-                        continue
-                    seen.add(line)
-                    uniq_lines.append(line)
+            tokens = list((ref2 or {}).get("obligation_tokens") or [])
+            self._obligation_tokens = tokens
+            from project_runtime.worker.obligation_feedback import (
+                describe_obligation_tokens,
+                workspace_tree,
+            )
+
+            uniq_lines = describe_obligation_tokens(tokens)
+            if uniq_lines:
                 prompt_parts.append(
                     "【义务令牌·收工必过】本任务目录必须同时满足：\n- "
                     + "\n- ".join(uniq_lines)
                 )
+            ws_now = self._task_ws_root()
+            wr = getattr(wp, "workspace_root", None)
+            if wr:
+                ws_now = Path(wr)
+            if ws_now is not None:
+                prompt_parts.append(
+                    "【当前工作区】相对路径目录树：\n"
+                    + workspace_tree(ws_now)
+                )
+            prompt_parts.append(
+                "【写入规则】本任务工作区可自由新建/覆盖文件，没有写入配额；"
+                "其他任务目录只读。请用 write_file / append_file，"
+                "不要调用已拆分的 file_rw。"
+            )
+            prompt_parts.append(
+                "【开工建议】可先输出将要写入的相对路径 JSON 数组，"
+                "例如 [\"README.md\", \"src/main/java/App.java\"]；"
+                "不覆盖义务令牌时系统会提醒补计划，不强制。"
+            )
         except Exception:  # noqa: BLE001
             pass
         prompt_parts.append(
@@ -747,6 +767,7 @@ class LLMWorkerAdapter(WorkerAdapter):
             ).scalar_one_or_none()
             if inst is not None:
                 session_store = SessionStore.from_json(inst.session_ref)
+                self._sanitize_rework_history(session_store, task_id, wp)
                 assembler = ContextAssembler(model)
                 # 返修单 B: 实时思维链事件的 Agent 归属（AgentPanel 过滤键）
                 try:
@@ -929,6 +950,36 @@ class LLMWorkerAdapter(WorkerAdapter):
                 # 正常出口: 无工具调用 → 拟终稿
                 if not content.strip():
                     content = "".join(reasoning_parts)[-2000:]
+                if (
+                    not getattr(self, "_plan_list_checked", False)
+                    and getattr(self, "_obligation_tokens", None)
+                ):
+                    from project_runtime.worker.obligation_feedback import (
+                        planned_paths_cover,
+                    )
+
+                    paths = _extract_planned_paths(content)
+                    self._plan_list_checked = True
+                    if paths:
+                        cover = planned_paths_cover(
+                            paths, self._obligation_tokens,
+                        )
+                        if not cover.ok():
+                            if content.strip():
+                                messages.append({
+                                    "role": "assistant",
+                                    "content": content,
+                                })
+                            messages.append({
+                                "role": "user",
+                                "content": (
+                                    "【计划清单未覆盖令牌——请补路径后再写文件】\n"
+                                    + "\n".join(
+                                        f"- {p}" for p in cover.problems
+                                    )
+                                ),
+                            })
+                            continue
                 # V1.6c Claude Stop: 清单 match 硬闸（兼容 legacy tags）
                 report = await self._delivery_stop_report(wp)
                 problems = list(report.problems)
@@ -950,14 +1001,21 @@ class LLMWorkerAdapter(WorkerAdapter):
                         messages.append({
                             "role": "assistant", "content": content,
                         })
+                    from collections import Counter
+
+                    from project_runtime.worker.obligation_feedback import (
+                        repair_nudge,
+                    )
+
+                    stats = dict(Counter(
+                        str(x.get("error_code") or "UNKNOWN")
+                        for x in self._tool_failures
+                        if x.get("error_code")
+                    ))
                     messages.append({
                         "role": "user",
-                        "content": (
-                            "【收工校验未通过——须返工】"
-                            f"（第 {used + 1}/{_DELIVERY_REPAIR_MAX} 次）：\n"
-                            + "\n".join(f"- {p}" for p in problems)
-                            + "\n请立即用工具补齐缺失产物，齐了再输出最终交付。"
-                            "不要只口头承诺。"
+                        "content": repair_nudge(
+                            used, problems, error_stats=stats,
                         ),
                     })
                     logger.info(
@@ -1032,6 +1090,7 @@ class LLMWorkerAdapter(WorkerAdapter):
                     "tool_call_id": tc["id"] or f"call_{i}",
                     "content": result_text,
                 })
+            await self._maybe_inject_tool_diagnosis(messages, task_id)
             # 继续下一轮（模型基于工具结果继续推理/产出）
 
         # 预算用尽：Continue nudge → Grace（禁工具）→ 必跑 Stop（不过=软放行）
@@ -1206,6 +1265,106 @@ class LLMWorkerAdapter(WorkerAdapter):
 
         # ── 搜索工具（规范 19 §4.2）────────────────────────────────────
 
+    def _sanitize_rework_history(self, store, task_id, wp) -> None:
+        """SYS-154: 重跑不注入上一轮失败叙述，只留结构化事实。"""
+        if store is None or task_id is None:
+            return
+        facts = (
+            "上一轮已结束。不要沿用「工具有写入配额 / 不能新建文件」的判断——"
+            "write_file 可以在本任务工作区自由新建文件。"
+        )
+        gap_txt = ""
+        try:
+            from project_runtime.worker.obligation_feedback import (
+                describe_obligation_tokens,
+            )
+
+            lines = describe_obligation_tokens(self._obligation_tokens)
+            if lines:
+                gap_txt = "义务清单：\n- " + "\n- ".join(lines)
+        except Exception:  # noqa: BLE001
+            gap_txt = ""
+        for tr in getattr(store, "tasks", []) or []:
+            if getattr(tr, "task_id", None) != task_id:
+                continue
+            tr.messages = []
+            card = facts
+            if gap_txt:
+                card = facts + "\n" + gap_txt
+            tr.summary_card = card[:800]
+
+    def _enrich_tool_text(
+        self, name: str, args: dict, ok: bool, text: str, result: dict,
+    ) -> str:
+        """SYS-152/155: 失败记账；写入成功附缺口回执。"""
+        if not hasattr(self, "_tool_failures"):
+            self._tool_failures = []
+        if not hasattr(self, "_obligation_tokens"):
+            self._obligation_tokens = []
+        bare = name.split(":", 1)[-1]
+        if not ok:
+            self._tool_failures.append({
+                "tool": name,
+                "error_code": result.get("error_code") or "",
+                "path": str(args.get("path") or "")[:200],
+            })
+            return text
+        if bare not in ("write_file", "append_file", "slide_generator"):
+            return text
+        try:
+            from project_runtime.procedure.token_stop import (
+                check_obligation_tokens_detailed,
+            )
+            from project_runtime.worker.obligation_feedback import (
+                format_gap_receipt,
+            )
+
+            ws = self._task_ws_root()
+            if ws is None or not self._obligation_tokens:
+                return text
+            report = check_obligation_tokens_detailed(
+                ws, self._obligation_tokens,
+            )
+            return text.rstrip() + "\n" + format_gap_receipt(report)
+        except Exception:  # noqa: BLE001
+            logger.debug("gap receipt failed", exc_info=True)
+            return text
+
+    async def _maybe_inject_tool_diagnosis(
+        self, messages: list[dict], task_id: int | None,
+    ) -> None:
+        """SYS-155: 连续失败 ≥3 注入诊断，整轮最多 2 次。"""
+        if not hasattr(self, "_diagnosis_injected"):
+            self._diagnosis_injected = 0
+        if not hasattr(self, "_tool_failures"):
+            self._tool_failures = []
+        if self._diagnosis_injected >= 2:
+            return
+        from project_runtime.worker.obligation_feedback import (
+            tool_failure_diagnosis,
+        )
+
+        msg = tool_failure_diagnosis(self._tool_failures)
+        if not msg:
+            return
+        # 只对「尚未诊断过的」尾部失败生效：注入后清空计数，避免每轮刷屏
+        self._tool_failures = []
+        self._diagnosis_injected += 1
+        messages.append({"role": "user", "content": msg})
+        try:
+            from project_runtime.event import EventEngine, RuntimeEventType
+
+            await EventEngine().record(
+                RuntimeEventType.TOOL_FAILURE_DIAGNOSIS,
+                task_id=task_id,
+                phase="LLM_TOOL",
+                message=msg[:300],
+                actor="WORKER",
+                payload={"round_injected": self._diagnosis_injected},
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
     def _search_tools(
         self, whitelist: list[str] | None = None
     ) -> list[dict] | None:
@@ -1338,7 +1497,8 @@ class LLMWorkerAdapter(WorkerAdapter):
                     # （__ 前缀=内部参数, schema 不暴露, Provider 侧剥离）
                     if name in (
                         "tool:read_file", "tool:list_dir",
-                        "tool:write_file", "tool:slide_generator",
+                        "tool:write_file", "tool:append_file",
+                        "tool:slide_generator",
                     ) and self._workspace_root:
                         payload["__ws_root"] = self._workspace_root
                     return await info.provider.invoke(payload)
@@ -1524,6 +1684,9 @@ class LLMWorkerAdapter(WorkerAdapter):
             if tool_result is not None:
                 ok = bool(tool_result.get("ok"))
                 text = _tool_result_text(tool_result)
+                text = self._enrich_tool_text(
+                    name, args, ok, text, tool_result,
+                )
                 await self._emit_tool_result(
                     task_id, name, ok, text, t0, round_no, result=tool_result,
                 )

@@ -165,10 +165,10 @@ async def test_read_outside_data_tasks(workspace):
 
 def test_expand_whitelist_alias():
     assert expand_tool_whitelist(["file_rw", "web_search"]) == [
-        "read_file", "list_dir", "write_file", "web_search",
+        "read_file", "list_dir", "write_file", "append_file", "web_search",
     ]
     assert expand_tool_whitelist(["tool:file_rw", "read_file"]) == [
-        "read_file", "list_dir", "write_file",
+        "read_file", "list_dir", "write_file", "append_file",
     ]
     assert expand_tool_whitelist(None) is None
 

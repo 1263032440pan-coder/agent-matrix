@@ -76,6 +76,7 @@ class RuntimeEventType(str, enum.Enum):
     DELIVERY_GAP_ACCEPTED = "DELIVERY_GAP_ACCEPTED"  # 预算/返工用尽软放行 ACCEPTED
     PLAN_DECOMPOSE_INVALID = "PLAN_DECOMPOSE_INVALID"  # 过载拆分整闸失败
     USER_TASK_REWORK = "USER_TASK_REWORK"  # 用户单节点重开 / 连带释放
+    TOOL_FAILURE_DIAGNOSIS = "TOOL_FAILURE_DIAGNOSIS"  # 连续工具失败诊断（审计）
 
 
 class RuntimeEvent(Base):

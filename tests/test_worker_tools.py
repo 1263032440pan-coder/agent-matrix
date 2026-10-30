@@ -242,7 +242,7 @@ class TestRegistration:
         names = {i.name for i in reg.list_providers(CapabilityType.TOOL)}
         assert names == {
             "tool:webfetch", "tool:read_file", "tool:list_dir",
-            "tool:write_file", "tool:shell",
+            "tool:write_file", "tool:append_file", "tool:shell",
             "tool:code_search", "tool:slide_generator",
         }
 

@@ -82,13 +82,14 @@ class WebFetchProvider:
 
 # 旧名 file_rw → 拆分后的单一用途工具（USER/CONTROLLER 定义存库不随 seed 更新）
 _TOOL_ALIASES: dict[str, tuple[str, ...]] = {
-    "file_rw": ("read_file", "list_dir", "write_file"),
+    "file_rw": ("read_file", "list_dir", "write_file", "append_file"),
 }
 RENAMED_TOOLS = frozenset({"file_rw", "tool:file_rw"})
 _FILE_TOOL_EXAMPLES = (
     '读: read_file {"path": "README.md"}；'
     '列: list_dir {"path": "."}；'
-    '写: write_file {"path": "README.md", "content": "..."}'
+    '写: write_file {"path": "README.md", "content": "..."}；'
+    '追加: append_file {"path": "README.md", "content": "..."}'
 )
 
 
@@ -116,7 +117,7 @@ def tool_error(code: str, error: str, hint: str = "") -> dict:
 def renamed_tool_error(name: str) -> dict:
     return tool_error(
         "TOOL_RENAMED",
-        f"工具 {name} 已拆分为 read_file / list_dir / write_file，不再可用",
+        f"工具 {name} 已拆分为 read_file / list_dir / write_file / append_file，不再可用",
         f"请改用新工具。{_FILE_TOOL_EXAMPLES}",
     )
 
@@ -301,53 +302,72 @@ class ListDirProvider(_FileToolBase):
                 "stdout": stdout}
 
 
+def _persist_text(provider: _FileToolBase, payload: dict, *, append: bool) -> dict:
+    """write_file / append_file 共用落盘（禁闭、冻结脚本、回执）。"""
+    tool = "append_file" if append else "write_file"
+    path = str(payload.get("path") or "").strip()
+    content = payload.get("content")
+    missing = [k for k, v in (("path", path), ("content", content))
+               if v is None or not str(v).strip()]
+    if missing:
+        return tool_error(
+            "MISSING_FIELD", f"{tool} 缺少 {', '.join(missing)}",
+            f'示例: {tool} {{"path": "README.md", "content": "..."}}',
+        )
+    content = str(content)
+    from project_runtime.procedure.delivery_validator import (
+        SCRIPT_NAME,
+        is_validator_script_path,
+    )
+    if is_validator_script_path(path) or path.endswith(SCRIPT_NAME):
+        return tool_error(
+            "FORBIDDEN_PATH",
+            f"禁止写入冻结校验脚本 {SCRIPT_NAME}",
+            "请重新「生成计划」更新闸门",
+        )
+    ws_root = provider._ws_root(payload)
+    resolved, err = provider._target(path, ws_root, write=True)
+    if err:
+        return err
+    try:
+        resolved.parent.mkdir(parents=True, exist_ok=True)
+        if append and resolved.exists():
+            with resolved.open("a", encoding="utf-8") as fh:
+                fh.write(content)
+        else:
+            resolved.write_text(content, encoding="utf-8")
+    except OSError as e:
+        return tool_error("IO_ERROR", f"写入失败: {e}")
+    nbytes = len(content.encode("utf-8"))
+    verb = "已追加" if append else "已写入"
+    stdout = (f"{verb} {_rel_display(resolved, ws_root)}: "
+              f"{len(content)} 字符（{nbytes} 字节）。")
+    if ws_root is not None:
+        n_files = sum(1 for f in ws_root.rglob("*") if f.is_file())
+        stdout += f"本任务工作区现有 {n_files} 个文件。"
+    if payload.get("__repaired"):
+        stdout += ("注意：本次参数在传输中被截断后修复，内容可能不完整，"
+                   "请用 read_file 检查文件末尾。")
+    return {"ok": True, "path": str(resolved), "stdout": stdout,
+            "bytes": nbytes}
+
+
 class WriteFileProvider(_FileToolBase):
     """新建或覆盖文件（仅本任务工作区；无写入配额）。"""
 
     name = "tool:write_file"
 
     async def invoke(self, payload: dict) -> dict:
-        path = str(payload.get("path") or "").strip()
-        content = payload.get("content")
-        missing = [k for k, v in (("path", path), ("content", content))
-                   if v is None or not str(v).strip()]
-        if missing:
-            return tool_error(
-                "MISSING_FIELD", f"write_file 缺少 {', '.join(missing)}",
-                '示例: write_file {"path": "README.md", "content": "..."}',
-            )
-        content = str(content)
-        # V1.6d: 禁止改写项目级冻结校验脚本
-        from project_runtime.procedure.delivery_validator import (
-            SCRIPT_NAME,
-            is_validator_script_path,
-        )
-        if is_validator_script_path(path) or path.endswith(SCRIPT_NAME):
-            return tool_error(
-                "FORBIDDEN_PATH",
-                f"禁止写入冻结校验脚本 {SCRIPT_NAME}",
-                "请重新「生成计划」更新闸门",
-            )
-        ws_root = self._ws_root(payload)
-        resolved, err = self._target(path, ws_root, write=True)
-        if err:
-            return err
-        try:
-            resolved.parent.mkdir(parents=True, exist_ok=True)
-            resolved.write_text(content, encoding="utf-8")
-        except OSError as e:
-            return tool_error("IO_ERROR", f"写入失败: {e}")
-        nbytes = len(content.encode("utf-8"))
-        stdout = (f"已写入 {_rel_display(resolved, ws_root)}: "
-                  f"{len(content)} 字符（{nbytes} 字节）。")
-        if ws_root is not None:
-            n_files = sum(1 for f in ws_root.rglob("*") if f.is_file())
-            stdout += f"本任务工作区现有 {n_files} 个文件。"
-        if payload.get("__repaired"):
-            stdout += ("注意：本次参数在传输中被截断后修复，内容可能不完整，"
-                       "请用 read_file 检查文件末尾。")
-        return {"ok": True, "path": str(resolved), "stdout": stdout,
-                "bytes": nbytes}
+        return _persist_text(self, payload, append=False)
+
+
+class AppendFileProvider(_FileToolBase):
+    """追加写入（文件不存在则创建；禁闭与 write_file 一致）。"""
+
+    name = "tool:append_file"
+
+    async def invoke(self, payload: dict) -> dict:
+        return _persist_text(self, payload, append=True)
 
 
 # ── shell（三防禁闭——§4.1 P2-1 返修条款）─────────────────────────
@@ -355,6 +375,7 @@ class WriteFileProvider(_FileToolBase):
 # 命令白名单: 命令名 → 允许的参数模式（正则；None=任意）
 _SHELL_WHITELIST: dict[str, str | None] = {
     "ls": None, "cat": None, "head": None, "tail": None, "dir": None,
+    "type": None,  # Windows 映射自 cat
     # python/pytest: 特殊哨兵 PATHTOKENS——token 级校验（见 _path_tokens_ok）
     # （批次1 字符集正则含空格和'-', ' -c evil.cfg' 可注入——批次3 修复;
     #   纯正则负向环视要么误伤 'my-file.py' 要么漏 '-c'——函数才是对的）
@@ -436,6 +457,14 @@ class ShellProvider:
         parts = command.split(maxsplit=1)
         cmd_name = parts[0].lower()
         args = parts[1] if len(parts) > 1 else ""
+        # SYS-160: Windows 把常见 Unix 命令映射到等价命令
+        import os as _os
+
+        if _os.name == "nt":
+            mapped = {"ls": "dir", "cat": "type"}.get(cmd_name)
+            if mapped:
+                cmd_name = mapped
+                command = mapped + ((" " + args) if args else "")
         # 返修V3 批C: skill 固定脚本绝对路径白名单（仍过 PATHTOKENS）
         skill_script_ok = False
         if cmd_name in ("python", "python3"):
@@ -790,6 +819,7 @@ def register_worker_tools(registry) -> None:
     registry.register(ReadFileProvider())
     registry.register(ListDirProvider())
     registry.register(WriteFileProvider())
+    registry.register(AppendFileProvider())
     registry.register(ShellProvider())
     registry.register(CodeSearchProvider())
     registry.register(SlideGeneratorProvider())

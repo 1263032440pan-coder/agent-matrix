@@ -508,6 +508,11 @@ export function Dashboard({ projectId, paused }: { projectId: number; paused?: b
                       令牌：{selected.obligation_token_ids!.join(', ')}
                     </div>
                   )}
+                  {selected.verification_level && (
+                    <div data-testid="task-verify-level">
+                      验证等级：{selected.verification_level}
+                    </div>
+                  )}
                 </div>
               )}
               {selected.delivery_gap?.soft_accepted && (
@@ -768,6 +773,13 @@ export function Dashboard({ projectId, paused }: { projectId: number; paused?: b
           {/* V1.6 序6: 交付画像标识 + 三件状态行 + 重新判定入口 */}
           <section data-testid="delivery-status" style={card}>
             <h3 style={{ marginTop: 0 }}>交付基线</h3>
+            {data.delivery_quality && (
+              <p data-testid="delivery-quality" style={{ fontSize: 12, color: '#555' }}>
+                软放行 {data.delivery_quality.soft_accepted}/
+                {data.delivery_quality.accepted} 已验收
+                （{Math.round(data.delivery_quality.soft_rate * 100)}%）
+              </p>
+            )}
             {data.delivery_profile === 'SOFTWARE_DEV' ? (
               <p>
                 <span data-testid="dev-badge">🏷️ 软件开发需求</span>

@@ -1127,6 +1127,7 @@ async def project_dashboard(project_id: int, session: AsyncSession = Depends(get
                 node_outputs_by_name.get(t.name),
             ),
             "delivery_gap": gap_by_task.get(t.id),
+            "verification_level": _verification_level(project_id, t.id),
             **_task_load_fields(t.playbook_ref),
         }
         for t in tasks
@@ -1230,6 +1231,19 @@ async def project_dashboard(project_id: int, session: AsyncSession = Depends(get
         "delivery_assignment": _delivery_assignment_view(
             manifest, tasks,
         ),
+        "delivery_quality": {
+            "accepted": sum(1 for t in tasks if t.status.value == "ACCEPTED"),
+            "soft_accepted": len(gap_by_task),
+            "soft_rate": (
+                round(
+                    len(gap_by_task)
+                    / max(1, sum(1 for t in tasks if t.status.value == "ACCEPTED")),
+                    3,
+                )
+                if any(t.status.value == "ACCEPTED" for t in tasks)
+                else 0.0
+            ),
+        },
         "delivery_status": {
             "ppt": any(
                 (a.name or "").lower().endswith(".pptx") for a in artifacts
@@ -1343,6 +1357,19 @@ def _stage_outputs_of(
         return outs
     # 兼容旧任务：playbook_ref 未透传时，用流程节点 outputs
     return _split_output_blob(ref.get("outputs") or fallback_outputs)
+
+
+def _verification_level(project_id: int, task_id: int) -> str:
+    """SYS-159: 只读验证等级（compile / syntax / none），不进 Gate。"""
+    root = Path("data/tasks") / str(project_id) / str(task_id)
+    if not root.exists():
+        return "none"
+    names = [p.name.lower() for p in root.rglob("*") if p.is_file()]
+    if any(n in ("pom.xml", "build.gradle") for n in names):
+        return "compile"
+    if any(n.endswith((".py", ".ts", ".js")) for n in names) or "package.json" in names:
+        return "syntax"
+    return "none"
 
 
 def _task_load_fields(playbook_ref: str | None) -> dict:

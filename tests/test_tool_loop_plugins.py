@@ -35,6 +35,7 @@ def _worker_with(registry):
 _EXPECTED_TOOLS = {
     "web_search",
     "tool:webfetch", "tool:read_file", "tool:list_dir", "tool:write_file",
+    "tool:append_file",
     "tool:shell",
     "tool:code_search", "tool:slide_generator",
     "tool:git", "tool:test_runner", "tool:builder",
@@ -44,7 +45,7 @@ _EXPECTED_TOOLS = {
 
 class TestToolLoopExposure:
     def test_all_tools_exposed(self, monkeypatch):
-        """工具面 = 搜索 + 十二插件（13 个——三能力① 完整面）。"""
+        """工具面 = 搜索 + 文件/shell 等插件（含 append_file）。"""
         reg = _full_registry()
         import project_runtime.extension.shared as shared_mod
 

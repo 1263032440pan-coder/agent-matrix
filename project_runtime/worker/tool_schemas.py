@@ -68,13 +68,30 @@ WRITE_FILE_SCHEMA = {
     "description": (
         "在本任务工作区新建或覆盖文件（目录自动创建）。落盘源码、README、"
         "文档等产物时使用。没有写入次数或配额限制；只能写本任务工作区，"
-        "其他任务目录只读。内容很长时拆成多个文件分别写入。"
+        "其他任务目录只读。内容很长时先 write_file 首段，再用 append_file "
+        "追加（单次 content 建议不超过 6000 字符）。"
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "path": {"type": "string", "description": _REL_PATH_DESC},
             "content": {"type": "string", "description": "完整文件内容"},
+        },
+        "required": ["path", "content"],
+    },
+}
+
+APPEND_FILE_SCHEMA = {
+    "description": (
+        "向本任务工作区文件追加内容（文件不存在则创建）。长文件分段写入时"
+        "使用；禁闭与 write_file 相同，没有写入配额。单次 content 建议"
+        "不超过 6000 字符。"
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string", "description": _REL_PATH_DESC},
+            "content": {"type": "string", "description": "要追加的内容"},
         },
         "required": ["path", "content"],
     },
@@ -181,14 +198,20 @@ TEST_RUNNER_SCHEMA = {
 
 BUILDER_SCHEMA = {
     "description": (
-        "构建打包（npm run build / docker build）。验证工程可构建、"
-        "产出部署物时使用。参数: kind（npm_build|docker_build）, "
-        "tag（docker 镜像名）, workspace。"
+        "构建打包或编译检查。kind: npm_build / docker_build / "
+        "mvn_compile / py_compile / tsc_noemit。环境缺少对应工具链时"
+        "返回 TOOLCHAIN_MISSING，不会抛异常。"
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "kind": {"type": "string", "enum": ["npm_build", "docker_build"]},
+            "kind": {
+                "type": "string",
+                "enum": [
+                    "npm_build", "docker_build",
+                    "mvn_compile", "py_compile", "tsc_noemit",
+                ],
+            },
             "tag": {"type": "string"},
             "workspace": {"type": "string"},
         },
@@ -242,6 +265,7 @@ TOOL_SCHEMAS: dict[str, dict] = {
     "tool:read_file": READ_FILE_SCHEMA,
     "tool:list_dir": LIST_DIR_SCHEMA,
     "tool:write_file": WRITE_FILE_SCHEMA,
+    "tool:append_file": APPEND_FILE_SCHEMA,
     "tool:shell": SHELL_SCHEMA,
     "tool:code_search": CODE_SEARCH_SCHEMA,
     "tool:slide_generator": SLIDE_SCHEMA,

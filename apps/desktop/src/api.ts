@@ -23,6 +23,8 @@ export interface DashboardData {
     obligation_token_ids?: string[];
     bin_packed?: boolean;
     decomposed_from?: string | null;
+    /** SYS-159: 只读验证等级，不进 Gate */
+    verification_level?: "compile" | "syntax" | "none";
     /** SYS-140: 软放行未兑现（预算/返工用尽） */
     delivery_gap?: {
       reason?: string;
@@ -38,6 +40,12 @@ export interface DashboardData {
   // V1.6 序6: 交付画像 + 三件状态
   delivery_profile?: string | null;
   delivery_status?: { ppt: boolean; code: boolean; test_report: boolean };
+  /** SYS-161: 交付质量只读度量 */
+  delivery_quality?: {
+    accepted: number;
+    soft_accepted: number;
+    soft_rate: number;
+  };
   // V1.6d: 冻结校验脚本
   delivery_validator_hash?: string | null;
   delivery_validator_hash_prefix?: string | null;

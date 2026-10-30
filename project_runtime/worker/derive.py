@@ -33,7 +33,9 @@ from project_runtime.worker.agent_models import (
 logger = logging.getLogger(__name__)
 
 # 三能力基线（V1.4 §1.3——每模板必含）
-BASELINE_PLUGINS = ("read_file", "list_dir", "write_file", "web_search")
+BASELINE_PLUGINS = (
+    "read_file", "list_dir", "write_file", "append_file", "web_search",
+)
 
 # 契约安全增量集（§2.1 ②——只读/工作区禁闭型，shell/git 永不在）
 SAFE_INCREMENT_PLUGINS = {

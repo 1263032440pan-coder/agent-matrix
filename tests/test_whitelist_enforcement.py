@@ -57,7 +57,9 @@ def _worker():
     return LLMWorkerAdapter.__new__(LLMWorkerAdapter)
 
 
-_FILE_TOOLS = ("tool:read_file", "tool:list_dir", "tool:write_file")
+_FILE_TOOLS = (
+    "tool:read_file", "tool:list_dir", "tool:write_file", "tool:append_file",
+)
 
 
 def _names(tools) -> set[str]:
@@ -72,7 +74,7 @@ class TestToolLoopWhitelist:
         """coder 白名单 → 5 工具（白名单外 slide_generator 等不可见）。"""
         w = _worker()
         tools = w._search_tools(whitelist=[
-            "read_file", "list_dir", "write_file",
+            "read_file", "list_dir", "write_file", "append_file",
             "web_search", "shell", "code_search", "git",
         ])
         assert _names(tools) == {
@@ -83,7 +85,7 @@ class TestToolLoopWhitelist:
     def test_analyst_view_intersected(self, full_registry):
         w = _worker()
         tools = w._search_tools(whitelist=[
-            "read_file", "list_dir", "write_file",
+            "read_file", "list_dir", "write_file", "append_file",
             "web_search", "webfetch", "slide_generator",
         ])
         assert _names(tools) == {
@@ -94,9 +96,9 @@ class TestToolLoopWhitelist:
         assert "tool:shell" not in _names(tools)
 
     def test_none_means_all(self, full_registry):
-        """None = 不限（老路径语义零回归——13 个全量）。"""
+        """None = 不限（老路径语义零回归——14 个全量）。"""
         w = _worker()
-        assert len(w._search_tools(whitelist=None)) == 13
+        assert len(w._search_tools(whitelist=None)) == 14
 
     def test_empty_list_fail_closed(self, full_registry):
         """[] = 零工具（fail-closed，Hermes #82010 约定）。"""
@@ -235,7 +237,7 @@ class TestTemplateRevisionAndSeed:
         for tpl in BUILT_IN_TEMPLATES:
             plugins = tpl["plugins"]
             assert "file_rw" not in plugins, tpl["agent_id"]
-            for name in ("read_file", "list_dir", "write_file"):
+            for name in ("read_file", "list_dir", "write_file", "append_file"):
                 assert name in plugins, (tpl["agent_id"], name)
             assert "web_search" in plugins, tpl["agent_id"]
 
