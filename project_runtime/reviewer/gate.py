@@ -443,6 +443,22 @@ class GateCore:
             # WARNING treated as PASS（REWORK 轮重写文件的合法放行——
             # sha256 已由上面的工单消费刷新, 下轮校验自然干净）
             await self._fsm.transition_task(task, TaskStatus.ACCEPTED, actor=self.ACTOR)
+            # SYS-144: 用户重开挂起的连带下游 → user_rework_release（非心跳）
+            try:
+                from project_runtime.execution.user_rework import (
+                    release_cascaded_after_accept,
+                )
+
+                await release_cascaded_after_accept(
+                    self._session,
+                    task.project_id,
+                    task_id,
+                    submit=False,
+                )
+            except Exception:  # noqa: BLE001
+                logger.debug(
+                    "release cascaded after accept failed", exc_info=True,
+                )
             if soft_gap is not None:
                 try:
                     from project_runtime.event.models import (

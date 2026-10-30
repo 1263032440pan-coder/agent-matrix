@@ -2,7 +2,7 @@
 
 > 版本：2026-10-30（评审修订）  
 > 前置：Task FSM（ADR-033）/`REWORK→READY` 自动接线；软放行 ACCEPTED（SYS-138～140）；交付基线 Dashboard  
-> 状态：**已按评审修订，可实施**（以本节为准；**本文为唯一方案文档**，不另立 ADR）  
+> 状态：**已实施（SYS-143～146）**（以本节为准；**本文为唯一方案文档**，不另立 ADR）  
 >
 > **已拍板：**  
 > 1. 覆盖范围 **B**：含齐套 `ACCEPTED`（以及 `FAILED` / `BLOCKED` / 软放行 `ACCEPTED` 等可重开终态或准终态）。  
@@ -11,7 +11,7 @@
 > 4. 连带下游时 **只打直接 HARD 下游一层**（不递归炸图）。孙子及更远下游保持原状态。  
 > 5. 实现路径 **①（修订）**：扩 FSM，本任务经 `REWORK` 后由**用户出口**立即释放到 `READY`。执行、Worker、Gate 仍走既有链路。连带下游先停在 `REWORK`，等本任务再次 `ACCEPTED` 后再用同一用户出口释放。**不**把用户重开交给 Gate 失败心跳（60 秒冷却、Gate FAIL≥3 跳过、不查依赖）。**不**克隆影子任务。
 
-修订相对初稿的闭合点：用户出口与 Gate 心跳分离；提交前重查 HARD 依赖；MANUAL 停在 `READY`；终态守卫按 actor 开口；确认框预览与提交使用同一 Core 计算。
+修订相对初稿的闭合点：用户出口与 Gate 心跳分离；提交前重查 HARD 依赖；MANUAL 停在 `READY`；终态守卫按 actor 开口；确认框预览与提交使用同一 Core 计算；上游再次验收后释放连带下游时 actor 固定为 `user_rework_release`（用户出口族，非 `GATE`/`SYSTEM`）。
 
 ---
 
@@ -45,7 +45,7 @@
 | 点击按钮 | 先向 Core 要预览（不写状态），再弹出确认框（见 §五） |
 | 确认且未勾选连带 | **仅本任务**：`→ REWORK → READY`（同一事务、立即释放）。FULL_AUTO 接着提交本任务 Execution。MANUAL 停在 `READY`，不提交 |
 | 确认且勾选连带 | 本任务同上。直接 HARD 下游里属于可重开集合的 → `REWORK` 并**停住**。它们等本任务再次 `ACCEPTED` 且 `can_set_ready` 后，才由用户出口释放 |
-| 本任务再次 Gate `ACCEPTED`（含软放行） | 释放**本次事件记录的**、仍为 `REWORK` 且 `can_set_ready` 的连带下游。FULL_AUTO 提交这些任务；MANUAL 只放到 `READY` |
+| 本任务再次 Gate `ACCEPTED`（含软放行） | **时机**在 Gate 验收之后，但**释放动作**仍走用户出口 Core（`actor=user_rework_release`），不走 Gate 心跳。释放**本次事件记录的**、仍为 `REWORK` 且 `can_set_ready` 的连带下游。FULL_AUTO 提交这些任务；MANUAL 只放到 `READY` |
 | 本任务重跑后为 `FAILED` 或回到 Gate `REWORK` | 连带下游保持 `REWORK`，不释放 |
 | 重跑 Stop/Gate 通过且新 TaskRun 无 `delivery_gap` | 本任务 `ACCEPTED`；缺口徽标消失（徽标只读**最新** TaskRun） |
 | 重跑仍缺口（预算/返工用尽） | 仍走软放行：`ACCEPTED` + `delivery_gap` 徽标（SYS-138）。软放行的 `ACCEPTED` 仍满足 HARD 依赖，连带下游照常释放 |
@@ -72,8 +72,11 @@
         → cascade=true：直接 HARD 下游 ∩ 可重开集合 → REWORK（停住）
         → 其他下游不改状态
         → 之后每次提交前重查 can_set_ready
-        → 目标再次 ACCEPTED：释放本次记录的、仍 REWORK 且依赖已齐的下游
-              → 同样立即到 READY；FULL_AUTO 才提交
+        → 目标再次 ACCEPTED（Gate 之后回调 user_rework）：
+              actor=user_rework_release
+              → 释放本次记录的、仍 REWORK 且依赖已齐的下游
+              → 立即 READY；FULL_AUTO 才提交
+              → 事件带 released_by_upstream=目标 task_id
         → 目标 FAILED / Gate 再打回 REWORK：下游继续停住
 ```
 
@@ -100,7 +103,7 @@
 | `ACCEPTED` | `REWORK` | **仅 `user`** | 终态守卫对这个组合放行；其他 actor 仍按终态拒绝 |
 | `FAILED` | `REWORK` | `user`（本 API） | 表上已有此边。本按钮统一进 `REWORK` 再释放。既有 `POST /executions/{id}/retry` 的 `FAILED → READY` **本轮不改** |
 | `BLOCKED` | `REWORK` | **仅 `user`** | 表上当前没有此边，本方案补上，并加 actor 守卫。`BLOCKED → READY` 仍只留给原有依赖晋升 |
-| `REWORK` | `READY` | `user`（用户出口）或既有心跳 | 用户出口：目标已 `can_set_ready` 时同一事务立即转移。心跳：仍仅 FULL_AUTO，且必须先 `can_set_ready`，并保留冷却与 FAIL≥3 |
+| `REWORK` | `READY` | **`user`** / **`user_rework_release`**（用户出口族），或既有心跳（`SYSTEM` 等） | **点按钮释放目标**：`actor=user`，已 `can_set_ready` 时同一事务立即转移。**上游验收后释放连带下游**：`actor=user_rework_release`（见 §3.5），同样立即、不看冷却/FAIL/`PAUSED`。**禁止**用 `GATE`/`SYSTEM` 冒充用户出口。心跳：仍仅 FULL_AUTO，须先 `can_set_ready`，并保留冷却与 FAIL≥3 |
 
 已是 `REWORK` 的目标：不写 `REWORK → REWORK`（非法）。依赖已齐则直接按用户出口释放到 `READY` 并记事件，用于把被心跳熔断停住的任务拉起来。依赖未齐则 409，不改状态。
 
@@ -151,13 +154,26 @@ Gate 心跳在补上 `can_set_ready` 之后，仍保留 60 秒冷却和 FAIL≥3
 
 ### 3.5 释放连带下游
 
-触发点：本任务本次重跑的 Gate 结果为 `ACCEPTED`（含 `PASS_WITH_GAP`）。
+**时机**：本任务本次重跑的 Gate 结果为 `ACCEPTED`（含 `PASS_WITH_GAP`）之后。  
+**执行方**：仍调用 `user_rework` Core 的「释放」入口，**不是** Gate 心跳、也不是 Gate 直接改状态。
 
-释放集合来自该次 `USER_TASK_REWORK` 记录的 `cascaded_task_ids`，而不是「当前所有 REWORK 下游」。这样不会把 Gate 自己打回的无关任务提前放走。
+**actor 约定（拍板）：**
 
-对集合中仍为 `REWORK` 且 `can_set_ready` 的任务：用户出口立即 `REWORK → READY`（不看冷却、不看 FAIL 次数、不看项目 `PAUSED`）。多个 HARD 上游时，须**全部**为 `ACCEPTED` 才释放。FULL_AUTO 再提交；MANUAL 停在 `READY`。
+| 动作 | `transition_task` 的 actor | 说明 |
+|--|--|--|
+| 用户点确认：目标 `ACCEPTED→REWORK→READY`、连带打回 `REWORK` | `user` | 唯一可离开 `ACCEPTED` 的通道 |
+| 上游再次验收后：连带下游 `REWORK→READY` | **`user_rework_release`** | 用户出口族；绕过心跳熔断；**不得**写成 `GATE` / `SYSTEM` |
+| Gate 无人值守打回后的自动拉起 | 心跳既有 actor | 保留冷却、FAIL≥3、`PAUSED` |
 
-本任务未再次 `ACCEPTED` 时不释放。
+为何单独用 `user_rework_release`：触发落在 Gate 回调里，若登记成 `GATE`/`SYSTEM`，会与「仅 `user` 可动终态例外」和「用户出口绕过熔断」两套规则打架；专用 actor 标明「因用户重开、上游已验收而自动释放」，审计可区分。
+
+释放集合来自该次 `USER_TASK_REWORK`（点确认时写下的）`cascaded_task_ids`，而不是「当前所有 REWORK 下游」。这样不会把 Gate 自己打回的无关任务提前放走。
+
+对集合中仍为 `REWORK` 且 `can_set_ready` 的任务：以 `actor=user_rework_release` 立即 `REWORK → READY`（不看冷却、不看 FAIL 次数、不看项目 `PAUSED`）。多个 HARD 上游时，须**全部**为 `ACCEPTED` 才释放。FULL_AUTO 再提交；MANUAL 停在 `READY`。
+
+每释放一个下游：另写一条 `USER_TASK_REWORK`，`task_id`=下游，`from_status=REWORK`，`to_status=READY`，`actor=user_rework_release`，`released_by_upstream`=上游任务 id，`bypass_gate_fuse=true`。
+
+本任务未再次 `ACCEPTED` 时不释放。`ACCEPTED → REWORK` 仍**仅**允许 `actor=user`；`user_rework_release` **不得**走离开 `ACCEPTED` 的边。
 
 ---
 
@@ -214,7 +230,8 @@ Content-Type: application/json
 - `released`（目标是否已在本事务放到 `READY`）  
 - `bypass_gate_fuse: true`（标明这条释放不走心跳熔断）
 
-后续 Gate 再发既有 `TOOL_BUDGET_GRACE` / `DELIVERY_GAP_ACCEPTED` / Gate 事件。释放下游时另写一条 `USER_TASK_REWORK`，`task_id` 为下游，`from_status=REWORK`，并带 `released_by_upstream`（上游任务 id）。
+后续 Gate 再发既有 `TOOL_BUDGET_GRACE` / `DELIVERY_GAP_ACCEPTED` / Gate 事件。  
+释放下游时（§3.5）：另写 `USER_TASK_REWORK`，字段至少含 `task_id`（下游）、`from_status=REWORK`、`to_status=READY`、`actor=user_rework_release`、`released_by_upstream`（上游任务 id）、`bypass_gate_fuse=true`。
 
 ### 4.3 明确不写
 
@@ -270,7 +287,7 @@ Dashboard 选中任务详情区（Task #… / 负荷 / 令牌 / 要求产物 / �
 | 路径 | 关系 |
 |--|--|
 | Gate 自动 REWORK 心跳 | 保留给 Gate 打回。补 `can_set_ready`。冷却、FAIL≥3、`PAUSED` 仍只作用于心跳 |
-| 用户出口 | 确认后的目标，以及上游再次 `ACCEPTED` 时释放的本次连带下游。立即 `REWORK→READY`，不看冷却和 FAIL 次数 |
+| 用户出口 | 确认后的目标（`actor=user`），以及上游再次 `ACCEPTED` 后释放的本次连带下游（`actor=user_rework_release`）。立即 `REWORK→READY`，不看冷却和 FAIL 次数。触发可在 Gate 回调里，但**禁止**用 Gate 心跳或 `GATE`/`SYSTEM` actor 释放 |
 | 软放行 ACCEPTED | 可用本按钮重开。再次软放行仍是 `ACCEPTED`，HARD 下游按既有规则视为依赖满足 |
 | 收口补建「交付补全-*」 | 仍保留。本按钮是同节点修订，补建是缺 id 新任务 |
 | `POST /executions/{id}/retry` | 本轮不改，仍是 `FAILED → READY`。本按钮不调用它 |
@@ -301,7 +318,7 @@ Dashboard 选中任务详情区（Task #… / 负荷 / 令牌 / 要求产物 / �
 1. `fsm.py`：转移表增加 `ACCEPTED → REWORK`、`BLOCKED → REWORK`。`ACCEPTED` 留在 `_TERMINAL_TASK`。`transition_task` 在终态守卫处放行 `actor=="user"` 且 `ACCEPTED→REWORK`；`BLOCKED→REWORK` 同样仅 `user`。其他离开 `ACCEPTED` 的组合仍拒绝。单测覆盖 user 成功、`SYSTEM`/`GATE` 失败、`ACCEPTED→READY` 仍非法。  
 2. `user_rework` Core：校验目标集合与 `can_set_ready`；反查一层 HARD 下游；同一事务写目标 `REWORK→READY`、连带 `REWORK`、事件。`dry_run` 只计算。  
 3. FULL_AUTO 在 commit 后只 `submit` 已释放到 `READY` 的目标。MANUAL 不 `submit`。  
-4. Gate 收到本任务 `ACCEPTED` 时，按最近一次 `USER_TASK_REWORK.cascaded_task_ids` 释放仍挂起且依赖已齐的下游（同一用户出口）。  
+4. Gate 对本任务给出 `ACCEPTED` 后，**回调** `user_rework` 释放入口：按最近一次确认事件的 `cascaded_task_ids`，以 `actor=user_rework_release` 释放仍挂起且依赖已齐的下游；事件带 `released_by_upstream`。不要在 Gate 心跳里顺手放人。  
 5. `_auto_advance` 与 Execution 准入补 `can_set_ready`。心跳的冷却、FAIL≥3、`PAUSED` 判断保持，且不要复用到用户出口。  
 6. API 路由 + desktop `api.ts` + Dashboard 按钮、预览确认框。  
 7. 回归见 §九。  
@@ -312,7 +329,7 @@ Dashboard 选中任务详情区（Task #… / 负荷 / 令牌 / 要求产物 / �
 ## 九、验收
 
 1. 齐套 `ACCEPTED`、不勾选：只有该节点变为 `READY` 并在 FULL_AUTO 下进入执行。已验收下游状态不变。已 `READY` 的直接 HARD 下游在本节点再次 `ACCEPTED` 之前不会被提交。  
-2. 勾选连带：只有直接 HARD 下游中可重开者变为 `REWORK`，且在本节点再次 `ACCEPTED` 之前不会变为 `RUNNING`。孙子状态不变。本节点 `ACCEPTED` 后，这些下游才 `READY`（FULL_AUTO 再执行）。本节点 `FAILED` 时它们仍是 `REWORK`。  
+2. 勾选连带：只有直接 HARD 下游中可重开者变为 `REWORK`，且在本节点再次 `ACCEPTED` 之前不会变为 `RUNNING`。孙子状态不变。本节点 `ACCEPTED` 后，以 `user_rework_release` 释放这些下游到 `READY`（FULL_AUTO 再执行），事件含 `released_by_upstream`；不得出现 `GATE`/`SYSTEM` 作该次释放 actor。本节点 `FAILED` 时它们仍是 `REWORK`。  
 3. 预览与提交的 `cascaded_task_ids` / `skipped_downstream` 一致。下游 `RUNNING` 不导致整单 409。用当前节点自己的 `depends_on` 列名单会列到上游，视为错误实现。  
 4. MANUAL：确认后目标为 `READY`，Execution 表没有新行。  
 5. 该任务历史 Gate FAIL≥3，或状态刚刚写入不满 60 秒：用户确认后仍立即到 `READY` 并在 FULL_AUTO 下提交。心跳对**其他** Gate 打回任务仍跳过冷却未过和 FAIL≥3。  
@@ -328,10 +345,10 @@ Dashboard 选中任务详情区（Task #… / 负荷 / 令牌 / 要求产物 / �
 
 | ID | 需求/能力 | 架构模块 | 代码（预定） | 测试（预定） | 状态 |
 |---|---|---|---|---|---|
-| SYS-143 | 用户发起 `ACCEPTED→REWORK`（终态守卫 + actor=user）+ API | FSM / API | `fsm.py` + `user_rework` | user 成功；SYSTEM 拒绝；目标 409 | OPEN |
-| SYS-144 | 预览 + 一层 HARD 下游打回后挂起，上游再次 ACCEPTED 才释放 | Desktop / Core / Gate | Dashboard dry_run + cascade 释放 | 默认不级联；只一层；孙子不动；FAILED 不释放 | OPEN |
-| SYS-145 | 重跑后状态 / 最新 TaskRun 徽标 / 已产出随事实更新；基线不因按钮本身翻红 | Observability / UI | 既有 dashboard 字段 | 新 Run 清徽标；旧文件仍 ✅ | OPEN |
-| SYS-146 | 用户出口立即 `READY`（绕过冷却与 FAIL 熔断）；MANUAL 不提交；提交与心跳补 `can_set_ready` | Execution | `user_rework` + `_auto_advance` + runner 准入 | FULL_AUTO 立即跑；MANUAL 无 Execution；上游非 ACCEPTED 不提交 | OPEN |
+| SYS-143 | 用户发起 `ACCEPTED→REWORK`（终态守卫 + actor=user）+ API | FSM / API | `fsm.py` + `user_rework` | `test_fsm` / `test_user_rework` | DONE |
+| SYS-144 | 预览 + 一层 HARD 下游打回后挂起；上游再次 ACCEPTED 后以 `user_rework_release` 释放 | Desktop / Core / Gate回调 | Dashboard dry_run + cascade 释放 | `test_user_rework` cascade/release | DONE |
+| SYS-145 | 重跑后状态 / 最新 TaskRun 徽标 / 已产出随事实更新；基线不因按钮本身翻红 | Observability / UI | Dashboard 轮询 + 确认后 refetch | 手工 | DONE |
+| SYS-146 | 用户出口立即 `READY`（绕过冷却与 FAIL 熔断）；MANUAL 不提交；提交与心跳补 `can_set_ready` | Execution | `user_rework` + `_auto_advance` + runner 准入 | FULL_AUTO submit；deps 门控 | DONE |
 
 ---
 
@@ -344,8 +361,9 @@ Dashboard 选中任务详情区（Task #… / 负荷 / 令牌 / 要求产物 / �
 | 3 | 确认 | **确认框（ii）**；名单来自 Core `dry_run` |
 | 4 | 路径 | **扩 FSM → 用户出口立即 READY → 既有 Execution/Gate** |
 | 5 | 心跳 | 只服务 Gate 打回；补依赖检查；不承接用户重开 |
+| 5b | 连带释放 actor | **`user_rework_release`**（Gate 之后回调用户出口；禁止 `GATE`/`SYSTEM`） |
 | 6 | FSM 例外 | **并入本文 §3.1**：终态集合保留，仅 `user` 可 `ACCEPTED→REWORK` |
 | 7 | 基线 | 旧产物不删、不撤回认领；三件行只随文件匹配变 |
 | 8 | MANUAL | 落到 `READY`，不提交 |
 
-实施前以本文为准。回复 **「方案通过，可以实施」** 后改码。
+实施以本文为准；SYS-143～146 已落地。

@@ -53,6 +53,9 @@ TASK_LEGAL = [
     ("T-V17", TaskStatus.FAILED, TaskStatus.READY),
     ("T-V18", TaskStatus.FAILED, TaskStatus.REWORK),
     ("T-V19", TaskStatus.FAILED, TaskStatus.CANCELLED),
+    # SYS-143: 表上合法；离开 ACCEPTED 仍须 actor=user（见 persist 特判）
+    ("T-V20", TaskStatus.ACCEPTED, TaskStatus.REWORK),
+    ("T-V21", TaskStatus.BLOCKED, TaskStatus.REWORK),
 ]
 
 
@@ -79,6 +82,10 @@ async def test_task_legal_transitions_persist(case_id, from_s, to_s, dbsession):
     # EXECUTION_DONE → ACCEPTED is actor-guarded (D11-TD01): must pass GATE
     if from_s == TaskStatus.EXECUTION_DONE and to_s == TaskStatus.ACCEPTED:
         await fsm.transition_task(t, to_s, actor="GATE")
+    elif from_s == TaskStatus.ACCEPTED and to_s == TaskStatus.REWORK:
+        await fsm.transition_task(t, to_s, actor="user")
+    elif from_s == TaskStatus.BLOCKED and to_s == TaskStatus.REWORK:
+        await fsm.transition_task(t, to_s, actor="user")
     else:
         await fsm.transition_task(t, to_s)
     await dbsession.flush()
@@ -97,7 +104,7 @@ TASK_ILLEGAL = [
     ("T-I04", TaskStatus.RUNNING, TaskStatus.ACCEPTED),
     ("T-I05", TaskStatus.BLOCKED, TaskStatus.ACCEPTED),
     ("T-I06", TaskStatus.FAILED, TaskStatus.ACCEPTED),
-    ("T-I07", TaskStatus.ACCEPTED, TaskStatus.REWORK),
+    # T-I07 ACCEPTED→REWORK 已改为表上合法、仅 user actor（见 SYS-143 用例）
     ("T-I08", TaskStatus.ACCEPTED, TaskStatus.READY),
     ("T-I09", TaskStatus.CANCELLED, TaskStatus.READY),
     ("T-I10", TaskStatus.CANCELLED, TaskStatus.RUNNING),
@@ -129,6 +136,84 @@ async def test_task_illegal_transitions_raise(case_id, from_s, to_s, dbsession):
     # DB state unchanged
     await dbsession.refresh(t)
     assert t.status == from_s
+
+
+# ════════════════════════════════════════════════════════════════════════════
+# SYS-143: ACCEPTED→REWORK 仅 user；SYSTEM/GATE 拒绝；ACCEPTED→READY 仍非法
+# ════════════════════════════════════════════════════════════════════════════
+
+
+@pytest.mark.asyncio
+async def test_accepted_to_rework_user_ok(dbsession):
+    p = Project(name="fsm-user-rework")
+    dbsession.add(p)
+    await dbsession.flush()
+    t = Task(project_id=p.id, name="t", status=TaskStatus.ACCEPTED)
+    dbsession.add(t)
+    await dbsession.flush()
+    await make_fsm(dbsession).transition_task(
+        t, TaskStatus.REWORK, actor="user",
+    )
+    assert t.status == TaskStatus.REWORK
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_actor", ["SYSTEM", "GATE", "WORKER", "user_rework_release"])
+async def test_accepted_to_rework_non_user_rejected(dbsession, bad_actor):
+    p = Project(name="fsm-user-rework-bad")
+    dbsession.add(p)
+    await dbsession.flush()
+    t = Task(project_id=p.id, name="t", status=TaskStatus.ACCEPTED)
+    dbsession.add(t)
+    await dbsession.flush()
+    with pytest.raises(InvalidStateTransitionError):
+        await make_fsm(dbsession).transition_task(
+            t, TaskStatus.REWORK, actor=bad_actor,
+        )
+    await dbsession.refresh(t)
+    assert t.status == TaskStatus.ACCEPTED
+
+
+@pytest.mark.asyncio
+async def test_accepted_to_ready_still_illegal(dbsession):
+    p = Project(name="fsm-no-direct-ready")
+    dbsession.add(p)
+    await dbsession.flush()
+    t = Task(project_id=p.id, name="t", status=TaskStatus.ACCEPTED)
+    dbsession.add(t)
+    await dbsession.flush()
+    with pytest.raises(InvalidStateTransitionError):
+        await make_fsm(dbsession).transition_task(
+            t, TaskStatus.READY, actor="user",
+        )
+
+
+@pytest.mark.asyncio
+async def test_blocked_to_rework_user_ok(dbsession):
+    p = Project(name="fsm-blocked-rework")
+    dbsession.add(p)
+    await dbsession.flush()
+    t = Task(project_id=p.id, name="t", status=TaskStatus.BLOCKED)
+    dbsession.add(t)
+    await dbsession.flush()
+    await make_fsm(dbsession).transition_task(
+        t, TaskStatus.REWORK, actor="user",
+    )
+    assert t.status == TaskStatus.REWORK
+
+
+@pytest.mark.asyncio
+async def test_blocked_to_rework_system_rejected(dbsession):
+    p = Project(name="fsm-blocked-rework-sys")
+    dbsession.add(p)
+    await dbsession.flush()
+    t = Task(project_id=p.id, name="t", status=TaskStatus.BLOCKED)
+    dbsession.add(t)
+    await dbsession.flush()
+    with pytest.raises(InvalidStateTransitionError):
+        await make_fsm(dbsession).transition_task(
+            t, TaskStatus.REWORK, actor="SYSTEM",
+        )
 
 
 # ════════════════════════════════════════════════════════════════════════════

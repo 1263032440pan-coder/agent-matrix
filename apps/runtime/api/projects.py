@@ -863,6 +863,55 @@ async def reclassify_delivery(project_id: int):
     return {"project_id": project_id, "delivery_profile": profile}
 
 
+class UserReworkBody(BaseModel):
+    cascade_hard_downstream: bool = False
+    dry_run: bool = False
+
+
+@router.post("/{project_id}/tasks/{task_id}/user-rework", status_code=200)
+async def user_rework_task(
+    project_id: int, task_id: int, body: UserReworkBody,
+):
+    """SYS-143: 用户单节点 Rework（确认框 dry_run + 提交）。"""
+    from project_runtime.execution.service import ExecutionService
+    from project_runtime.execution.user_rework import (
+        UserReworkConflictError,
+        UserReworkNotFoundError,
+        preview_user_rework,
+        run_user_rework,
+    )
+
+    async with AsyncSession(engine) as session:
+        try:
+            if body.dry_run:
+                out = await preview_user_rework(
+                    session,
+                    project_id,
+                    task_id,
+                    cascade_hard_downstream=body.cascade_hard_downstream,
+                )
+                return out
+            out = await run_user_rework(
+                session,
+                project_id,
+                task_id,
+                cascade_hard_downstream=body.cascade_hard_downstream,
+                submit=False,
+            )
+            await session.commit()
+        except UserReworkNotFoundError as e:
+            raise HTTPException(404, str(e)) from e
+        except UserReworkConflictError as e:
+            raise HTTPException(409, str(e)) from e
+
+    if out.get("should_submit"):
+        try:
+            await ExecutionService().submit(project_id, task_id)
+        except Exception:  # noqa: BLE001
+            logger.debug("user-rework submit failed", exc_info=True)
+    return out
+
+
 @router.get("/{project_id}/agent-thinking")
 async def agent_thinking_stream(
     project_id: int, after_id: int = 0, limit: int = 100,

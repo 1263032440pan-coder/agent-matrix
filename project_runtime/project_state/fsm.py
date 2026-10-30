@@ -27,9 +27,14 @@ _TASK_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
     },
     TaskStatus.EXECUTION_DONE: {TaskStatus.ACCEPTED, TaskStatus.REWORK},
     TaskStatus.REWORK: {TaskStatus.READY, TaskStatus.CANCELLED},
-    TaskStatus.BLOCKED: {TaskStatus.READY, TaskStatus.CANCELLED},
+    TaskStatus.BLOCKED: {
+        TaskStatus.READY,
+        TaskStatus.REWORK,  # SYS-143: 仅 actor=user
+        TaskStatus.CANCELLED,
+    },
     TaskStatus.FAILED: {TaskStatus.READY, TaskStatus.REWORK, TaskStatus.CANCELLED},
-    TaskStatus.ACCEPTED: set(),  # terminal
+    # ACCEPTED 仍属终态集合；表上 ACCEPTED→REWORK 仅供 actor=user（见 transition_task）
+    TaskStatus.ACCEPTED: {TaskStatus.REWORK},
     TaskStatus.CANCELLED: set(),  # terminal
 }
 
@@ -129,6 +134,10 @@ class StateTransitionService:
 
         Actor guard (D11-TD01): EXECUTION_DONE → ACCEPTED is restricted
         to actor == "GATE" (GateCore). All other callers are rejected.
+
+        SYS-143: ACCEPTED → REWORK / BLOCKED → REWORK only when actor == "user".
+        ACCEPTED stays in _TERMINAL_TASK; non-user exits are refused at the
+        terminal guard before the transition table is consulted.
         """
         from_status = task.status
         if isinstance(from_status, str):
@@ -148,17 +157,37 @@ class StateTransitionService:
                 "Task", task.id, from_status.value, to_status.value
             )
 
+        # SYS-143: user-only reopen from ACCEPTED / BLOCKED → REWORK
+        if (
+            from_status in (TaskStatus.ACCEPTED, TaskStatus.BLOCKED)
+            and to_status == TaskStatus.REWORK
+            and actor != "user"
+        ):
+            logger.warning(
+                "ACTOR_GUARD_REJECT task#%s %s -> %s actor=%s",
+                task.id, from_status.value, to_status.value, actor,
+            )
+            raise InvalidStateTransitionError(
+                "Task", task.id, from_status.value, to_status.value
+            )
+
         # Optimistic concurrency guard
         if expected_from is not None and from_status != expected_from:
             raise InvalidStateTransitionError(
                 "Task", task.id, from_status.value, to_status.value
             )
 
-        # Terminal guard
+        # Terminal guard — ACCEPTED stays terminal except user → REWORK
         if from_status in _TERMINAL_TASK:
-            raise InvalidStateTransitionError(
-                "Task", task.id, from_status.value, to_status.value
+            user_reopen = (
+                from_status == TaskStatus.ACCEPTED
+                and to_status == TaskStatus.REWORK
+                and actor == "user"
             )
+            if not user_reopen:
+                raise InvalidStateTransitionError(
+                    "Task", task.id, from_status.value, to_status.value
+                )
 
         result = self.validate_task(from_status, to_status)
         if not result.allowed:

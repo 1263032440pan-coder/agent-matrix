@@ -441,6 +441,46 @@ export async function fetchArtifactContent(
 
 // ── WP-018: manual actions / checkpoints ─────────────────────────────
 
+export type UserReworkPreview = {
+  task_id: number;
+  from_status: string;
+  to_status: string;
+  released: boolean;
+  cascaded_task_ids: number[];
+  skipped_downstream: Array<{
+    task_id: number;
+    status: string;
+    reason: string;
+  }>;
+};
+
+export async function userReworkTask(
+  projectId: number,
+  taskId: number,
+  opts: { cascade_hard_downstream?: boolean; dry_run?: boolean } = {},
+): Promise<UserReworkPreview> {
+  const res = await fetch(
+    `${API_BASE}/api/projects/${projectId}/tasks/${taskId}/user-rework`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        cascade_hard_downstream: opts.cascade_hard_downstream ?? false,
+        dry_run: opts.dry_run ?? false,
+      }),
+    },
+  );
+  if (!res.ok) {
+    const detail = await res.json().catch(() => ({}));
+    throw new Error(
+      typeof detail?.detail === 'string'
+        ? detail.detail
+        : `user-rework failed: ${res.status}`,
+    );
+  }
+  return res.json();
+}
+
 export async function confirmManualAction(actionId: number): Promise<{ status: string }> {
   const res = await fetch(`/api/projects/manual-actions/${actionId}/confirm`, {
     method: 'POST',

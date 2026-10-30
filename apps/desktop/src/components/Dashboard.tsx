@@ -1,7 +1,26 @@
 import { useEffect, useMemo, useState } from 'react';
-import type { DashboardData } from '../api';
-import { fetchDashboard, reclassifyDelivery } from '../api';
+import type { DashboardData, UserReworkPreview } from '../api';
+import { fetchDashboard, reclassifyDelivery, userReworkTask } from '../api';
 import { ArtifactViewer } from './ArtifactViewer';
+
+const REOPEN_STATUSES = new Set([
+  'ACCEPTED',
+  'FAILED',
+  'BLOCKED',
+  'REWORK',
+]);
+
+function hardUpstreamAccepted(
+  task: { id: number; depends_on?: number[] },
+  tasks: Array<{ id: number; status: string }>,
+): boolean {
+  const byId = new Map(tasks.map((t) => [t.id, t]));
+  for (const up of task.depends_on ?? []) {
+    const u = byId.get(up);
+    if (!u || u.status !== 'ACCEPTED') return false;
+  }
+  return true;
+}
 
 function matchHint(match: Record<string, unknown> | null | undefined): string {
   if (!match) return '';
@@ -288,6 +307,13 @@ export function Dashboard({ projectId, paused }: { projectId: number; paused?: b
   // null = auto-follow mode (show current running task); a task id = user
   // pinned selection (clicking the same node again un-pins back to auto).
   const [pinnedTask, setPinnedTask] = useState<number | null>(null);
+  const [reworkOpen, setReworkOpen] = useState(false);
+  const [reworkCascade, setReworkCascade] = useState(false);
+  const [reworkPreview, setReworkPreview] = useState<UserReworkPreview | null>(
+    null,
+  );
+  const [reworkBusy, setReworkBusy] = useState(false);
+  const [reworkErr, setReworkErr] = useState<string | null>(null);
 
   useEffect(() => {
     if (paused) return; // plan/execute in flight — don't contend for SQLite lock
@@ -397,6 +423,67 @@ export function Dashboard({ projectId, paused }: { projectId: number; paused?: b
               <p style={{ color: '#555', fontSize: 13, margin: 0 }}>
                 Task #{selected.id}
               </p>
+              {(() => {
+                const canReopen = REOPEN_STATUSES.has(selected.status);
+                const upsOk = hardUpstreamAccepted(selected, data.tasks);
+                const disabled = !canReopen || !upsOk || reworkBusy;
+                let why = '';
+                if (!canReopen) why = '当前状态不可重开';
+                else if (!upsOk) why = '上游未验收';
+                return (
+                  <div style={{ marginTop: 8 }}>
+                    <button
+                      type="button"
+                      data-testid="task-user-rework"
+                      disabled={disabled}
+                      onClick={async () => {
+                        setReworkErr(null);
+                        setReworkCascade(false);
+                        setReworkBusy(true);
+                        try {
+                          const prev = await userReworkTask(
+                            projectId,
+                            selected.id,
+                            {
+                              cascade_hard_downstream: false,
+                              dry_run: true,
+                            },
+                          );
+                          setReworkPreview(prev);
+                          setReworkOpen(true);
+                        } catch (e) {
+                          setReworkErr(String(e));
+                        } finally {
+                          setReworkBusy(false);
+                        }
+                      }}
+                      style={{
+                        padding: '4px 12px',
+                        fontSize: 13,
+                        cursor: disabled ? 'not-allowed' : 'pointer',
+                        opacity: disabled ? 0.5 : 1,
+                      }}
+                    >
+                      重新执行
+                    </button>
+                    {why ? (
+                      <span
+                        style={{ marginLeft: 8, fontSize: 12, color: '#888' }}
+                      >
+                        {why}
+                      </span>
+                    ) : null}
+                    {reworkErr ? (
+                      <div
+                        role="alert"
+                        style={{ color: '#cf1322', fontSize: 12, marginTop: 4 }}
+                      >
+                        {reworkErr}
+                      </div>
+                    ) : null}
+                  </div>
+                );
+              })()}
               {(selected.task_load != null ||
                 (selected.obligation_token_ids?.length ?? 0) > 0 ||
                 selected.decomposed_from ||
@@ -872,6 +959,147 @@ export function Dashboard({ projectId, paused }: { projectId: number; paused?: b
           artifactId={viewingArtifact}
           onClose={() => setViewingArtifact(null)}
         />
+      )}
+      {reworkOpen && selected && (
+        <div
+          data-testid="task-user-rework-dialog"
+          style={{
+            position: 'fixed',
+            inset: 0,
+            background: 'rgba(0,0,0,0.35)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 1000,
+          }}
+        >
+          <div
+            style={{
+              background: '#fff',
+              borderRadius: 8,
+              padding: 20,
+              maxWidth: 480,
+              width: '90%',
+              boxShadow: '0 8px 24px rgba(0,0,0,0.18)',
+            }}
+          >
+            <h3 style={{ marginTop: 0 }}>重新执行「{selected.name}」？</h3>
+            <ul style={{ fontSize: 13, color: '#444', paddingLeft: 18 }}>
+              <li>本任务进入返工并立即变为可执行；契约与令牌不变。</li>
+              <li>历史产物保留；清单项在文件还在时保持 ✅。</li>
+              <li>已在执行的直接下游不会被打断。</li>
+              <li>MANUAL：确认后变为 READY，不会自动开跑。</li>
+            </ul>
+            <label
+              style={{
+                display: 'flex',
+                gap: 8,
+                alignItems: 'flex-start',
+                fontSize: 13,
+                marginTop: 8,
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={reworkCascade}
+                disabled={reworkBusy}
+                onChange={async (ev) => {
+                  const on = ev.target.checked;
+                  setReworkCascade(on);
+                  setReworkBusy(true);
+                  setReworkErr(null);
+                  try {
+                    const prev = await userReworkTask(projectId, selected.id, {
+                      cascade_hard_downstream: on,
+                      dry_run: true,
+                    });
+                    setReworkPreview(prev);
+                  } catch (e) {
+                    setReworkErr(String(e));
+                  } finally {
+                    setReworkBusy(false);
+                  }
+                }}
+              />
+              <span>
+                连带直接 HARD 下游一并重开（只一层；孙子保持原状）
+              </span>
+            </label>
+            {reworkCascade && reworkPreview && (
+              <div style={{ fontSize: 12, marginTop: 10, color: '#555' }}>
+                <div>
+                  <strong>将打回并等待本任务再次验收：</strong>
+                  {(reworkPreview.cascaded_task_ids ?? [])
+                    .map(
+                      (id) =>
+                        data.tasks.find((t) => t.id === id)?.name ?? `#${id}`,
+                    )
+                    .join('、') || '（无）'}
+                </div>
+                <div style={{ marginTop: 4 }}>
+                  <strong>保持原状：</strong>
+                  {(reworkPreview.skipped_downstream ?? [])
+                    .map((s) => {
+                      const n =
+                        data.tasks.find((t) => t.id === s.task_id)?.name ??
+                        `#${s.task_id}`;
+                      return `${n}(${s.status})`;
+                    })
+                    .join('、') || '（无）'}
+                </div>
+              </div>
+            )}
+            {reworkErr ? (
+              <div role="alert" style={{ color: '#cf1322', fontSize: 12 }}>
+                {reworkErr}
+              </div>
+            ) : null}
+            <div
+              style={{
+                display: 'flex',
+                justifyContent: 'flex-end',
+                gap: 8,
+                marginTop: 16,
+              }}
+            >
+              <button
+                type="button"
+                disabled={reworkBusy}
+                onClick={() => {
+                  setReworkOpen(false);
+                  setReworkPreview(null);
+                }}
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                data-testid="task-user-rework-confirm"
+                disabled={reworkBusy}
+                onClick={async () => {
+                  setReworkBusy(true);
+                  setReworkErr(null);
+                  try {
+                    await userReworkTask(projectId, selected.id, {
+                      cascade_hard_downstream: reworkCascade,
+                      dry_run: false,
+                    });
+                    setReworkOpen(false);
+                    setReworkPreview(null);
+                    const d = await fetchDashboard(projectId);
+                    setData(d);
+                  } catch (e) {
+                    setReworkErr(String(e));
+                  } finally {
+                    setReworkBusy(false);
+                  }
+                }}
+              >
+                确认
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

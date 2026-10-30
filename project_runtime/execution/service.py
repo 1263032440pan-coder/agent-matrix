@@ -151,7 +151,6 @@ class ExecutionRunner:
                 await session.rollback()
                 self._reschedule(execution_id, delay_s=2.0)
                 return
-            await repo.mark_running(ex)
 
             mgr = TaskGraphManager(session)
             task = await mgr.get_task(task_id)
@@ -176,6 +175,17 @@ class ExecutionRunner:
                 task = await mgr.get_task(task_id)
             task_name = task.name
             task_ready = task.status == TaskStatus.READY
+            # SYS-146: HARD 上游未齐则不启动 Worker（任务保持 READY，不 FAILED）
+            if task_ready:
+                try:
+                    deps_ok = await mgr.can_set_ready(task_id)
+                except Exception:  # noqa: BLE001
+                    deps_ok = True
+                if not deps_ok:
+                    await session.rollback()
+                    self._reschedule(execution_id, delay_s=5.0)
+                    return
+            await repo.mark_running(ex)
             # 快照（commit 后 ORM 过期——MissingGreenlet/Detached 老坑）:
             # Phase B-0 选 skill 需要的任务内容 + Agent 绑定需要的 task_type
             task_select_content = _task_select_content(task)
@@ -712,7 +722,18 @@ class ExecutionRunner:
                     .scalars()
                     .all()
                 )
-                ids = [t.id for t in ready_ids]
+                from project_runtime.task_graph.manager import (
+                    TaskGraphManager as _TgmAdv,
+                )
+
+                _mgr_adv = _TgmAdv(session)
+                ids = []
+                for t in ready_ids:
+                    try:
+                        if await _mgr_adv.can_set_ready(t.id):
+                            ids.append(t.id)
+                    except Exception:  # noqa: BLE001
+                        ids.append(t.id)
                 # 返修单-闭环接线 P0-1: REWORK 任务自动接线——
                 # FSM 合法转移 REWORK→READY（fsm.py:29 此前无调用方,
                 # 强制门打回后躺平靠手动拉）。轮次闸: gate FAIL >= 3 不拉
@@ -762,6 +783,12 @@ class ExecutionRunner:
                         _age = 999
                     if _age < 60:
                         continue  # 冷却未过
+                    # SYS-146: 心跳也须 HARD 上游已 ACCEPTED
+                    try:
+                        if not await _mgr_adv.can_set_ready(_rt.id):
+                            continue
+                    except Exception:  # noqa: BLE001
+                        pass
                     from project_runtime.project_state.fsm import (
                         StateTransitionService as _Sts,
                     )
