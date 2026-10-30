@@ -508,11 +508,34 @@ export function Dashboard({ projectId, paused }: { projectId: number; paused?: b
                       令牌：{selected.obligation_token_ids!.join(', ')}
                     </div>
                   )}
-                  {selected.verification_level && (
-                    <div data-testid="task-verify-level">
-                      验证等级：{selected.verification_level}
-                    </div>
-                  )}
+                </div>
+              )}
+              {selected.verification_level && (
+                <div
+                  data-testid="task-verify-level"
+                  style={{ fontSize: 12, color: '#444', marginTop: 6 }}
+                >
+                  验证等级：{selected.verification_level}
+                </div>
+              )}
+              {(selected.rework_count != null
+                || selected.first_pass != null
+                || selected.soft_accepted) && (
+                <div
+                  data-testid="task-delivery-stats"
+                  style={{ fontSize: 12, color: '#444', marginTop: 4 }}
+                >
+                  {selected.first_pass
+                    ? '首轮交付'
+                    : selected.soft_accepted
+                      ? '软放行'
+                      : '非首轮'}
+                  {selected.rework_count != null
+                    ? ` · 返工 ${selected.rework_count} 次`
+                    : ''}
+                  {selected.run_attempt != null
+                    ? ` · attempt ${selected.run_attempt}`
+                    : ''}
                 </div>
               )}
               {selected.delivery_gap?.soft_accepted && (
@@ -774,11 +797,29 @@ export function Dashboard({ projectId, paused }: { projectId: number; paused?: b
           <section data-testid="delivery-status" style={card}>
             <h3 style={{ marginTop: 0 }}>交付基线</h3>
             {data.delivery_quality && (
-              <p data-testid="delivery-quality" style={{ fontSize: 12, color: '#555' }}>
-                软放行 {data.delivery_quality.soft_accepted}/
-                {data.delivery_quality.accepted} 已验收
-                （{Math.round(data.delivery_quality.soft_rate * 100)}%）
-              </p>
+              <div data-testid="delivery-quality" style={{ fontSize: 12, color: '#555' }}>
+                <p style={{ margin: 0 }}>
+                  软放行 {data.delivery_quality.soft_accepted}/
+                  {data.delivery_quality.accepted} 已验收
+                  （{Math.round(data.delivery_quality.soft_rate * 100)}%）
+                  {data.delivery_quality.first_pass != null
+                    ? ` · 首轮 ${data.delivery_quality.first_pass}/${data.delivery_quality.accepted}`
+                      + `（${Math.round((data.delivery_quality.first_pass_rate ?? 0) * 100)}%）`
+                    : ''}
+                  {(data.delivery_quality.truncated ?? 0) > 0
+                    ? ` · 截断修复 ${data.delivery_quality.truncated}`
+                    : ''}
+                </p>
+                {data.delivery_quality.error_codes
+                  && Object.keys(data.delivery_quality.error_codes).length > 0 && (
+                  <p data-testid="delivery-error-codes" style={{ margin: '4px 0 0', color: '#888' }}>
+                    错误码：
+                    {Object.entries(data.delivery_quality.error_codes)
+                      .map(([k, v]) => `${k}×${v}`)
+                      .join(' ')}
+                  </p>
+                )}
+              </div>
             )}
             {data.delivery_profile === 'SOFTWARE_DEV' ? (
               <p>

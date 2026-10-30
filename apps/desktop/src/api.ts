@@ -25,6 +25,11 @@ export interface DashboardData {
     decomposed_from?: string | null;
     /** SYS-159: 只读验证等级，不进 Gate */
     verification_level?: "compile" | "syntax" | "none";
+    /** SYS-161: 节点交付质量 */
+    run_attempt?: number;
+    rework_count?: number;
+    first_pass?: boolean;
+    soft_accepted?: boolean;
     /** SYS-140: 软放行未兑现（预算/返工用尽） */
     delivery_gap?: {
       reason?: string;
@@ -45,6 +50,11 @@ export interface DashboardData {
     accepted: number;
     soft_accepted: number;
     soft_rate: number;
+    first_pass?: number;
+    first_pass_rate?: number;
+    error_codes?: Record<string, number>;
+    truncated?: number;
+    repaired?: number;
   };
   // V1.6d: 冻结校验脚本
   delivery_validator_hash?: string | null;

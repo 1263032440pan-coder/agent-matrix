@@ -149,6 +149,27 @@ class TestShell:
         assert "白名单" not in r.get("error", ""), "git status 不应被白名单拒绝"
         assert "code" in r  # 执行到达（返回码可查）
 
+    @pytest.mark.asyncio
+    async def test_windows_head_and_grep(self, providers, workspace):
+        """SYS-160: Windows 上 head 内建、grep 映射 findstr。"""
+        import os
+
+        import pytest as _pytest
+
+        if os.name != "nt":
+            _pytest.skip("Windows 映射")
+        ws = workspace / "p1" / "t1"
+        h = await providers["shell"].invoke({
+            "command": "head -n 1 doc.md",
+            "workspace": str(ws),
+        })
+        assert h["ok"] and "内容" in h["stdout"]
+        g = await providers["shell"].invoke({
+            "command": "grep hello doc.md",
+            "workspace": str(ws),
+        })
+        assert g["ok"] and "hello" in g.get("stdout", "")
+
 
 class TestCodeSearch:
     @pytest.mark.asyncio

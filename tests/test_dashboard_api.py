@@ -80,6 +80,48 @@ async def test_dashboard_shape(client):
     assert "gap_count" in data
     assert "readiness" in data
     assert "current_task" in data
+    q = data["delivery_quality"]
+    assert q["accepted"] == 0
+    assert q["soft_accepted"] == 0
+    assert q["truncated"] == 0
+    assert q["error_codes"] == {}
+
+
+@pytest.mark.asyncio
+async def test_dashboard_delivery_quality_from_events(client):
+    """SYS-161: error_code 频次与截断修复次数从工具事件聚合。"""
+    import json as _json
+
+    from project_runtime.event.models import RuntimeEvent
+
+    c, eng = client
+    async with AsyncSession(eng) as session:
+        p = Project(name="quality-test")
+        session.add(p)
+        await session.flush()
+        t = Task(project_id=p.id, name="t1", status=TaskStatus.ACCEPTED)
+        session.add(t)
+        await session.flush()
+        session.add(RuntimeEvent(
+            event_type="LLM_TOOL_RESULT",
+            project_id=p.id,
+            task_id=t.id,
+            payload=_json.dumps({"ok": False, "error_code": "TRUNCATED"}),
+        ))
+        session.add(RuntimeEvent(
+            event_type="LLM_TOOL_CALL",
+            project_id=p.id,
+            task_id=t.id,
+            payload=_json.dumps({"tool": "write_file", "repaired": True}),
+        ))
+        pid = p.id
+        await session.commit()
+
+    data = (await c.get(f"/api/projects/{pid}/dashboard")).json()
+    q = data["delivery_quality"]
+    assert q["accepted"] == 1
+    assert q["error_codes"]["TRUNCATED"] == 1
+    assert q["truncated"] == 1
 
 
 # ── WP-018: dashboard 新字段（manual_actions/delivery/frontier）─────

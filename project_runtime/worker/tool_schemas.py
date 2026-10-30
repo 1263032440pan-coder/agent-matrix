@@ -101,7 +101,9 @@ SHELL_SCHEMA = {
     "description": (
         "受限 shell（白名单命令+工作区锁+超时）。允许: ls/cat/head/"
         "tail/find/grep/wc/echo/python/pip list/pytest/npm run/npx/"
-        "git 只读。危险命令与参数注入被拒。运行测试、查看环境、"
+        "git 只读。Windows 下 ls/cat/grep 映射为 dir/type/findstr，"
+        "unix find -name 映射为 dir /s /b，head/tail/wc 由运行时直接实现。"
+        "危险命令与参数注入被拒。运行测试、查看环境、"
         "执行白名单工具时使用；越权需求请改用专用工具。"
         "参数: command, workspace（可选——默认项目工作区）。"
     ),

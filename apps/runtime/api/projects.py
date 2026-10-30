@@ -15,7 +15,11 @@ from sqlalchemy import text as _text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from infrastructure.database import engine
-from project_runtime.project_state.enums import AutomationMode, ProjectStatus
+from project_runtime.project_state.enums import (
+    AutomationMode,
+    GateStatus,
+    ProjectStatus,
+)
 from project_runtime.project_state.models import (
     Artifact,
     GateResult,
@@ -1081,8 +1085,9 @@ async def project_dashboard(project_id: int, session: AsyncSession = Depends(get
                     node_outputs_by_name[n.name] = n.outputs
     except Exception:  # noqa: BLE001
         logger.debug("dashboard node outputs lookup failed", exc_info=True)
-    # SYS-140: 最新 TaskRun.delivery_gap（软放行未兑现）
+    # SYS-140/161: 最新 soft gap + 每节点 attempt/返工次数
     gap_by_task: dict[int, dict] = {}
+    attempt_by_task: dict[int, int] = {}
     try:
         from project_runtime.project_state.models import TaskRun as _TaskRunDash
 
@@ -1096,6 +1101,10 @@ async def project_dashboard(project_id: int, session: AsyncSession = Depends(get
             ).scalars().all()
             seen_tid: set[int] = set()
             for run in run_rows:
+                att = int(getattr(run, "attempt", 1) or 1)
+                prev = attempt_by_task.get(run.task_id, 0)
+                if att > prev:
+                    attempt_by_task[run.task_id] = att
                 if run.task_id in seen_tid:
                     continue
                 seen_tid.add(run.task_id)
@@ -1110,6 +1119,23 @@ async def project_dashboard(project_id: int, session: AsyncSession = Depends(get
                     gap_by_task[run.task_id] = gap
     except Exception:  # noqa: BLE001
         logger.debug("dashboard delivery_gap lookup failed", exc_info=True)
+
+    fail_by_task: dict[int, int] = {}
+    try:
+        if tasks:
+            for tid, n in (
+                await session.execute(
+                    select(GateResult.task_id, func.count(GateResult.id))
+                    .where(
+                        GateResult.task_id.in_([t.id for t in tasks]),
+                        GateResult.status == GateStatus.FAIL,
+                    )
+                    .group_by(GateResult.task_id)
+                )
+            ).all():
+                fail_by_task[int(tid)] = int(n)
+    except Exception:  # noqa: BLE001
+        logger.debug("dashboard gate fail count failed", exc_info=True)
 
     task_list = [
         {
@@ -1128,6 +1154,9 @@ async def project_dashboard(project_id: int, session: AsyncSession = Depends(get
             ),
             "delivery_gap": gap_by_task.get(t.id),
             "verification_level": _verification_level(project_id, t.id),
+            **_task_delivery_stats(
+                t, attempt_by_task, fail_by_task, gap_by_task,
+            ),
             **_task_load_fields(t.playbook_ref),
         }
         for t in tasks
@@ -1231,19 +1260,9 @@ async def project_dashboard(project_id: int, session: AsyncSession = Depends(get
         "delivery_assignment": _delivery_assignment_view(
             manifest, tasks,
         ),
-        "delivery_quality": {
-            "accepted": sum(1 for t in tasks if t.status.value == "ACCEPTED"),
-            "soft_accepted": len(gap_by_task),
-            "soft_rate": (
-                round(
-                    len(gap_by_task)
-                    / max(1, sum(1 for t in tasks if t.status.value == "ACCEPTED")),
-                    3,
-                )
-                if any(t.status.value == "ACCEPTED" for t in tasks)
-                else 0.0
-            ),
-        },
+        "delivery_quality": await _delivery_quality(
+            session, tasks, gap_by_task,
+        ),
         "delivery_status": {
             "ppt": any(
                 (a.name or "").lower().endswith(".pptx") for a in artifacts
@@ -1357,6 +1376,125 @@ def _stage_outputs_of(
         return outs
     # 兼容旧任务：playbook_ref 未透传时，用流程节点 outputs
     return _split_output_blob(ref.get("outputs") or fallback_outputs)
+
+
+def _aggregate_tool_quality(
+    rows: list[tuple[str, str | None]],
+) -> dict:
+    """SYS-161: 从 LLM_TOOL_* 事件聚合 error_code 频次与截断修复次数。"""
+    error_codes: dict[str, int] = {}
+    repaired = 0
+    for etype, payload in rows:
+        if not payload:
+            continue
+        try:
+            data = json.loads(payload)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        if etype == "LLM_TOOL_RESULT":
+            code = data.get("error_code")
+            if code:
+                key = str(code)
+                error_codes[key] = error_codes.get(key, 0) + 1
+        elif etype == "LLM_TOOL_CALL" and data.get("repaired"):
+            repaired += 1
+    return {"error_codes": error_codes, "truncated": repaired, "repaired": repaired}
+
+
+def _task_delivery_stats(
+    task,
+    attempt_by_task: dict[int, int],
+    fail_by_task: dict[int, int],
+    gap_by_task: dict[int, dict],
+) -> dict:
+    """SYS-161: 节点级首轮交付 / 返工次数 / 是否软放行。"""
+    attempt = int(attempt_by_task.get(task.id, 1) or 1)
+    fails = int(fail_by_task.get(task.id, 0) or 0)
+    rework_count = max(0, attempt - 1, fails)
+    soft = bool(gap_by_task.get(task.id))
+    first_pass = (
+        task.status.value == "ACCEPTED" and rework_count == 0 and not soft
+    )
+    return {
+        "run_attempt": attempt,
+        "rework_count": rework_count,
+        "first_pass": first_pass,
+        "soft_accepted": soft,
+    }
+
+
+async def _delivery_quality(session, tasks, gap_by_task: dict) -> dict:
+    """SYS-161: 项目级交付质量只读度量。"""
+    from project_runtime.event.models import RuntimeEvent
+
+    accepted = sum(1 for t in tasks if t.status.value == "ACCEPTED")
+    soft = len(gap_by_task)
+    out = {
+        "accepted": accepted,
+        "soft_accepted": soft,
+        "soft_rate": (
+            round(soft / max(1, accepted), 3) if accepted else 0.0
+        ),
+        "first_pass": 0,
+        "first_pass_rate": 0.0,
+        "error_codes": {},
+        "truncated": 0,
+        "repaired": 0,
+    }
+    task_ids = [t.id for t in tasks]
+    if not task_ids:
+        return out
+    # first_pass：ACCEPTED、无 soft、attempt<=1 且无 Gate FAIL
+    attempt_by: dict[int, int] = {}
+    for tid, att in (
+        await session.execute(
+            select(TaskRun.task_id, func.max(TaskRun.attempt))
+            .where(TaskRun.task_id.in_(task_ids))
+            .group_by(TaskRun.task_id)
+        )
+    ).all():
+        attempt_by[int(tid)] = int(att or 1)
+    fail_by: dict[int, int] = {}
+    for tid, n in (
+        await session.execute(
+            select(GateResult.task_id, func.count(GateResult.id))
+            .where(
+                GateResult.task_id.in_(task_ids),
+                GateResult.status == GateStatus.FAIL,
+            )
+            .group_by(GateResult.task_id)
+        )
+    ).all():
+        fail_by[int(tid)] = int(n)
+    first_pass = 0
+    for t in tasks:
+        if t.status.value != "ACCEPTED" or t.id in gap_by_task:
+            continue
+        att = attempt_by.get(t.id, 1)
+        fails = fail_by.get(t.id, 0)
+        if max(0, att - 1, fails) == 0:
+            first_pass += 1
+    out["first_pass"] = first_pass
+    out["first_pass_rate"] = (
+        round(first_pass / max(1, accepted), 3) if accepted else 0.0
+    )
+    rows = (
+        await session.execute(
+            select(RuntimeEvent.event_type, RuntimeEvent.payload)
+            .where(
+                RuntimeEvent.task_id.in_(task_ids),
+                RuntimeEvent.event_type.in_(
+                    ("LLM_TOOL_RESULT", "LLM_TOOL_CALL"),
+                ),
+            )
+            .order_by(RuntimeEvent.id.desc())
+            .limit(2000)
+        )
+    ).all()
+    out.update(_aggregate_tool_quality([(r[0], r[1]) for r in rows]))
+    return out
 
 
 def _verification_level(project_id: int, task_id: int) -> str:

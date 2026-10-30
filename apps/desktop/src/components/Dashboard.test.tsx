@@ -6,6 +6,7 @@ import type { DashboardData } from '../api';
 vi.mock('../api', () => ({
   fetchDashboard: vi.fn(),
   reclassifyDelivery: vi.fn(),
+  userReworkTask: vi.fn(),
 }));
 
 import { fetchDashboard } from '../api';
@@ -180,5 +181,33 @@ describe('Dashboard 节点要求产物', () => {
         '本节点无强制交付项',
       );
     });
+  });
+
+  it('展示验证等级与交付质量', async () => {
+    vi.mocked(fetchDashboard).mockResolvedValue({
+      ...base,
+      delivery_quality: {
+        accepted: 2,
+        soft_accepted: 1,
+        soft_rate: 0.5,
+        truncated: 3,
+        error_codes: { TRUNCATED: 3 },
+      },
+      tasks: [
+        { ...base.tasks[0], verification_level: 'compile' },
+        base.tasks[1],
+      ],
+    });
+    render(<Dashboard projectId={1} />);
+    const quality = await screen.findByTestId('delivery-quality');
+    expect(quality).toHaveTextContent('软放行 1/2');
+    expect(quality).toHaveTextContent('截断修复 3');
+    expect(screen.getByTestId('delivery-error-codes')).toHaveTextContent(
+      'TRUNCATED×3',
+    );
+    await userEvent.click(screen.getByTestId('task-node-10'));
+    expect(await screen.findByTestId('task-verify-level')).toHaveTextContent(
+      'compile',
+    );
   });
 });

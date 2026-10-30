@@ -88,7 +88,8 @@ class TestSkillZipV110:
             # 补强 A: 纪律总则 + 关键词在前 2000 字符（llm_worker 截取窗口）
             win = sk[:2000]
             assert "执行纪律总则" in win
-            assert "file_rw" in win and "test_runner" in win
+            assert "write_file" in win and "test_runner" in win
+            assert "file_rw" not in win
             assert "README" in win
             # stages 结构化
             assert "- name: 开发实现" in sk

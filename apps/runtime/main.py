@@ -36,10 +36,8 @@ async def lifespan(app: FastAPI):
     await check_db()
     await _check_migration_version()
     await _seed_agent_templates()
-    yield
     # 返修单-可靠性①: REWORK 心跳——60s 扫活跃项目跑 advance。
-    # 实测: FAIL 触发 advance 是一次性的, 冷却 60s 跳过后无后续触发,
-    # REWORK 任务躺平等下一个事件（两次手动拉起的根因）。
+    # 必须在 yield 之前 create_task，否则心跳只在 shutdown 才启动。
     import asyncio as _aio
 
     from sqlalchemy import select as _select
@@ -52,8 +50,8 @@ async def lifespan(app: FastAPI):
         from project_runtime.project_state.enums import TaskStatus
         from project_runtime.project_state.models import Task as _Tk
 
+        await _aio.sleep(2)
         while True:
-            await _aio.sleep(60)
             try:
                 from sqlalchemy.ext.asyncio import AsyncSession as _Asess
 
@@ -69,6 +67,7 @@ async def lifespan(app: FastAPI):
                     await ExecutionRunner()._auto_advance(pid)
             except Exception:  # noqa: BLE001 — 心跳绝不炸主循环
                 pass
+            await _aio.sleep(60)
 
     # 返修单-可靠性②: 僵尸 execution 恢复——runtime 重启后非终态
     # execution 无人消费（实测 exec9 RUNNING 卡 39 分钟, run() 对非
@@ -143,6 +142,10 @@ async def lifespan(app: FastAPI):
         _signal.signal(_signal.SIGINT, _on_term)
     except (ValueError, OSError):
         pass  # 非主线程/平台不支持——atexit 兜底
+
+    yield
+    for t in list(_BACKGROUND_HEARTBEATS):
+        t.cancel()
 
 
 async def _seed_agent_templates() -> None:

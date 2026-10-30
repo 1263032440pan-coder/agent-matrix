@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 import urllib.request
 from pathlib import Path
@@ -376,6 +377,7 @@ class AppendFileProvider(_FileToolBase):
 _SHELL_WHITELIST: dict[str, str | None] = {
     "ls": None, "cat": None, "head": None, "tail": None, "dir": None,
     "type": None,  # Windows 映射自 cat
+    "findstr": None,  # Windows 映射自 grep
     # python/pytest: 特殊哨兵 PATHTOKENS——token 级校验（见 _path_tokens_ok）
     # （批次1 字符集正则含空格和'-', ' -c evil.cfg' 可注入——批次3 修复;
     #   纯正则负向环视要么误伤 'my-file.py' 要么漏 '-c'——函数才是对的）
@@ -413,6 +415,167 @@ def _path_tokens_ok(args: str) -> bool:
         if not re.match(r"^[a-zA-Z0-9_/.:\\-]+$", tok):
             return False
     return True
+
+
+_WIN_TEXT_CMDS = frozenset({"head", "tail", "wc"})
+
+
+def translate_win_shell(cmd_name: str, args: str) -> tuple[str, str]:
+    """SYS-160: Unix 命令 → Windows 等价。不识别则原样返回。"""
+    if cmd_name == "ls":
+        rest = " ".join(t for t in args.split() if not t.startswith("-"))
+        return "dir", rest
+    if cmd_name == "cat":
+        rest = " ".join(t for t in args.split() if not t.startswith("-"))
+        return "type", rest
+    if cmd_name == "grep":
+        return _translate_grep(args)
+    if cmd_name == "find":
+        return _translate_find(args)
+    return cmd_name, args
+
+
+def _translate_grep(args: str) -> tuple[str, str]:
+    flags: list[str] = []
+    rest: list[str] = []
+    toks = args.split()
+    i = 0
+    while i < len(toks):
+        t = toks[i]
+        if t in ("-i", "--ignore-case"):
+            flags.append("/I")
+        elif t in ("-n", "--line-number"):
+            flags.append("/N")
+        elif t.startswith("-"):
+            i += 1
+            continue
+        else:
+            rest.append(t)
+        i += 1
+    if not rest:
+        return "findstr", " ".join(flags)
+    pattern = rest[0].replace('"', "")
+    files = rest[1:] or ["*"]
+    return "findstr", " ".join([*flags, f'/C:"{pattern}"', *files])
+
+
+def _translate_find(args: str) -> tuple[str, str]:
+    toks = args.split()
+    name_pat = None
+    roots: list[str] = []
+    unixish = False
+    i = 0
+    while i < len(toks):
+        t = toks[i]
+        if t in ("-name", "-iname") and i + 1 < len(toks):
+            unixish = True
+            name_pat = toks[i + 1].strip("'\"")
+            i += 2
+            continue
+        if t.startswith("-"):
+            unixish = True
+            i += 1
+            continue
+        roots.append(t)
+        i += 1
+    if not unixish:
+        return "find", args
+    root = roots[0] if roots else "."
+    target = str(Path(root) / name_pat) if name_pat else root
+    return "dir", f"/s /b {target}"
+
+
+def _safe_under(cwd: Path, rel: str) -> Path | None:
+    try:
+        p = (cwd / rel).resolve()
+        p.relative_to(cwd.resolve())
+        return p
+    except (ValueError, OSError):
+        return None
+
+
+def _parse_n_and_path(args: str, default_n: int) -> tuple[int, str] | None:
+    toks = args.split()
+    n = default_n
+    files: list[str] = []
+    i = 0
+    while i < len(toks):
+        t = toks[i]
+        if t in ("-n", "--lines", "-c", "--bytes") and i + 1 < len(toks):
+            try:
+                n = int(toks[i + 1])
+            except ValueError:
+                return None
+            i += 2
+            continue
+        if re.fullmatch(r"-\d+", t):
+            n = int(t[1:])
+            i += 1
+            continue
+        if t.startswith("-"):
+            i += 1
+            continue
+        files.append(t)
+        i += 1
+    if not files:
+        return None
+    return n, files[0]
+
+
+def run_win_text_cmd(cmd_name: str, args: str, cwd: Path) -> dict:
+    """Windows 上用纯 Python 实现 head/tail/wc，避免 Unix 二进制缺失。"""
+    if cmd_name in ("head", "tail"):
+        parsed = _parse_n_and_path(args, 10)
+        if parsed is None:
+            return tool_error(
+                "INVALID_ARGS",
+                f"{cmd_name} 参数无法解析",
+                f"示例: {cmd_name} -n 20 file.txt",
+            )
+        n, rel = parsed
+        path = _safe_under(cwd, rel)
+        if path is None or not path.is_file():
+            return tool_error("NOT_FOUND", f"文件不存在: {rel}")
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines(
+            keepends=True,
+        )
+        out = "".join(lines[:n] if cmd_name == "head" else lines[-n:])
+        return {"ok": True, "code": 0, "stdout": out[:_OUTPUT_LIMIT], "stderr": ""}
+
+    toks = args.split()
+    mode = "all"
+    files: list[str] = []
+    for t in toks:
+        if t in ("-l", "--lines"):
+            mode = "l"
+        elif t in ("-w", "--words"):
+            mode = "w"
+        elif t in ("-c", "--bytes"):
+            mode = "c"
+        elif t.startswith("-"):
+            continue
+        else:
+            files.append(t)
+    if not files:
+        return tool_error(
+            "INVALID_ARGS", "wc 需要文件路径", "示例: wc -l file.txt",
+        )
+    path = _safe_under(cwd, files[0])
+    if path is None or not path.is_file():
+        return tool_error("NOT_FOUND", f"文件不存在: {files[0]}")
+    text = path.read_text(encoding="utf-8", errors="replace")
+    n_lines = text.count("\n") + (0 if not text or text.endswith("\n") else 1)
+    n_words = len(text.split())
+    n_bytes = path.stat().st_size
+    if mode == "l":
+        out = str(n_lines)
+    elif mode == "w":
+        out = str(n_words)
+    elif mode == "c":
+        out = str(n_bytes)
+    else:
+        out = f"{n_lines} {n_words} {n_bytes}"
+    return {"ok": True, "code": 0, "stdout": out[:_OUTPUT_LIMIT], "stderr": ""}
 
 
 class ShellProvider:
@@ -457,14 +620,19 @@ class ShellProvider:
         parts = command.split(maxsplit=1)
         cmd_name = parts[0].lower()
         args = parts[1] if len(parts) > 1 else ""
-        # SYS-160: Windows 把常见 Unix 命令映射到等价命令
-        import os as _os
-
-        if _os.name == "nt":
-            mapped = {"ls": "dir", "cat": "type"}.get(cmd_name)
-            if mapped:
-                cmd_name = mapped
-                command = mapped + ((" " + args) if args else "")
+        # SYS-160: Windows 把常见 Unix 命令映射到等价命令，或内建实现
+        win_text = False
+        if os.name == "nt":
+            if cmd_name in _WIN_TEXT_CMDS:
+                win_text = True
+            else:
+                mapped_name, mapped_args = translate_win_shell(cmd_name, args)
+                if mapped_name != cmd_name or mapped_args != args:
+                    cmd_name = mapped_name
+                    args = mapped_args
+                    command = (
+                        mapped_name + ((" " + mapped_args) if mapped_args else "")
+                    )
         # 返修V3 批C: skill 固定脚本绝对路径白名单（仍过 PATHTOKENS）
         skill_script_ok = False
         if cmd_name in ("python", "python3"):
@@ -476,9 +644,11 @@ class ShellProvider:
             except Exception:  # noqa: BLE001
                 skill_script_ok = False
         if cmd_name not in _SHELL_WHITELIST and not skill_script_ok:
-            return {"ok": False,
-                    "error": f"命令不在白名单: {cmd_name}（允许: "
-                             f"{sorted(_SHELL_WHITELIST)[:8]}…）"}
+            return tool_error(
+                "NOT_WHITELISTED",
+                f"命令不在白名单: {cmd_name}（允许: "
+                f"{sorted(_SHELL_WHITELIST)[:8]}…）",
+            )
         pattern = _SHELL_WHITELIST.get(cmd_name)
         if skill_script_ok:
             # 白名单脚本: 第一参为绝对路径，其后仍禁 -flag
@@ -496,6 +666,8 @@ class ShellProvider:
         # ② 注入黑名单（cd 绝对路径/危险命令）
         if _SHELL_FORBIDDEN.search(command):
             return {"ok": False, "error": "命令含禁用模式（工作区逃逸/危险操作）"}
+        if win_text:
+            return run_win_text_cmd(cmd_name, args, cwd)
 
         # ③ 受限执行
         import subprocess
