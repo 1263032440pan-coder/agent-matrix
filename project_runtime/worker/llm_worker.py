@@ -42,6 +42,19 @@ _BUDGET_GRACE_NUDGE = (
     "（做到哪、缺什么），不要再调用工具。"
 )
 
+# 思维链语言：与规划侧一致，强制中文 reasoning（不影响工具/代码标识符）
+_WORKER_ROLE_PROMPT = (
+    "你是项目开发智能体，按任务契约交付。"
+    "历史任务卡片供参考，不要复述。"
+    "推理与思维链一律使用中文；交付正文直接给结果，勿把思考过程写入正式回复。"
+)
+_WORKER_TASK_TRAILER = (
+    "请完成上述任务，输出具体的交付内容（markdown 格式）。"
+    "正式回复（content）不要输出思考过程，直接给出结果。"
+    "内部推理与思维链（reasoning）一律使用中文；"
+    "代码、路径、工具参数保持原样（可为英文）。"
+)
+
 
 class DeliveryBaselineError(RuntimeError):
     """交付基线校验失败（篡改等硬故障）——Worker 应 success=False → Task FAILED。"""
@@ -692,6 +705,13 @@ class LLMWorkerAdapter(WorkerAdapter):
                 "（目录内文件名可中可英，但必须落在该目录下）：\n- "
                 + "\n- ".join(uniq)
             )
+            if any("source_code" in d.replace("\\", "/") for d in uniq):
+                prompt_parts.append(
+                    "【源码硬约束】「项目源码」必须以真实代码文件交付"
+                    "（.py/.ts/.js/.java 等），写在 backend/、src/ 或 "
+                    "deliverables/source_code/ 下；"
+                    "禁止仅用 .md 说明文档冒充源码已完成。"
+                )
         # 令牌硬清单：避免只埋头写工程却漏 readme / 扩展名
         try:
             raw_ref2 = getattr(wp, "playbook_ref", None)
@@ -732,10 +752,7 @@ class LLMWorkerAdapter(WorkerAdapter):
             )
         except Exception:  # noqa: BLE001
             pass
-        prompt_parts.append(
-            "\n请完成上述任务，输出具体的交付内容（markdown 格式）。"
-            "不要输出思考过程，直接给出结果。"
-        )
+        prompt_parts.append("\n" + _WORKER_TASK_TRAILER)
 
         task_id = getattr(wp, "task_id", None)
 
@@ -797,10 +814,7 @@ class LLMWorkerAdapter(WorkerAdapter):
                 ]
                 messages, context_stats = await assembler.assemble(
                     session_store,
-                    role_prompt=(
-                        "你是项目开发智能体，按任务契约交付。"
-                        "历史任务卡片供参考，不要复述。"
-                    ),
+                    role_prompt=_WORKER_ROLE_PROMPT,
                     current_task=None,
                     current_payload=current_payload,
                 )
@@ -901,6 +915,17 @@ class LLMWorkerAdapter(WorkerAdapter):
             content_parts: list[str] = []
             tool_calls: list[dict] = []
             think_buf = ""
+            answer_buf = ""
+            saw_chunk = False
+            from project_runtime.event.activity import emit_activity
+
+            await emit_activity(
+                getattr(self, "_current_project_id", None),
+                "等待模型输出…",
+                task_id=task_id,
+                phase="llm_wait",
+                agent=getattr(self, "_current_agent", None),
+            )
             async for chunk in stream:
                 delta = chunk.choices[0].delta if chunk.choices else None
                 if delta is None:
@@ -908,6 +933,8 @@ class LLMWorkerAdapter(WorkerAdapter):
                 rc = getattr(delta, "reasoning_content", None) or ""
                 cc = delta.content or ""
                 tcs = getattr(delta, "tool_calls", None) or []
+                if rc or cc or tcs:
+                    saw_chunk = True
                 if rc:
                     reasoning_parts.append(rc)
                     think_buf += rc
@@ -923,6 +950,16 @@ class LLMWorkerAdapter(WorkerAdapter):
                 if cc:
                     content_parts.append(cc)
                     _rescue_parts["content"].append(cc)
+                    answer_buf += cc
+                    if len(answer_buf) >= 80 or "\n" in answer_buf:
+                        await _emit_cot(
+                            task_id, "answer", answer_buf,
+                            agent=getattr(self, "_current_agent", None),
+                            project_id=getattr(
+                                self, "_current_project_id", None
+                            ),
+                        )
+                        answer_buf = ""
                 # 工具调用增量拼装（流式下分片到达）
                 for tc in tcs:
                     idx = tc.index or 0
@@ -938,12 +975,25 @@ class LLMWorkerAdapter(WorkerAdapter):
                         tool_calls[idx]["arguments"] += tc.function.arguments
             if think_buf:
                 await _emit_cot(
-                            task_id, "thinking", think_buf,
-                            agent=getattr(self, "_current_agent", None),
-                            project_id=getattr(
-                                self, "_current_project_id", None
-                            ),
-                        )
+                    task_id, "thinking", think_buf,
+                    agent=getattr(self, "_current_agent", None),
+                    project_id=getattr(self, "_current_project_id", None),
+                )
+            if answer_buf:
+                await _emit_cot(
+                    task_id, "answer", answer_buf,
+                    agent=getattr(self, "_current_agent", None),
+                    project_id=getattr(self, "_current_project_id", None),
+                )
+            if not saw_chunk:
+                await emit_activity(
+                    getattr(self, "_current_project_id", None),
+                    "模型流结束但无内容，可能网关空响应",
+                    task_id=task_id,
+                    phase="llm_empty",
+                    agent=getattr(self, "_current_agent", None),
+                    throttle=False,
+                )
 
             content = "".join(content_parts)
             if not tool_calls:
@@ -981,6 +1031,15 @@ class LLMWorkerAdapter(WorkerAdapter):
                             })
                             continue
                 # V1.6c Claude Stop: 清单 match 硬闸（兼容 legacy tags）
+                from project_runtime.event.activity import emit_activity
+
+                await emit_activity(
+                    getattr(self, "_current_project_id", None),
+                    "交付硬闸校验中…",
+                    task_id=task_id,
+                    phase="delivery_stop",
+                    agent=getattr(self, "_current_agent", None),
+                )
                 report = await self._delivery_stop_report(wp)
                 problems = list(report.problems)
                 if problems:
@@ -1525,16 +1584,22 @@ class LLMWorkerAdapter(WorkerAdapter):
         if not ok and result:
             payload["error_code"] = result.get("error_code")
             payload["error"] = str(result.get("error") or "")[:300]
+        short = name.removeprefix("tool:")
+        text = (
+            f"⚙ 工具完成 {short} "
+            f"{'成功' if ok else '失败'}"
+            f"（{payload['duration_ms']}ms）"
+        )
+        if payload.get("error_code"):
+            text += f" [{payload['error_code']}]"
+        payload["text"] = text
         try:
             await EventEngine().record(
                 RuntimeEventType.LLM_TOOL_RESULT,
+                project_id=getattr(self, "_current_project_id", None),
                 task_id=task_id,
                 phase="LLM_TOOL",
-                message=(
-                    f"{name} ok={ok}"
-                    + (f" [{payload['error_code']}]"
-                       if payload.get("error_code") else "")
-                ),
+                message=text[:120],
                 actor="WORKER",
                 payload=payload,
             )
@@ -1548,10 +1613,13 @@ class LLMWorkerAdapter(WorkerAdapter):
         """工具调用审计事件：只记参数要点与长度，不记正文。"""
         from project_runtime.event import EventEngine, RuntimeEventType
 
-        if name == "web_search":
+        short = name.removeprefix("tool:")
+        if name == "web_search" or short == "web_search":
             query = str(args.get("query", ""))[:300]
-            message = f"web_search: {query[:100]}"
-            payload: dict = {"tool": name, "query": query, "round": round_no}
+            text = f"⚙ 调用工具 web_search：{query[:80]}"
+            payload: dict = {
+                "tool": name, "query": query, "round": round_no, "text": text,
+            }
         else:
             path = str(args.get("path") or args.get("filename") or "")[:300]
             kind = str(
@@ -1559,6 +1627,11 @@ class LLMWorkerAdapter(WorkerAdapter):
                 or args.get("runner") or ""
             )[:50]
             body = args.get("content", args.get("markdown"))
+            text = f"⚙ 调用工具 {short}"
+            if path:
+                text += f"：{path}"
+            elif kind:
+                text += f"：{kind}"
             payload = {
                 "tool": name,
                 "round": round_no,
@@ -1567,16 +1640,17 @@ class LLMWorkerAdapter(WorkerAdapter):
                 "content_chars": None if body is None else len(str(body)),
                 "arg_keys": sorted(k for k in args if not k.startswith("__")),
                 "repaired": repaired,
+                "text": text,
             }
             if raw_chars is not None:
                 payload["raw_chars"] = raw_chars
-            message = f"{name}: {path or kind}"[:200]
         try:
             await EventEngine().record(
                 RuntimeEventType.LLM_TOOL_CALL,
+                project_id=getattr(self, "_current_project_id", None),
                 task_id=task_id,
                 phase="LLM_TOOL",
-                message=message,
+                message=text[:120],
                 actor="LLM",
                 payload=payload,
             )

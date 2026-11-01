@@ -146,10 +146,17 @@ def _make_fixture_files(root: Path, manifest: dict, *, filled: bool) -> None:
         if not ext.startswith("."):
             ext = f".{ext}"
         slot = match.get("slot")
+        code_scan = bool(match.get("code_scan")) or slot == "source_code"
         rel_dir = match.get("rel_dir") or (
             f"deliverables/{slot}" if slot else ""
         )
-        if slot and rel_dir:
+        if code_scan:
+            # 全树命中：落在 backend/，避免仅靠槽目录冒烟
+            dest = root / "backend"
+            dest.mkdir(parents=True, exist_ok=True)
+            src_ext = ext if ext not in {".md", ".txt", ".rst", ".adoc"} else ".py"
+            (dest / f"fixture{src_ext}").write_text("fixture", encoding="utf-8")
+        elif slot and rel_dir:
             dest = root / Path(str(rel_dir).replace("\\", "/"))
             dest.mkdir(parents=True, exist_ok=True)
             (dest / f"fixture{ext}").write_text("fixture", encoding="utf-8")
@@ -340,27 +347,44 @@ def _in_slot(path, rel_dir):
     return ("/" + pl + "/").find("/" + rl + "/") >= 0
 
 
+_DOC_ONLY = {{".md", ".txt", ".rst", ".adoc"}}
+_DEFAULT_SRC = [".py", ".ts", ".js", ".tsx", ".jsx", ".java", ".go", ".rs", ".toml", ".json"]
+
+
 def check_match(paths, match):
     problems = []
     min_count = int(match.get("min_count") or 1)
     hits = list(paths)
     slot = match.get("slot")
+    exts = list(match.get("ext") or [])
+    code_scan = bool(match.get("code_scan")) or slot == "source_code"
     rel_dir = match.get("rel_dir") or (("deliverables/" + str(slot)) if slot else "")
-    if slot:
-        hits = [n for n in hits if _in_slot(n, rel_dir)]
-    if "ext" in match:
-        exts = match["ext"]
-        hits = [n for n in hits if any(Path(str(n)).name.lower().endswith(e) for e in exts)]
-    if (not slot) and "name_contains" in match:
-        needles = match["name_contains"]
-        hits = [n for n in hits if any(nd in Path(str(n)).name for nd in needles)]
+    if code_scan and exts:
+        code_exts = [e for e in exts if str(e).lower() not in _DOC_ONLY] or list(_DEFAULT_SRC)
+        hits = [
+            n for n in hits
+            if any(Path(str(n)).name.lower().endswith(e) for e in code_exts)
+        ]
+    else:
+        if slot:
+            hits = [n for n in hits if _in_slot(n, rel_dir)]
+        if exts:
+            hits = [
+                n for n in hits
+                if any(Path(str(n)).name.lower().endswith(e) for e in exts)
+            ]
+        if (not slot) and "name_contains" in match:
+            needles = match["name_contains"]
+            hits = [n for n in hits if any(nd in Path(str(n)).name for nd in needles)]
     if len(hits) < min_count:
         bits = []
-        if slot:
+        if code_scan:
+            bits.append("真实源码文件（全树，不含仅文档后缀）")
+        elif slot:
             bits.append("slot=" + str(rel_dir) + "/")
         if match.get("ext"):
             bits.append("ext=" + str(match["ext"]))
-        if (not slot) and match.get("name_contains"):
+        if (not slot) and (not code_scan) and match.get("name_contains"):
             bits.append("contains=" + str(match["name_contains"]))
         problems.append("缺少满足条件的文件（需>=" + str(min_count) + "）：" + "、".join(bits))
     if "any_name_prefix" in match:
@@ -438,8 +462,10 @@ async def extract_validator_source_from_llm(
         "eval/exec。\n"
         "6. 必须含 if __name__ == '__main__':\n"
         "7. 对每个 id 按清单 match（ext/slot/rel_dir/name_contains/"
-        "any_name_prefix/min_count）检查；有 slot 时用相对路径落在 "
-        "rel_dir（默认 deliverables/{{slot}}）下计数，不得弱于 match。\n"
+        "any_name_prefix/min_count/code_scan）检查；有 slot 且无 "
+        "code_scan 时用相对路径落在 rel_dir（默认 deliverables/{{slot}}）"
+        "下计数；code_scan 或 slot=source_code 时按源码后缀全树扫描"
+        "（backend/src 等），不得仅用 .md 冒充源码，不得弱于 match。\n"
         "可参考下列示例结构（允许等价实现）：\n"
         f"```python\n{example[:3500]}\n```\n\n"
         f"【清单 JSON】\n{json.dumps(manifest, ensure_ascii=False)[:4000]}\n\n"
@@ -494,21 +520,52 @@ async def generate_and_install_validator(
     """清旧 → 生成/覆盖源码 → 静态门 → 差分冒烟 → 落盘。返回 hash。
 
     source_override: 测试注入合法脚本，跳过 LLM。
+    无 override 时：先试 LLM 脚本；冒烟失败则回退确定性 match 引擎脚本。
     """
     clear_validator_files(project_id)
     try:
+        candidates: list[tuple[str, str]] = []
         if source_override is not None:
-            source = source_override
+            candidates.append(("override", source_override))
         else:
-            source = await extract_validator_source_from_llm(
-                manifest=manifest,
-                materials_text=materials_text,
-                skill_hint=skill_hint,
+            try:
+                llm_src = await extract_validator_source_from_llm(
+                    manifest=manifest,
+                    materials_text=materials_text,
+                    skill_hint=skill_hint,
+                )
+                candidates.append(("llm", llm_src))
+            except DeliveryValidatorError as e:
+                logger.warning(
+                    "validator LLM extract failed, will try deterministic: %s",
+                    e.message,
+                )
+            candidates.append(
+                ("deterministic", render_match_validator_source(manifest)),
             )
-        static_check_source(source)
-        path, digest = write_validator_atomic(project_id, source)
-        await differential_smoke(path, manifest)
-        return digest
+
+        last_err: DeliveryValidatorError | None = None
+        for label, source in candidates:
+            try:
+                static_check_source(source)
+                path, digest = write_validator_atomic(project_id, source)
+                await differential_smoke(path, manifest)
+                if label == "deterministic" and source_override is None:
+                    logger.warning(
+                        "project %s: installed deterministic validator "
+                        "after LLM/override smoke path failed",
+                        project_id,
+                    )
+                return digest
+            except DeliveryValidatorError as e:
+                last_err = e
+                clear_validator_files(project_id)
+                logger.warning(
+                    "validator candidate %s failed smoke/static: %s",
+                    label, e.message,
+                )
+                continue
+        raise last_err or DeliveryValidatorError("校验脚本安装失败：无可用候选")
     except DeliveryValidatorError:
         clear_validator_files(project_id)
         raise

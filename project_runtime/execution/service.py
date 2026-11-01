@@ -588,9 +588,17 @@ class ExecutionRunner:
         # downstream tasks get unblocked by promote_to_ready on the next pass.
         if success:
             try:
+                from project_runtime.event.activity import emit_activity
                 from project_runtime.project_state.models import Task as TaskModel
                 from project_runtime.reviewer.gate import GateCore
 
+                await emit_activity(
+                    project_id,
+                    "质量关卡评估中…",
+                    task_id=task_id,
+                    phase="gate",
+                    throttle=False,
+                )
                 async with AsyncSession(engine) as session:
                     gate = GateCore(session)
                     result = await gate.evaluate(task_id)

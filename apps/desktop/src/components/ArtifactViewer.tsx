@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { fetchArtifactContent, type ArtifactContent } from '../api';
 
-/** 产物内容模态预览：展示 markdown 全文 + 元数据（路径/版本/hash/大小）。 */
+/** 产物内容模态预览：展示全文 + 元数据（路径/版本/hash/大小）。 */
 export function ArtifactViewer({
   artifactId,
   onClose,
@@ -20,6 +20,7 @@ export function ArtifactViewer({
 
   return (
     <div
+      data-testid="artifact-viewer"
       onClick={onClose}
       style={{
         position: 'fixed',
@@ -33,58 +34,87 @@ export function ArtifactViewer({
       }}
     >
       <div
+        data-testid="artifact-panel"
         onClick={(e) => e.stopPropagation()}
         style={{
-          background: '#fff',
+          background: 'var(--ui-bg-elevated)',
+          color: 'var(--ui-text)',
+          border: '1px solid var(--ui-stroke)',
           borderRadius: 8,
           maxWidth: '80vw',
           width: 900,
           maxHeight: '85vh',
           display: 'flex',
           flexDirection: 'column',
+          minHeight: 0,
           boxShadow: '0 8px 40px rgba(0,0,0,0.3)',
         }}
       >
         <div
           style={{
             padding: '12px 20px',
-            borderBottom: '1px solid #eee',
+            borderBottom: '1px solid var(--ui-stroke)',
             display: 'flex',
             justifyContent: 'space-between',
             alignItems: 'center',
             gap: 12,
+            flexShrink: 0,
           }}
         >
-          <div>
+          <div style={{ minWidth: 0 }}>
             <strong>{data?.name ?? '加载中…'}</strong>
             {data && (
-              <span style={{ marginLeft: 10, fontSize: 12, color: '#999' }}>
+              <span
+                style={{
+                  marginLeft: 10,
+                  fontSize: 12,
+                  color: 'var(--ui-text-muted)',
+                }}
+              >
                 v{data.version} · {(data.size_bytes / 1024).toFixed(1)}KB ·{' '}
                 {data.sha256?.slice(0, 8)}… · {data.path}
               </span>
             )}
           </div>
-          <button onClick={onClose} style={{ padding: '4px 12px' }}>
+          <button
+            type="button"
+            className="ui-btn"
+            onClick={onClose}
+            style={{ flexShrink: 0 }}
+          >
             关闭
           </button>
         </div>
         <div
+          data-testid="artifact-body"
           style={{
-            padding: '8px 20px 20px',
+            flex: 1,
+            minHeight: 0,
+            padding: '12px 20px 20px',
             overflowY: 'auto',
+            overflowX: 'auto',
             fontSize: 13,
             lineHeight: 1.7,
+            color: 'var(--ui-text)',
           }}
         >
-          {error && <div style={{ color: '#f5222d' }}>{error}</div>}
-          {!data && !error && <p style={{ color: '#999' }}>读取产物内容…</p>}
+          {error && (
+            <div style={{ color: 'var(--ui-danger, #f5222d)' }}>{error}</div>
+          )}
+          {!data && !error && (
+            <p style={{ color: 'var(--ui-text-muted)' }}>读取产物内容…</p>
+          )}
           {data && (
             <pre
+              data-testid="artifact-pre"
               style={{
                 whiteSpace: 'pre-wrap',
                 wordBreak: 'break-word',
                 margin: 0,
-                fontFamily: 'inherit',
+                fontFamily:
+                  'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+                color: 'var(--ui-text)',
+                background: 'transparent',
               }}
             >
               {data.content}

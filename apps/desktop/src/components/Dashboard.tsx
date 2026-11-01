@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { DashboardData, UserReworkPreview } from '../api';
-import { fetchDashboard, reclassifyDelivery, userReworkTask } from '../api';
+import { fetchDashboard, userReworkTask } from '../api';
 import { ArtifactViewer } from './ArtifactViewer';
 
 const REOPEN_STATUSES = new Set([
@@ -300,13 +300,26 @@ export function TaskGraphView({
   );
 }
 
-export function Dashboard({ projectId, paused }: { projectId: number; paused?: boolean }) {
+export function Dashboard({
+  projectId,
+  paused,
+  onExecute,
+  onPlan,
+  busy,
+}: {
+  projectId: number;
+  paused?: boolean;
+  onExecute?: () => void;
+  onPlan?: () => void;
+  busy?: boolean;
+}) {
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [viewingArtifact, setViewingArtifact] = useState<number | null>(null);
   // null = auto-follow mode (show current running task); a task id = user
   // pinned selection (clicking the same node again un-pins back to auto).
   const [pinnedTask, setPinnedTask] = useState<number | null>(null);
+  const [detailOpen, setDetailOpen] = useState(false);
   const [reworkOpen, setReworkOpen] = useState(false);
   const [reworkCascade, setReworkCascade] = useState(false);
   const [reworkPreview, setReworkPreview] = useState<UserReworkPreview | null>(
@@ -316,14 +329,18 @@ export function Dashboard({ projectId, paused }: { projectId: number; paused?: b
   const [reworkErr, setReworkErr] = useState<string | null>(null);
 
   useEffect(() => {
-    if (paused) return; // plan/execute in flight — don't contend for SQLite lock
+    if (paused) return; // execute 短请求期间暂停；规划中应继续拉任务图
     let cancelled = false;
     const load = () =>
       fetchDashboard(projectId)
-        .then((d) => !cancelled && setData(d))
+        .then((d) => {
+          if (!cancelled) {
+            setData(d);
+            setError(null);
+          }
+        })
         .catch((e) => {
-          // SQLite lock contention during execute: keep last data, retry next tick
-          if (!cancelled && !data) setError(String(e));
+          if (!cancelled) setError(String(e));
         });
     load();
     const timer = setInterval(load, 10000); // 10s polling (SQLite lock contention)
@@ -331,9 +348,9 @@ export function Dashboard({ projectId, paused }: { projectId: number; paused?: b
       cancelled = true;
       clearInterval(timer);
     };
-  }, [projectId, data]);
+  }, [projectId, paused]);
 
-  if (error) return <div role="alert">Error: {error}</div>;
+  if (error && !data) return <div role="alert">Error: {error}</div>;
   if (!data) return <div>Loading dashboard…</div>;
 
   // Dependency edges from TaskDependency (depends_on = upstream ids)
@@ -354,57 +371,92 @@ export function Dashboard({ projectId, paused }: { projectId: number; paused?: b
   const isAutoFollow = pinnedTask === null;
 
   const card: React.CSSProperties = {
-    background: '#fff',
-    border: '1px solid #e5e7eb',
-    borderRadius: 8,
-    padding: 16,
+    background: 'var(--ui-bg-elevated)',
+    border: '1px solid var(--ui-stroke-muted)',
+    borderRadius: 4,
+    padding: 12,
+    height: '100%',
+    display: 'flex',
+    flexDirection: 'column',
+    minHeight: 0,
+    overflow: 'hidden',
   };
 
   return (
     <div
+      data-testid="dashboard-workbench"
       style={{
-        padding: 24,
-        fontFamily: 'sans-serif',
-        background: '#f5f6f8',
-        minHeight: '100vh',
+        height: '100%',
+        minHeight: 0,
+        display: 'flex',
+        flexDirection: 'column',
+        overflow: 'hidden',
         textAlign: 'left',
+        background: 'var(--ui-bg)',
       }}
     >
-      <header style={{ marginBottom: 16 }}>
-        <h2 style={{ margin: 0 }}>
-          {data.project.name} <StatusTag status={data.project.status} />{' '}
-          <small style={{ color: '#888' }}>({data.project.automation_mode})</small>
-        </h2>
-      </header>
-
-      <div
-        style={{
-          display: 'grid',
-          gridTemplateColumns: 'minmax(0, 2fr) minmax(260px, 1fr)',
-          gap: 16,
-          alignItems: 'start',
-        }}
-      >
+      <div style={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
         <section data-testid="task-graph" style={card}>
-          <h3 style={{ marginTop: 0 }}>Task Graph</h3>
+          <div
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 8,
+              marginBottom: 8,
+              flexShrink: 0,
+            }}
+          >
+            <span style={{ fontSize: 12, color: 'var(--ui-text-muted)' }}>
+              {data.project.name}
+            </span>
+            <div style={{ flex: 1 }} />
+            <button type="button" className="ui-btn" disabled={busy || !onPlan} onClick={onPlan}>
+              重新生成计划
+            </button>
+            <button
+              type="button"
+              className="ui-btn ui-btn-primary"
+              data-testid="graph-execute"
+              disabled={busy || !onExecute}
+              onClick={onExecute}
+            >
+              执行项目
+            </button>
+          </div>
+          <div style={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
           <TaskGraphView
             tasks={data.tasks}
             deps={deps}
             onSelect={(id) => {
-              // Click: pin this node; click again: unpin → back to auto-follow
               if (pinnedTask === id) {
                 setPinnedTask(null);
+                setDetailOpen(false);
               } else {
                 setPinnedTask(id);
+                setDetailOpen(true);
               }
             }}
             selectedId={focusId}
           />
-          {selected && (
+          </div>
+          {selected && detailOpen && (
             <div
-              data-testid="task-detail"
-              style={{ marginTop: 12, borderTop: '1px solid #eee', paddingTop: 12 }}
+              className="overlay-backdrop"
+              data-testid="task-detail-overlay"
+              onClick={(e) => {
+                if (e.target === e.currentTarget) setDetailOpen(false);
+              }}
             >
+            <div
+              className="overlay-panel"
+              data-testid="task-detail"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                <button type="button" className="ui-btn" onClick={() => setDetailOpen(false)}>
+                  关闭
+                </button>
+              </div>
               <h4 style={{ margin: '4px 0' }}>
                 {selected.name} <StatusTag status={selected.status} />{' '}
                 <span
@@ -775,238 +827,11 @@ export function Dashboard({ projectId, paused }: { projectId: number; paused?: b
                 );
               })()}
             </div>
+            </div>
           )}
         </section>
-
-        <div style={{ display: 'grid', gap: 16 }}>
-          <section data-testid="readiness" style={card}>
-            <h3 style={{ marginTop: 0 }}>Method Readiness</h3>
-            <p>{data.readiness ? `Assessment v${data.readiness.version}` : 'No assessment yet'}</p>
-            <p>Gap Count: {data.gap_count}</p>
-          </section>
-
-          <section data-testid="current-task" style={card}>
-            <h3 style={{ marginTop: 0 }}>Current Task</h3>
-            <p>{data.current_task ? data.current_task.name : 'None running'}</p>
-            <p>
-              Workers: {data.worker_status.running} running / {data.worker_status.ready} ready
-            </p>
-          </section>
-
-          {/* V1.6 序6: 交付画像标识 + 三件状态行 + 重新判定入口 */}
-          <section data-testid="delivery-status" style={card}>
-            <h3 style={{ marginTop: 0 }}>交付基线</h3>
-            {data.delivery_quality && (
-              <div data-testid="delivery-quality" style={{ fontSize: 12, color: '#555' }}>
-                <p style={{ margin: 0 }}>
-                  软放行 {data.delivery_quality.soft_accepted}/
-                  {data.delivery_quality.accepted} 已验收
-                  （{Math.round(data.delivery_quality.soft_rate * 100)}%）
-                  {data.delivery_quality.first_pass != null
-                    ? ` · 首轮 ${data.delivery_quality.first_pass}/${data.delivery_quality.accepted}`
-                      + `（${Math.round((data.delivery_quality.first_pass_rate ?? 0) * 100)}%）`
-                    : ''}
-                  {(data.delivery_quality.truncated ?? 0) > 0
-                    ? ` · 截断修复 ${data.delivery_quality.truncated}`
-                    : ''}
-                </p>
-                {data.delivery_quality.error_codes
-                  && Object.keys(data.delivery_quality.error_codes).length > 0 && (
-                  <p data-testid="delivery-error-codes" style={{ margin: '4px 0 0', color: '#888' }}>
-                    错误码：
-                    {Object.entries(data.delivery_quality.error_codes)
-                      .map(([k, v]) => `${k}×${v}`)
-                      .join(' ')}
-                  </p>
-                )}
-              </div>
-            )}
-            {data.delivery_profile === 'SOFTWARE_DEV' ? (
-              <p>
-                <span data-testid="dev-badge">🏷️ 软件开发需求</span>
-              </p>
-            ) : (
-              <p>
-                <small style={{ color: '#999' }}>未识别为软件开发需求</small>{' '}
-                <button
-                  data-testid="reclassify-btn"
-                  onClick={async () => {
-                    try {
-                      await reclassifyDelivery(data.project.id);
-                      const d2 = await fetchDashboard(data.project.id);
-                      setData(d2);
-                    } catch {
-                      /* best-effort */
-                    }
-                  }}
-                  style={{ fontSize: 12, marginLeft: 6 }}
-                >
-                  重新判定
-                </button>
-              </p>
-            )}
-            {data.delivery_status && (
-              <p style={{ fontSize: 14 }}>
-                方案PPT {data.delivery_status.ppt ? '✅' : '❌'} |{' '}
-                可运行代码 {data.delivery_status.code ? '✅' : '❌'} |{' '}
-                测试报告 {data.delivery_status.test_report ? '✅' : '❌'}
-              </p>
-            )}
-            <p
-              data-testid="delivery-validator-meta"
-              style={{ fontSize: 12, color: '#666', marginBottom: 0 }}
-            >
-              {data.delivery_validator_hash_prefix
-                ? `校验脚本已生成 · hash ${data.delivery_validator_hash_prefix}…`
-                : '校验脚本未生成'}
-              {data.delivery_validator_generated_at
-                ? ` · ${data.delivery_validator_generated_at.slice(0, 19)}`
-                : ''}
-            </p>
-            <div
-              data-testid="delivery-assignment"
-              style={{ fontSize: 12, color: '#444', marginTop: 8 }}
-            >
-              <p style={{ margin: '0 0 4px' }}>
-                计划状态 {data.plan_status || 'READY'} · 清单{' '}
-                {data.delivery_assignment?.manifest_count ?? 0} / 已分配{' '}
-                {data.delivery_assignment?.assigned_count ?? 0}
-                {data.delivery_assignment?.assignment_mode ===
-                'deterministic_fallback'
-                  ? ' · 认领兜底'
-                  : ''}
-              </p>
-              {data.plan_status === 'INVALID' && (
-                <p
-                  data-testid="plan-invalid-hint"
-                  style={{ margin: '0 0 4px', color: '#a61d24' }}
-                >
-                  计划未就绪（INVALID）：任务图保留时可查看节点；请根据 toast /
-                  事件problems 处理后重新生成计划
-                </p>
-              )}
-              {(data.delivery_assignment?.uncovered_ids?.length ?? 0) > 0 && (
-                <p style={{ margin: '0 0 4px', color: '#a61d24' }}>
-                  未覆盖：{data.delivery_assignment!.uncovered_ids.join(', ')}
-                </p>
-              )}
-              <ul style={{ paddingLeft: 18, margin: 0 }}>
-                {(data.delivery_assignment?.items || []).map((it) => (
-                  <li key={it.id}>
-                    {it.name || it.id}
-                    {it.owner_task_name
-                      ? ` → ${it.owner_task_name}`
-                      : ' → （未分配）'}
-                  </li>
-                ))}
-              </ul>
-            </div>
-          </section>
-
-          <section data-testid="artifacts" style={card}>
-            <h3 style={{ marginTop: 0 }}>Artifacts</h3>
-            {data.artifacts.length === 0 && <p style={{ color: '#999' }}>暂无产物</p>}
-            <ul style={{ paddingLeft: 18, margin: 0 }}>
-              {data.artifacts.map((a) => (
-                <li key={a.id}>
-                  <a
-                    href="#"
-                    onClick={(e) => {
-                      e.preventDefault();
-                      setViewingArtifact(a.id);
-                    }}
-                    style={{ color: '#1890ff' }}
-                  >
-                    {a.name} v{a.version}
-                  </a>{' '}
-                  {a.sha256 ? (
-                    <span style={{ color: '#999', fontSize: 12 }}>
-                      {a.sha256.slice(0, 8)}…
-                    </span>
-                  ) : null}
-                </li>
-              ))}
-            </ul>
-          </section>
-
-          <section data-testid="gate-results" style={card}>
-            <h3 style={{ marginTop: 0 }}>Gate Results</h3>
-            {data.gate_results.length === 0 && <p style={{ color: '#999' }}>暂无 Gate 结果</p>}
-            <ul style={{ paddingLeft: 18, margin: 0 }}>
-              {data.gate_results.map((g) => (
-                <li key={g.id}>
-                  Task #{g.task_id} — <StatusTag status={g.status} />
-                </li>
-              ))}
-            </ul>
-          </section>
-        </div>
       </div>
 
-      <section data-testid="timeline" style={{ ...card, marginTop: 16 }}>
-        <h3 style={{ marginTop: 0 }}>Execution Timeline</h3>
-        {data.timeline.length === 0 && <p style={{ color: '#999' }}>暂无执行记录</p>}
-        <ul style={{ paddingLeft: 18 }}>
-          {data.timeline.map((r) => {
-            const art = data.artifacts.find((a) => a.task_id === r.task_id);
-            return (
-              <li key={r.id}>
-                {r.task_name} (attempt {r.attempt}) — {r.started_at ?? '…'} →{' '}
-                {r.finished_at ?? '…'}
-                {art && (
-                  <a
-                    href="#"
-                    onClick={(e) => {
-                      e.preventDefault();
-                      setViewingArtifact(art.id);
-                    }}
-                    style={{ color: '#1890ff', marginLeft: 8, fontSize: 12 }}
-                  >
-                    📄 产物
-                  </a>
-                )}
-              </li>
-            );
-          })}
-        </ul>
-      </section>
-
-      {(data.runtime_events?.length ?? 0) > 0 && (
-        <section data-testid="runtime-events" style={{ ...card, marginTop: 16 }}>
-          <h3 style={{ marginTop: 0 }}>Runtime Events（实时进度）</h3>
-          <ul style={{ paddingLeft: 18, maxHeight: 240, overflowY: 'auto' }}>
-            {(data.runtime_events ?? []).map((e) => (
-              <li
-                key={e.event_id}
-                style={{
-                  fontSize: 13,
-                  ...(e.event_type === 'TOOL_BUDGET_GRACE'
-                    ? {
-                        background: '#fff7e6',
-                        borderLeft: '3px solid #fa8c16',
-                        padding: '4px 8px',
-                        marginBottom: 4,
-                      }
-                    : {}),
-                }}
-              >
-                <code style={{ color: '#666' }}>
-                  {e.timestamp ? e.timestamp.slice(11, 19) : '--:--:--'}
-                </code>{' '}
-                <strong>{e.event_type}</strong>
-                {e.phase ? ` · ${e.phase}` : ''}
-                {e.message ? ` — ${e.message}` : ''}
-                {e.event_type === 'TOOL_BUDGET_GRACE' &&
-                e.payload?.grace_text ? (
-                  <div style={{ color: '#666', marginTop: 2 }}>
-                    {String(e.payload.grace_text).slice(0, 200)}
-                  </div>
-                ) : null}
-              </li>
-            ))}
-          </ul>
-        </section>
-      )}
       {viewingArtifact !== null && (
         <ArtifactViewer
           artifactId={viewingArtifact}

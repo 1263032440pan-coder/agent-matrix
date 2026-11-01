@@ -73,30 +73,6 @@ describe('Dashboard 节点要求产物', () => {
     );
   });
 
-  it('认领兜底时交付区显示标记', async () => {
-    vi.mocked(fetchDashboard).mockResolvedValue({
-      ...base,
-      plan_status: 'READY',
-      delivery_assignment: {
-        manifest_count: 1,
-        assigned_count: 1,
-        uncovered_ids: [],
-        assignment_mode: 'deterministic_fallback',
-        items: [
-          {
-            id: 'd_ppt',
-            name: '方案PPT',
-            owner_task_id: 10,
-            owner_task_name: '做PPT',
-          },
-        ],
-      },
-    });
-    render(<Dashboard projectId={1} />);
-    const box = await screen.findByTestId('delivery-assignment');
-    expect(box).toHaveTextContent('认领兜底');
-  });
-
   it('任务详情展示 load / 令牌 / 兜底装箱', async () => {
     vi.mocked(fetchDashboard).mockResolvedValue({
       ...base,
@@ -183,31 +159,20 @@ describe('Dashboard 节点要求产物', () => {
     });
   });
 
-  it('展示验证等级与交付质量', async () => {
+  it('节点浮层展示验证等级（项目级交付质量块已移出工作台）', async () => {
     vi.mocked(fetchDashboard).mockResolvedValue({
       ...base,
-      delivery_quality: {
-        accepted: 2,
-        soft_accepted: 1,
-        soft_rate: 0.5,
-        truncated: 3,
-        error_codes: { TRUNCATED: 3 },
-      },
       tasks: [
         { ...base.tasks[0], verification_level: 'compile' },
         base.tasks[1],
       ],
     });
     render(<Dashboard projectId={1} />);
-    const quality = await screen.findByTestId('delivery-quality');
-    expect(quality).toHaveTextContent('软放行 1/2');
-    expect(quality).toHaveTextContent('截断修复 3');
-    expect(screen.getByTestId('delivery-error-codes')).toHaveTextContent(
-      'TRUNCATED×3',
-    );
-    await userEvent.click(screen.getByTestId('task-node-10'));
+    await userEvent.click(await screen.findByTestId('task-node-10'));
     expect(await screen.findByTestId('task-verify-level')).toHaveTextContent(
       'compile',
     );
+    expect(screen.queryByTestId('delivery-quality')).toBeNull();
+    expect(screen.queryByTestId('timeline')).toBeNull();
   });
 });

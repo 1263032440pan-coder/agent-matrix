@@ -54,11 +54,12 @@ export function LLMSettingsCard() {
     <section
       data-testid="llm-settings"
       style={{
-        background: '#fff',
-        border: '1px solid #e5e7eb',
-        borderRadius: 8,
+        background: 'var(--ui-bg-elevated)',
+        border: '1px solid var(--ui-stroke-muted)',
+        borderRadius: 4,
         padding: 16,
-        marginBottom: 16,
+        marginBottom: 0,
+        textAlign: 'left',
       }}
     >
       <h3 style={{ marginTop: 0 }}>LLM API 配置</h3>

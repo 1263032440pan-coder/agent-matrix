@@ -518,6 +518,7 @@ async def run_planning(project_id: int):
         from project_runtime.procedure.delivery_manifest import (
             DeliveryManifestError,
             extract_manifest_from_materials,
+            manifest_skill_hint_for_profile,
         )
         from project_runtime.procedure.skill_planning import (
             _project_doc_text,
@@ -530,13 +531,10 @@ async def run_planning(project_id: int):
         if not (materials or "").strip():
             project.delivery_manifest = None
             return {"delivery_manifest": None, "deliverables": 0}
-        skill_hint = ""
-        if project.delivery_profile == "SOFTWARE_DEV":
-            skill_hint = (
-                "软件开发交付常含：方案介绍 PPT（.pptx）、"
-                "可运行代码（源码+README）、测试报告（文件名含「测试」的 .md）。"
-                "请按材料实际要求增减，不要编造材料未要求的项。"
-            )
+
+        skill_hint = manifest_skill_hint_for_profile(
+            project.delivery_profile,
+        )
         try:
             man = await extract_manifest_from_materials(
                 materials_text=materials,
@@ -544,6 +542,7 @@ async def run_planning(project_id: int):
             )
         except DeliveryManifestError as e:
             project.plan_status = "INVALID"
+            await session.commit()
             try:
                 await EventEngine().record(
                     RuntimeEventType.DELIVERY_MANIFEST_INVALID,
@@ -653,6 +652,9 @@ async def run_planning(project_id: int):
             project.delivery_validator_hash = None
             project.delivery_validator_generated_at = None
             project.plan_status = "INVALID"
+            # 必须先 commit：否则 _stage 因 HTTPException 回滚，
+            # plan_status 会永远卡在清场时的 ASSIGNING，执行入口一直 409。
+            await session.commit()
             try:
                 await EventEngine().record(
                     RuntimeEventType.DELIVERY_VALIDATOR_INVALID,
@@ -751,16 +753,29 @@ async def run_planning(project_id: int):
 
     result: dict = {}
     try:
-        result.update(await _stage(_clear_old_plan))
-        result.update(await _stage(_normalize))
-        result.update(await _stage(_extract_manifest))
-        result.update(await _stage(_generate_validator))
-        result.update(await _stage(_assess))
-        result.update(await _stage(_classify))
-        result.update(await _stage(_resolve))
-        result.update(await _stage(_build))
-        result.update(await _stage(_plan))
-        result.update(await _assign_deliverables_phase())
+        from project_runtime.event.activity import emit_activity
+
+        async def _phase(label: str, coro):
+            await emit_activity(
+                project_id,
+                f"规划阶段：{label}…",
+                phase=f"plan:{label}",
+                throttle=False,
+            )
+            return await coro
+
+        result.update(await _phase("清理旧计划", _stage(_clear_old_plan)))
+        result.update(await _phase("材料抽取/归一", _stage(_normalize)))
+        result.update(await _phase("抽取交付清单", _stage(_extract_manifest)))
+        result.update(await _phase("生成校验脚本", _stage(_generate_validator)))
+        result.update(await _phase("评估缺口", _stage(_assess)))
+        result.update(await _phase("缺口分类", _stage(_classify)))
+        result.update(await _phase("缺口研究/解析", _stage(_resolve)))
+        result.update(await _phase("构建 Playbook", _stage(_build)))
+        result.update(await _phase("生成任务图", _stage(_plan)))
+        result.update(
+            await _phase("交付认领", _assign_deliverables_phase())
+        )
         return result
     except HTTPException:
         raise
@@ -916,14 +931,29 @@ async def user_rework_task(
     return out
 
 
+_THINKING_STREAM_TYPES = (
+    "LLM_THINKING_CHUNK",
+    "LLM_ANSWER_CHUNK",
+    "LLM_TOOL_CALL",
+    "LLM_TOOL_RESULT",
+    "AGENT_ACTIVITY",
+)
+_THINKING_KIND = {
+    "LLM_THINKING_CHUNK": "thinking",
+    "LLM_ANSWER_CHUNK": "answer",
+    "LLM_TOOL_CALL": "tool",
+    "LLM_TOOL_RESULT": "tool",
+    "AGENT_ACTIVITY": "activity",
+}
+
+
 @router.get("/{project_id}/agent-thinking")
 async def agent_thinking_stream(
     project_id: int, after_id: int = 0, limit: int = 100,
 ):
-    """返修单 B: 项目级 Agent 实时思维链事件流（AgentPanel 消费）。
+    """项目级运行动态流（ThinkingPanel）：思考 / 正文 / 工具 / 活动。
 
-    LLM_THINKING_CHUNK / LLM_ANSWER_CHUNK 按 id 增量拉取;
-    payload 带 agent_instance_id/agent_name（Worker 侧归属）——前端按实例过滤。
+    payload.text 优先；否则用 message。kind 供前端分样式。
     """
     from project_runtime.event.models import RuntimeEvent
 
@@ -932,10 +962,7 @@ async def agent_thinking_stream(
             select(RuntimeEvent)
             .where(
                 RuntimeEvent.project_id == project_id,
-                RuntimeEvent.event_type.in_((
-                    "LLM_THINKING_CHUNK",
-                    "LLM_ANSWER_CHUNK",
-                )),
+                RuntimeEvent.event_type.in_(_THINKING_STREAM_TYPES),
                 RuntimeEvent.id > after_id,
             )
             .order_by(RuntimeEvent.id.desc())
@@ -944,30 +971,32 @@ async def agent_thinking_stream(
         events = list(
             (await session.execute(stmt)).scalars().all()
         )
+
+        def _row(e: RuntimeEvent) -> dict:
+            payload: dict = {}
+            if e.payload:
+                try:
+                    payload = json.loads(e.payload) or {}
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    payload = {}
+            text = payload.get("text")
+            if not text:
+                text = e.message
+            return {
+                "event_id": e.id,
+                "task_id": e.task_id,
+                "timestamp": (
+                    e.timestamp.isoformat() if e.timestamp else None
+                ),
+                "kind": _THINKING_KIND.get(e.event_type, "activity"),
+                "event_type": e.event_type,
+                "text": text,
+                "agent_instance_id": payload.get("agent_instance_id"),
+                "agent_name": payload.get("agent_name"),
+            }
+
         return {
-            "events": [
-                {
-                    "event_id": e.id,
-                    "task_id": e.task_id,
-                    "timestamp": (
-                        e.timestamp.isoformat() if e.timestamp else None
-                    ),
-                    "text": (
-                        (json.loads(e.payload) or {}).get("text")
-                        if e.payload else None
-                    ),
-                    "agent_instance_id": (
-                        (json.loads(e.payload) or {}).get(
-                            "agent_instance_id"
-                        ) if e.payload else None
-                    ),
-                    "agent_name": (
-                        (json.loads(e.payload) or {}).get("agent_name")
-                        if e.payload else None
-                    ),
-                }
-                for e in reversed(events)
-            ],
+            "events": [_row(e) for e in reversed(events)],
             "last_event_id": events[0].id if events else after_id,
         }
 
@@ -1259,6 +1288,9 @@ async def project_dashboard(project_id: int, session: AsyncSession = Depends(get
         "plan_status": getattr(project, "plan_status", None) or "READY",
         "delivery_assignment": _delivery_assignment_view(
             manifest, tasks,
+        ),
+        "delivery_checklist": _delivery_checklist_view(
+            project_id, manifest, tasks, artifacts,
         ),
         "delivery_quality": await _delivery_quality(
             session, tasks, gap_by_task,
@@ -1612,6 +1644,88 @@ def _required_deliverables_of(
         seen.add(key)
         uniq.append(it)
     return uniq
+
+
+def _delivery_checklist_view(
+    project_id: int,
+    manifest: dict | None,
+    tasks: list,
+    artifacts: list,
+) -> dict:
+    """概览「产物清单实时对比」：清单项 vs 工作区/产物命中。"""
+    from datetime import datetime, timezone
+
+    from project_runtime.procedure.delivery_manifest import (
+        check_match,
+        list_match_hits,
+        project_workspace_rel_paths,
+    )
+
+    if not manifest:
+        return {
+            "updated_at": None,
+            "total": 0,
+            "matched": 0,
+            "items": [],
+        }
+
+    assign = _delivery_assignment_view(manifest, tasks)
+    owner_by_id = {str(i["id"]): i for i in assign["items"]}
+    task_by_id = {t.id: t for t in tasks}
+
+    files = project_workspace_rel_paths(project_id)
+    seen = set(files)
+    for a in artifacts:
+        name = getattr(a, "name", None) or ""
+        if name and name not in seen:
+            files.append(name)
+            seen.add(name)
+
+    items: list[dict] = []
+    matched_n = 0
+    for d in manifest.get("deliverables") or []:
+        did = str(d.get("id"))
+        m = d.get("match") if isinstance(d.get("match"), dict) else {}
+        problems = check_match(files, m) if m else ["无 match 规则"]
+        hits = list_match_hits(files, m)[:24] if m else []
+        o = owner_by_id.get(did) or {}
+        oid = o.get("owner_task_id")
+        ost = None
+        if oid is not None and oid in task_by_id:
+            ost = task_by_id[oid].status.value
+        if not problems:
+            status = "matched"
+            matched_n += 1
+            hint = None
+        elif ost in ("RUNNING", "READY", "REWORK", "EXECUTION_DONE"):
+            status = "in_progress"
+            hint = problems[0]
+        elif oid is None or ost in (
+            "ACCEPTED", "FAILED", "BLOCKED", "CANCELLED",
+        ):
+            status = "gap"
+            hint = problems[0]
+        else:
+            status = "pending"
+            hint = problems[0]
+        items.append({
+            "id": did,
+            "name": d.get("name"),
+            "match": m or None,
+            "owner_task_id": oid,
+            "owner_task_name": o.get("owner_task_name"),
+            "owner_task_status": ost,
+            "status": status,
+            "matched_paths": hits,
+            "hint": hint,
+        })
+
+    return {
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "total": len(items),
+        "matched": matched_n,
+        "items": items,
+    }
 
 
 def _delivery_assignment_view(

@@ -1,19 +1,27 @@
 import { useEffect, useState } from 'react';
-import { deleteSkill, listSkills, type SkillInfo } from '../api';
+import {
+  deleteSkill,
+  importSkillPackage,
+  listSkills,
+  type SkillInfo,
+} from '../api';
 
 const card: React.CSSProperties = {
-  background: '#fff',
-  border: '1px solid #e5e7eb',
-  borderRadius: 8,
+  background: 'var(--ui-bg-elevated)',
+  border: '1px solid var(--ui-stroke-muted)',
+  borderRadius: 4,
   padding: 16,
-  marginBottom: 16,
+  marginBottom: 0,
+  textAlign: 'left',
 };
 
 const inputStyle: React.CSSProperties = {
   padding: '6px 10px',
-  border: '1px solid #d9d9d9',
-  borderRadius: 6,
+  border: '1px solid var(--ui-stroke)',
+  borderRadius: 4,
   fontSize: 13,
+  background: 'var(--ui-bg)',
+  color: 'var(--ui-text)',
 };
 
 /**
@@ -54,6 +62,22 @@ export function SkillPanel() {
     load();
   };
 
+  const doImport = async (f: File | null) => {
+    if (!f) return;
+    setBusy(true);
+    try {
+      const sk = await importSkillPackage(f);
+      setMessage(
+        `Skill 已导入: ${sk.name}@${sk.version}（${sk.skill_id}，状态 ${sk.status}）`,
+      );
+      load();
+    } catch (e) {
+      setMessage(String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const doDelete = async (sk: SkillInfo) => {
     if (
       !window.confirm(
@@ -79,11 +103,34 @@ export function SkillPanel() {
 
   return (
     <section data-testid="skill-panel" style={card}>
-      <h3 style={{ marginTop: 0 }}>Skill 管理（已安装 {skills.length} 个）</h3>
-      {error && <div style={{ color: '#f5222d' }}>{error}</div>}
-      {message && (
-        <div style={{ color: '#389e0d', marginBottom: 8 }}>{message}</div>
+      <h3 style={{ marginTop: 0 }}>Skills（已安装 {skills.length} 个）</h3>
+      {error && (
+        <div style={{ color: 'var(--ui-danger)' }} role="alert">
+          {error}
+        </div>
       )}
+      {message && (
+        <div
+          style={{ color: 'var(--ui-accent)', marginBottom: 8 }}
+          data-testid="skill-message"
+        >
+          {message}
+        </div>
+      )}
+
+      <div style={{ marginBottom: 12 }}>
+        <label className="ui-btn" style={{ display: 'inline-block' }}>
+          导入 Skill 包 (.zip)
+          <input
+            data-testid="skill-import"
+            type="file"
+            accept=".zip"
+            style={{ display: 'none' }}
+            disabled={busy}
+            onChange={(e) => doImport(e.target.files?.[0] ?? null)}
+          />
+        </label>
+      </div>
 
       {/* 查询条: 关键词 + 类型 */}
       <div
@@ -124,7 +171,7 @@ export function SkillPanel() {
       </div>
 
       {skills.length === 0 && !error && (
-        <p data-testid="skill-empty" style={{ color: '#999' }}>
+        <p data-testid="skill-empty" style={{ color: 'var(--ui-text-muted)' }}>
           没有匹配的 Skill——点上方「导入 Skill 包 (.zip)」安装，或换关键词查询
         </p>
       )}
@@ -136,39 +183,64 @@ export function SkillPanel() {
               key={`${sk.skill_id}@${sk.version}`}
               data-testid={`skill-item-${sk.skill_id}`}
               style={{
-                border: '1px solid #f0f0f0',
-                borderRadius: 6,
+                border: '1px solid var(--ui-stroke-muted)',
+                borderRadius: 4,
                 padding: '8px 12px',
                 display: 'flex',
                 justifyContent: 'space-between',
                 gap: 12,
                 alignItems: 'flex-start',
+                background: 'var(--ui-bg)',
               }}
             >
               <div style={{ minWidth: 0, flex: 1 }}>
                 <div style={{ fontWeight: 600, fontSize: 14 }}>
                   {sk.name}
-                  <span style={{ color: '#999', fontWeight: 400, fontSize: 12 }}>
+                  <span
+                    style={{
+                      color: 'var(--ui-text-muted)',
+                      fontWeight: 400,
+                      fontSize: 12,
+                    }}
+                  >
                     {' '}
                     {sk.skill_id}@{sk.version}
                   </span>
                 </div>
-                <div style={{ color: '#666', fontSize: 13, marginTop: 2 }}>
+                <div
+                  style={{
+                    color: 'var(--ui-text)',
+                    fontSize: 13,
+                    marginTop: 2,
+                  }}
+                >
                   {sk.description}
                 </div>
                 {sk.when_to_use && (
-                  <div style={{ color: '#888', fontSize: 12, marginTop: 2 }}>
-                    <span style={{ color: '#999' }}>何时用：</span>
-                    {sk.when_to_use}
+                  <div
+                    style={{
+                      color: 'var(--ui-text-muted)',
+                      fontSize: 12,
+                      marginTop: 2,
+                    }}
+                  >
+                    何时用：{sk.when_to_use}
                   </div>
                 )}
-                <div style={{ color: '#999', fontSize: 12, marginTop: 2 }}>
+                <div
+                  style={{
+                    color: 'var(--ui-text-muted)',
+                    fontSize: 12,
+                    marginTop: 2,
+                  }}
+                >
                   {sk.skill_type} · {sk.status}
                 </div>
               </div>
               <button
                 data-testid={`skill-delete-${sk.skill_id}`}
-                style={{ ...inputStyle, color: '#f5222d', flexShrink: 0 }}
+                className="ui-btn"
+                style={{ color: 'var(--ui-danger)', flexShrink: 0 }}
                 disabled={busy}
                 onClick={() => doDelete(sk)}
               >

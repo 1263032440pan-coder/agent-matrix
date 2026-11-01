@@ -1,15 +1,64 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { fetchAgentThinking } from '../api';
+import { fetchAgentThinking, type AgentThinkingEvent } from '../api';
 
-/** 思维链流式面板（WP: CoT UI）
- * - 走轻量 /agent-thinking（勿轮询沉重 dashboard——会拖 SQLite + 拖慢 CoT 写入）
- * - LLM_THINKING_CHUNK 分段追加
- * - 折叠样式：思考过程弱化排版，不干扰主界面
- */
-export function ThinkingPanel({ projectId }: { projectId: number }) {
-  const [segments, setSegments] = useState<
-    Array<{ seq: number; taskId: number | null; text: string }>
-  >([]);
+type Kind = NonNullable<AgentThinkingEvent['kind']>;
+
+type Seg = {
+  seq: number;
+  taskId: number | null;
+  kind: Kind;
+  text: string;
+};
+
+const KIND_PREFIX: Record<Kind, string> = {
+  thinking: '',
+  answer: '',
+  tool: '',
+  activity: '⏳ ',
+};
+
+const ANSWER_MAX_LINES = 50;
+
+/** 仅保留近 maxLines 行 answer；其余 kind 原样保留，维持时间序 */
+export function clampAnswerSegments(
+  segs: Seg[],
+  maxLines = ANSWER_MAX_LINES,
+): Seg[] {
+  let left = maxLines;
+  const rev = [...segs].reverse();
+  const kept: Seg[] = [];
+  for (const s of rev) {
+    if (s.kind !== 'answer') {
+      kept.push(s);
+      continue;
+    }
+    if (left <= 0) continue;
+    const lines = s.text.split('\n');
+    if (lines.length <= left) {
+      kept.push(s);
+      left -= lines.length;
+    } else {
+      kept.push({
+        ...s,
+        text: lines.slice(-left).join('\n'),
+      });
+      left = 0;
+    }
+  }
+  return kept.reverse();
+}
+
+/** 运行动态面板：思考 / 正文 / 工具 / 活动 */
+export function ThinkingPanel({
+  projectId,
+  embedded,
+  phaseHint,
+}: {
+  projectId: number;
+  embedded?: boolean;
+  phaseHint?: string;
+}) {
+  const [segments, setSegments] = useState<Seg[]>([]);
   const [open, setOpen] = useState(false);
   const afterIdRef = useRef(0);
   const seqRef = useRef(0);
@@ -19,6 +68,9 @@ export function ThinkingPanel({ projectId }: { projectId: number }) {
   useEffect(() => {
     let cancelled = false;
     afterIdRef.current = 0;
+    seqRef.current = 0;
+    lastTaskRef.current = null;
+    setSegments([]);
     const poll = async () => {
       try {
         const data = await fetchAgentThinking(projectId, afterIdRef.current);
@@ -28,7 +80,6 @@ export function ThinkingPanel({ projectId }: { projectId: number }) {
           }
           return;
         }
-        // 任务切换：清空上一任务显示
         const firstTask = data.events[0]?.task_id ?? null;
         if (
           firstTask != null &&
@@ -40,14 +91,20 @@ export function ThinkingPanel({ projectId }: { projectId: number }) {
         }
         if (firstTask != null) lastTaskRef.current = firstTask;
 
-        setSegments((prev) => [
-          ...prev,
-          ...data.events.map((c) => ({
-            seq: ++seqRef.current,
-            taskId: c.task_id,
-            text: c.text ?? '',
-          })),
-        ]);
+        const ordered = [...data.events].sort(
+          (a, b) => a.event_id - b.event_id,
+        );
+        setSegments((prev) =>
+          clampAnswerSegments([
+            ...prev,
+            ...ordered.map((c) => ({
+              seq: ++seqRef.current,
+              taskId: c.task_id,
+              kind: (c.kind ?? 'thinking') as Kind,
+              text: c.text ?? '',
+            })),
+          ]),
+        );
         setOpen(true);
         afterIdRef.current = data.last_event_id;
       } catch {
@@ -62,7 +119,6 @@ export function ThinkingPanel({ projectId }: { projectId: number }) {
     };
   }, [projectId]);
 
-  // 自动滚到底
   useEffect(() => {
     if (open && boxRef.current) {
       boxRef.current.scrollTop = boxRef.current.scrollHeight;
@@ -74,18 +130,25 @@ export function ThinkingPanel({ projectId }: { projectId: number }) {
     [segments],
   );
 
-  if (segments.length === 0) return null;
+  const showBody = embedded || open;
+
+  if (!embedded && segments.length === 0) return null;
 
   return (
     <section
       data-testid="thinking-panel"
       style={{
-        background: '#fafafa',
-        border: '1px solid #eee',
-        borderRadius: 8,
+        background: 'var(--ui-bg-elevated)',
+        border: embedded ? 'none' : '1px solid var(--ui-stroke-muted)',
+        borderRadius: embedded ? 0 : 4,
         padding: 12,
-        marginTop: 16,
+        marginTop: embedded ? 0 : 16,
         fontSize: 13,
+        height: embedded ? '100%' : undefined,
+        minHeight: 0,
+        display: 'flex',
+        flexDirection: 'column',
+        overflow: 'hidden',
       }}
     >
       <div
@@ -93,56 +156,96 @@ export function ThinkingPanel({ projectId }: { projectId: number }) {
           display: 'flex',
           alignItems: 'center',
           gap: 8,
-          marginBottom: open ? 8 : 0,
+          marginBottom: showBody ? 8 : 0,
+          flexShrink: 0,
         }}
       >
-        <span style={{ fontSize: 15 }}>🧠</span>
-        <strong style={{ color: '#666' }}>思维链（LLM 思考过程）</strong>
-        <span style={{ color: '#999', fontSize: 12 }}>
-          {segments.length} 段 · {textLen} 字
+        <strong style={{ color: 'var(--ui-text-muted)' }}>运行动态</strong>
+        <span style={{ color: 'var(--ui-text-muted)', fontSize: 12 }}>
+          {segments.length} 段 · {textLen} 字 · 思考/工具/活动
         </span>
-        <button
-          onClick={() => setOpen((v) => !v)}
-          style={{ marginLeft: 'auto', fontSize: 12, padding: '2px 10px' }}
-        >
-          {open ? '收起' : '展开'}
-        </button>
+        {phaseHint ? (
+          <span
+            data-testid="thinking-phase-hint"
+            style={{ fontSize: 12, color: 'var(--ui-accent)' }}
+          >
+            {phaseHint}
+          </span>
+        ) : null}
+        {!embedded && (
+          <button
+            onClick={() => setOpen((v) => !v)}
+            style={{ marginLeft: 'auto', fontSize: 12, padding: '2px 10px' }}
+          >
+            {open ? '收起' : '展开'}
+          </button>
+        )}
         <button
           onClick={() => setSegments([])}
-          style={{ fontSize: 12, padding: '2px 10px' }}
+          style={{
+            marginLeft: embedded ? 'auto' : undefined,
+            fontSize: 12,
+            padding: '2px 10px',
+          }}
           title="手动清空"
         >
           清空
         </button>
       </div>
-      {open && (
+      {showBody && (
         <div
           ref={boxRef}
+          data-testid="thinking-body"
           style={{
-            maxHeight: 260,
+            flex: embedded ? 1 : undefined,
+            maxHeight: embedded ? undefined : 260,
+            minHeight: 0,
             overflowY: 'auto',
-            background: '#fff',
-            border: '1px solid #f0f0f0',
-            borderRadius: 6,
+            background: 'var(--ui-bg)',
+            border: '1px solid var(--ui-stroke-muted)',
+            borderRadius: 4,
             padding: 10,
           }}
         >
-          {segments.map((s) => (
-            <p
-              key={s.seq}
-              style={{
-                margin: '0 0 8px 0',
-                color: '#555',
-                lineHeight: 1.6,
-                whiteSpace: 'pre-wrap',
-                wordBreak: 'break-word',
-                paddingLeft: 8,
-                borderLeft: '2px solid #e8d8f0',
-              }}
-            >
-              {s.text}
+          {segments.length === 0 ? (
+            <p style={{ margin: 0, color: 'var(--ui-text-muted)' }}>
+              暂无运行动态
             </p>
-          ))}
+          ) : (
+            segments.map((s) => (
+              <p
+                key={s.seq}
+                data-kind={s.kind}
+                style={{
+                  margin: '0 0 8px 0',
+                  color:
+                    s.kind === 'activity' || s.kind === 'tool'
+                      ? 'var(--ui-text-muted)'
+                      : 'var(--ui-text)',
+                  lineHeight: 1.6,
+                  whiteSpace: 'pre-wrap',
+                  wordBreak: 'break-word',
+                  paddingLeft: 8,
+                  borderLeft:
+                    s.kind === 'tool'
+                      ? '2px solid var(--ui-accent)'
+                      : s.kind === 'activity'
+                        ? '2px dashed var(--ui-stroke)'
+                        : s.kind === 'answer'
+                          ? '2px solid var(--ui-text-muted)'
+                          : '2px solid var(--ui-stroke)',
+                  fontFamily:
+                    s.kind === 'tool'
+                      ? 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace'
+                      : undefined,
+                  fontSize: s.kind === 'tool' || s.kind === 'activity' ? 12 : 13,
+                }}
+              >
+                {KIND_PREFIX[s.kind]}
+                {s.text}
+              </p>
+            ))
+          )}
         </div>
       )}
     </section>

@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 ERROR_CODE = "DELIVERY_MANIFEST_INVALID"
 _ALLOWED_MATCH_KEYS = frozenset({
     "ext", "name_contains", "any_name_prefix", "min_count",
-    "slot", "rel_dir",
+    "slot", "rel_dir", "code_scan",
 })
 
 # SYS-134: 文档类针 → 类型槽（约定相对目录，不验中英文件名）
@@ -32,8 +32,12 @@ NEEDLE_TO_SLOT: dict[str, str] = {
 }
 _SLOT_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
 
-# SYS-128: 源码类纯压缩包 → 改写为默认源码后缀
-DEFAULT_SOURCE_EXTS: tuple[str, ...] = (".py", ".md", ".toml", ".json")
+# SYS-128: 源码类纯压缩包 → 改写为默认源码后缀（不含 .md：说明文档不能冒充源码）
+DEFAULT_SOURCE_EXTS: tuple[str, ...] = (
+    ".py", ".ts", ".js", ".tsx", ".jsx", ".java", ".go", ".rs",
+    ".toml", ".json",
+)
+_DOC_ONLY_EXTS = frozenset({".md", ".txt", ".rst", ".adoc"})
 _ARCHIVE_EXTS = frozenset({
     ".zip", ".tar", ".tar.gz", ".tgz", ".7z", ".rar",
 })
@@ -127,6 +131,32 @@ def infer_slot_from_text(blob: str) -> str | None:
         if slot in lower.replace("-", "_"):
             return slot
     return None
+
+
+def coerce_source_code_match(
+    name: str, norm_match: dict[str, Any],
+) -> tuple[dict[str, Any], bool]:
+    """源码槽/源码类项：去掉仅文档后缀，开启全树 code_scan（backend/src 等可命中）。
+
+    避免 deliverables/source_code/*.md 冒充「项目源码已齐」。
+    """
+    slot = str(norm_match.get("slot") or "").strip().lower()
+    if slot != "source_code" and not is_source_like_item(name, norm_match):
+        return norm_match, False
+    out = dict(norm_match)
+    coerced = False
+    exts = [str(e).lower() for e in (out.get("ext") or [])]
+    kept = [e for e in exts if e not in _DOC_ONLY_EXTS]
+    if not kept:
+        out["ext"] = list(DEFAULT_SOURCE_EXTS)
+        coerced = True
+    elif kept != exts:
+        out["ext"] = kept
+        coerced = True
+    if not out.get("code_scan"):
+        out["code_scan"] = True
+        coerced = True
+    return out, coerced
 
 
 def coerce_doc_slot(
@@ -341,6 +371,14 @@ def validate_manifest(data: Any) -> dict:
             rd = match["rel_dir"].strip().replace("\\", "/").strip("/")
             if rd:
                 norm_match["rel_dir"] = rd
+        if "code_scan" in match and match["code_scan"] is not None:
+            raw_scan = match["code_scan"]
+            if not isinstance(raw_scan, bool):
+                raise DeliveryManifestError(
+                    f"deliverables[{i}].match.code_scan 须为布尔值"
+                )
+            if raw_scan:
+                norm_match["code_scan"] = True
         min_count = int(match.get("min_count") or 1)
         if min_count < 1:
             raise DeliveryManifestError(
@@ -358,6 +396,9 @@ def validate_manifest(data: Any) -> dict:
         )
         norm_match, coerced_media = coerce_equivalent_media_exts(norm_match)
         norm_match, coerced_slot = coerce_doc_slot(name, norm_match)
+        norm_match, coerced_source = coerce_source_code_match(
+            name, norm_match,
+        )
         if not any(k in norm_match for k in ("ext", "name_contains", "slot")):
             raise DeliveryManifestError(
                 f"deliverables[{i}].match 纠偏后仍缺 ext/name_contains/slot"
@@ -383,12 +424,63 @@ def validate_manifest(data: Any) -> dict:
                 "manifest coerce → slot id=%s name=%s slot=%s rel_dir=%s",
                 did, name, norm_match.get("slot"), norm_match.get("rel_dir"),
             )
+        if coerced_source:
+            row["coerced_source_code"] = True
+            logger.info(
+                "manifest coerce source_code strip-doc+scan id=%s name=%s "
+                "ext=%s",
+                did, name, norm_match.get("ext"),
+            )
         normalized.append(row)
     return {
         "version": int(data.get("version") or 1),
         "source": str(data.get("source") or "plan_extract"),
         "deliverables": normalized,
     }
+
+
+def _ext_hit(path: str, exts: list) -> bool:
+    name = Path(str(path).replace("\\", "/")).name.lower()
+    return any(name.endswith(str(e).lower()) for e in exts)
+
+
+def list_match_hits(file_names: list[str], match: dict) -> list[str]:
+    """返回满足 match 主条件（slot/ext/name_contains）的相对路径列表。
+
+    ``code_scan``：源码项可在全树按扩展名命中（backend/src 等），
+    不只认 deliverables/source_code/*.md。
+    """
+    names = list(file_names)
+    slot = match.get("slot")
+    exts = list(match.get("ext") or [])
+    code_scan = bool(match.get("code_scan")) or slot == "source_code"
+
+    if code_scan and exts:
+        # 全树代码文件；排除纯文档后缀冒充
+        code_exts = [e for e in exts if str(e).lower() not in _DOC_ONLY_EXTS]
+        if not code_exts:
+            code_exts = list(DEFAULT_SOURCE_EXTS)
+        hits = [n for n in names if _ext_hit(str(n), code_exts)]
+        return hits
+
+    hits = names
+    rel_dir = match.get("rel_dir") or (
+        default_rel_dir(str(slot)) if slot else ""
+    )
+    if slot:
+        hits = [n for n in hits if path_in_rel_dir(str(n), rel_dir)]
+    if exts:
+        hits = [n for n in hits if _ext_hit(str(n), exts)]
+    if not slot and "name_contains" in match:
+        needles = match["name_contains"]
+        hits = [
+            n for n in hits
+            if any(
+                nd in Path(str(n).replace("\\", "/")).name
+                for nd in needles
+            )
+        ]
+    return hits
 
 
 def check_match(file_names: list[str], match: dict) -> list[str]:
@@ -400,39 +492,12 @@ def check_match(file_names: list[str], match: dict) -> list[str]:
     problems: list[str] = []
     min_count = int(match.get("min_count") or 1)
 
-    def _primary_hits() -> list[str]:
-        hits = names
-        slot = match.get("slot")
-        rel_dir = match.get("rel_dir") or (
-            default_rel_dir(str(slot)) if slot else ""
-        )
-        if slot:
-            hits = [n for n in hits if path_in_rel_dir(str(n), rel_dir)]
-        if "ext" in match:
-            exts = match["ext"]
-            hits = [
-                n for n in hits
-                if any(
-                    Path(str(n).replace("\\", "/")).name.lower().endswith(e)
-                    for e in exts
-                )
-            ]
-        # 有槽则不再用 name_contains（SYS-134）；无槽时保留旧语义（仅 basename）
-        if not slot and "name_contains" in match:
-            needles = match["name_contains"]
-            hits = [
-                n for n in hits
-                if any(
-                    nd in Path(str(n).replace("\\", "/")).name
-                    for nd in needles
-                )
-            ]
-        return hits
-
-    primary = _primary_hits()
+    primary = list_match_hits(names, match)
     if len(primary) < min_count:
         bits = []
-        if match.get("slot"):
+        if match.get("code_scan") or match.get("slot") == "source_code":
+            bits.append("真实源码文件（backend/src/或源码槽，不含仅 .md）")
+        elif match.get("slot"):
             bits.append(
                 f"槽目录 {match.get('rel_dir') or default_rel_dir(match['slot'])}/"
             )
@@ -479,6 +544,30 @@ def workspace_file_names(ws_root: Path) -> list[str]:
     return [p.name for p in ws_root.rglob("*") if p.is_file()]
 
 
+def project_workspace_rel_paths(
+    project_id: int,
+    *,
+    limit: int = 4000,
+    root: Path | None = None,
+) -> list[str]:
+    """项目工作区相对路径列表（data/tasks/{id}），供清单实时对比。"""
+    base = root if root is not None else Path(f"data/tasks/{int(project_id)}")
+    if not base.exists():
+        return []
+    out: list[str] = []
+    for p in base.rglob("*"):
+        if not p.is_file():
+            continue
+        try:
+            rel = str(p.relative_to(base)).replace("\\", "/")
+        except ValueError:
+            continue
+        out.append(rel)
+        if len(out) >= limit:
+            break
+    return out
+
+
 def map_legacy_tags_to_ids(manifest: dict, tags: list[str]) -> list[str]:
     """迁移期: ppt/code/test_report → 清单 id（按 match 启发式）。"""
     ids: list[str] = []
@@ -504,6 +593,24 @@ def map_legacy_tags_to_ids(manifest: dict, tags: list[str]) -> list[str]:
     # 去重保序
     seen: set[str] = set()
     return [i for i in ids if not (i in seen or seen.add(i))]
+
+
+def manifest_skill_hint_for_profile(profile: str | None) -> str:
+    """交付画像 → 清单抽取用的基线提示（非 skill 包正文）。
+
+    SOFTWARE_DEV：三件必含（PPT/代码/测试报告），材料只增不减。
+    勿再写「不要编造材料未要求的项」——会冲掉 .pptx 基线。
+    """
+    if (profile or "").strip() != "SOFTWARE_DEV":
+        return ""
+    return (
+        "本项目为软件开发需求，交付清单【必含】三件基线："
+        "①方案介绍 PPT（match.ext 含 .pptx）；"
+        "②可运行代码（源码后缀 + any_name_prefix:[\"readme\"]）；"
+        "③测试报告（slot:testing 或文件名含「测试」的 .md）。"
+        "材料/阶段若另有文档、图示等，可追加；"
+        "不得因材料未点名 PPT 而省略 .pptx 项。"
+    )
 
 
 async def extract_manifest_from_materials(

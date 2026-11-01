@@ -257,3 +257,29 @@ DOING
 - SYS-093~095（批 C）**已交付**（2026-10-26）：四闸（AST/bwrap SKIP/信任/落盘）+ EXECUTION 导入 + ADR-039 + shell 脚本白名单 + ppt-master 兜底；test_v3_batch_c + 回归 30 passed。
 - 返修单 V3 四批（D/A/B/C）RTM SYS-082~095 全部 DONE。
 - 更新时间：2026-10-26（V3 四批收口）。
+
+---
+
+## Desktop UI 改版（2026-10-31 · Hermes 线框）
+
+> 专题全文：`RTM-UI改版-Hermes线框.md`。  
+> 编号接续 SYS-161 之后；**2026-10-31 收官 DONE**（desktop vitest + tsc 绿；验收清单已勾）。
+
+| ID | 需求/能力 | 架构模块 | 开发 WP | API/协议 | 代码 | 测试 | 状态 |
+|---|---|---|---|---|---|---|---|
+| SYS-162 | 壳固定视口、禁止整页滚动；分区区内滚动 | Desktop Shell | WP-UI-2026-10 | 无 | App + index.css | vitest | DONE |
+| SYS-163 | Hermes 视觉基线（flat / tokens / hairline） | Desktop Design System | WP-UI-2026-10 | CSS/Ant token | index.css + ThemeProvider | theme 测试 | DONE |
+| SYS-164 | 设置「外观」主题：跟随系统 / 亮 / 暗 | Desktop Settings | WP-UI-2026-10 | 本地偏好 | SettingsView + theme/* | preference/ThemeProvider | DONE |
+| SYS-165 | 左栏项目+智能体：可折 + 拖高 | Desktop Layout | WP-UI-2026-10 | 既有 | PaneSplit 侧栏 | vitest 绿 | DONE |
+| SYS-166 | 工作台流程图+思维链：上下可折 + 拖高 | Desktop Layout | WP-UI-2026-10 | 既有 | workbench-split | vitest 绿 | DONE |
+| SYS-167 | 左栏↔右侧 col-resize 拖宽 | Desktop Layout | WP-UI-2026-10 | 无 | left-right-handle | 手动 | DONE |
+| SYS-168 | 「执行项目」在流程图顶栏 | Desktop Workbench | WP-UI-2026-10 | execute/replan | graph-execute | Dashboard 测试 | DONE |
+| SYS-169 | 智能体紧凑行+展开（维度不删；无表底思维链） | Desktop Agents | WP-UI-2026-10 | agents API | AgentPanel 紧凑 | AgentPanel.test | DONE |
+| SYS-170 | 点项目→概览；← 返回工作台 | Desktop Navigation | WP-UI-2026-10 | dashboard API | ProjectOverview | 手动 | DONE |
+| SYS-171 | 概览：指标卡 + Runtime Events；无交付质量/方法就绪块 | Desktop Overview | WP-UI-2026-10 | runtime_events | ProjectOverview | 结构 | DONE |
+| SYS-172 | 不展示 Execution Timeline | Desktop Overview | WP-UI-2026-10 | timeline 可保留 | Dashboard 移除 | 断言无 timeline | DONE |
+| SYS-173 | UI 仅 FULL_AUTO；隐藏 Manual / Contract / Checkpoints | Desktop Surface Policy | WP-UI-2026-10 | 后端保留 | 不挂载 ProjectPanels | 裁剪 | DONE |
+| SYS-174 | 节点详情浮层 + 重新执行 | Desktop Overlay | WP-UI-2026-10 | task/rework | Dashboard overlay | 点击打开 | DONE |
+| SYS-175 | 节点浮层维度不减（含节点级质量等） | Desktop Overlay | WP-UI-2026-10 | task 字段 | Overlay 内容 | Dashboard.test | DONE |
+| SYS-176 | 新建项目弹窗：名称+材料+生成计划（无材料禁用） | Desktop Bootstrap | WP-UI-2026-10 | create+upload | NewProjectModal | 材料闸 | DONE |
+| SYS-177 | 设置三分类：外观 / API / Skills | Desktop Settings | WP-UI-2026-10 | 既有 | SettingsView | 三分类 | DONE |

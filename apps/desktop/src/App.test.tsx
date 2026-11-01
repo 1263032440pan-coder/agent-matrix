@@ -1,7 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { Dashboard } from './components/Dashboard';
 import type { DashboardData } from './api';
+import { ThemeProvider } from './theme/ThemeProvider';
 
 const MOCK: DashboardData = {
   project: { id: 1, name: 'demo', status: 'ACTIVE', automation_mode: 'FULL_AUTO' },
@@ -30,47 +32,50 @@ const MOCK: DashboardData = {
 vi.mock('./api', () => ({
   fetchDashboard: vi.fn(),
   listProjects: vi.fn(),
+  userReworkTask: vi.fn(),
 }));
 
 import { fetchDashboard } from './api';
 
-describe('Dashboard', () => {
+function renderDash() {
+  return render(
+    <ThemeProvider>
+      <Dashboard projectId={1} />
+    </ThemeProvider>,
+  );
+}
+
+describe('Dashboard workbench', () => {
   beforeEach(() => {
     vi.mocked(fetchDashboard).mockResolvedValue(MOCK);
   });
 
-  it('renders header, graph nodes, artifacts, gates', async () => {
-    render(<Dashboard projectId={1} />);
-    await waitFor(() => screen.getByText('demo'));
+  it('renders graph nodes; no Timeline / readiness side panels', async () => {
+    renderDash();
+    await waitFor(() => screen.getByTestId('task-graph'));
 
     expect(screen.getByTestId('task-graph')).toHaveTextContent('task-a');
     expect(screen.getByTestId('task-graph')).toHaveTextContent('task-b');
-    // Graph nodes are SVG groups
     expect(screen.getByTestId('task-node-1')).toBeDefined();
     expect(screen.getByTestId('task-node-2')).toBeDefined();
-    // Dependency edge rendered as polyline
     const svg = screen.getByTestId('task-graph').querySelector('svg')!;
     expect(svg.querySelectorAll('polyline').length).toBe(1);
-    expect(screen.getByTestId('current-task')).toHaveTextContent('task-b');
-    expect(screen.getByTestId('artifacts')).toHaveTextContent('out.txt v1');
-    expect(screen.getByTestId('gate-results')).toHaveTextContent('PASS');
-    expect(screen.getByTestId('readiness')).toHaveTextContent('Gap Count: 4');
-    expect(screen.getByTestId('timeline')).toHaveTextContent('task-a (attempt 1)');
+    expect(screen.queryByTestId('timeline')).toBeNull();
+    expect(screen.queryByTestId('readiness')).toBeNull();
   });
 
-  it('shows task detail on node click', async () => {
-    render(<Dashboard projectId={1} />);
+  it('shows task detail overlay on node click', async () => {
+    renderDash();
     await waitFor(() => screen.getByTestId('task-node-1'));
-    screen.getByTestId('task-node-1').dispatchEvent(
-      new MouseEvent('click', { bubbles: true })
-    );
+    await userEvent.click(screen.getByTestId('task-node-1'));
     await waitFor(() => screen.getByTestId('task-detail'));
     expect(screen.getByTestId('task-detail')).toHaveTextContent('task-a');
+    expect(screen.getByTestId('task-detail-overlay')).toBeDefined();
   });
 
   it('shows error on fetch failure', async () => {
     vi.mocked(fetchDashboard).mockRejectedValueOnce(new Error('boom'));
-    render(<Dashboard projectId={1} />);
+    renderDash();
     await waitFor(() => screen.getByRole('alert'));
     expect(screen.getByRole('alert')).toHaveTextContent('boom');
   });

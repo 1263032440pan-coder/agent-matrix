@@ -36,7 +36,11 @@ interface CheckpointInfo {
   created_at: string | null;
 }
 
-/** WP-018: MANUAL 模式待确认队列 + Delivery 契约 + Checkpoint 管理。 */
+/**
+ * WP-018: MANUAL 队列 + Delivery 契约 + Checkpoint。
+ * SYS-173：主壳 App 不再挂载本组件（UI 隐藏；后端 API 保留）。
+ * 单测仍覆盖，便于回归与将来受控重开。
+ */
 export function ProjectPanels({
   projectId,
   onChanged,

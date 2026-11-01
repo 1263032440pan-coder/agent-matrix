@@ -74,6 +74,23 @@ export interface DashboardData {
       owner_task_name: string | null;
     }>;
   };
+  /** 概览：产物清单 vs 工作区实时对比 */
+  delivery_checklist?: {
+    updated_at: string | null;
+    total: number;
+    matched: number;
+    items: Array<{
+      id: string;
+      name?: string | null;
+      match?: Record<string, unknown> | null;
+      owner_task_id: number | null;
+      owner_task_name: string | null;
+      owner_task_status: string | null;
+      status: 'matched' | 'in_progress' | 'gap' | 'pending';
+      matched_paths: string[];
+      hint?: string | null;
+    }>;
+  };
   artifacts: Array<{
     id: number;
     name: string;
@@ -115,11 +132,13 @@ export interface DashboardData {
 
 const API_BASE = import.meta.env.VITE_API_BASE ?? 'http://127.0.0.1:9100';
 
-// 返修单 B: Agent 实时思维链事件（项目级流, 按 instance 过滤）
+// 运行动态事件（思考 / 正文 / 工具 / 活动）
 export interface AgentThinkingEvent {
   event_id: number;
   task_id: number | null;
   timestamp: string | null;
+  kind?: 'thinking' | 'answer' | 'tool' | 'activity';
+  event_type?: string;
   text: string | null;
   agent_instance_id: number | null;
   agent_name: string | null;
@@ -243,12 +262,35 @@ export class PlanningError extends Error {
   }
 }
 
+/** 规划默认最长等待 10 分钟；超时抛错，避免弹窗无限「卡住」。 */
+const PLAN_TIMEOUT_MS = 600_000;
+
 export async function runPlanning(
-  projectId: number
+  projectId: number,
+  signal?: AbortSignal,
 ): Promise<{ model_id: number; gaps: number; tasks: number }> {
-  const resp = await fetch(`${API_BASE}/api/projects/${projectId}/plan`, {
-    method: 'POST',
-  });
+  const timeout = AbortSignal.timeout(PLAN_TIMEOUT_MS);
+  const combined =
+    signal != null
+      ? AbortSignal.any([signal, timeout])
+      : timeout;
+  let resp: Response;
+  try {
+    resp = await fetch(`${API_BASE}/api/projects/${projectId}/plan`, {
+      method: 'POST',
+      signal: combined,
+    });
+  } catch (e) {
+    if (e instanceof DOMException && e.name === 'TimeoutError') {
+      throw new PlanningError(
+        '生成计划超时（超过 10 分钟）。请检查 LLM 连通性后重试。',
+      );
+    }
+    if (e instanceof DOMException && e.name === 'AbortError') {
+      throw new PlanningError('已取消生成计划');
+    }
+    throw e;
+  }
   if (!resp.ok) {
     let detail: unknown = null;
     try {
@@ -299,7 +341,25 @@ export async function executeProject(
   const resp = await fetch(`${API_BASE}/api/projects/${projectId}/execute`, {
     method: 'POST',
   });
-  if (!resp.ok) throw new Error(`Execute failed: ${resp.status}`);
+  if (!resp.ok) {
+    let detail: unknown;
+    try {
+      detail = await resp.json();
+    } catch {
+      detail = null;
+    }
+    const body =
+      detail && typeof detail === 'object' && 'detail' in detail
+        ? (detail as { detail: unknown }).detail
+        : detail;
+    const msg =
+      typeof body === 'string'
+        ? body
+        : body && typeof body === 'object' && 'message' in body
+          ? String((body as { message: unknown }).message)
+          : `Execute failed: ${resp.status}`;
+    throw new Error(msg);
+  }
   return resp.json();
 }
 

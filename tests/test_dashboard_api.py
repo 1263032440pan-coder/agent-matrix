@@ -247,10 +247,20 @@ async def test_dashboard_required_deliverables(client):
 
     resp = await c.get(f"/api/projects/{pid}/dashboard")
     assert resp.status_code == 200
-    tasks = {t["name"]: t for t in resp.json()["tasks"]}
+    body = resp.json()
+    tasks = {t["name"]: t for t in body["tasks"]}
     req = tasks["做PPT"]["required_deliverables"]
     assert len(req) == 1
     assert req[0]["id"] == "d_ppt"
     assert req[0]["name"] == "方案PPT"
     assert req[0]["match"]["ext"] == [".pptx"]
     assert tasks["理解"]["required_deliverables"] == []
+    cl = body["delivery_checklist"]
+    assert cl["total"] == 2
+    assert set(i["id"] for i in cl["items"]) == {"d_ppt", "d_code"}
+    by_id = {i["id"]: i for i in cl["items"]}
+    assert by_id["d_ppt"]["owner_task_name"] == "做PPT"
+    assert by_id["d_ppt"]["status"] in (
+        "matched", "in_progress", "gap", "pending",
+    )
+    # matched 数依赖本机 data/tasks/{pid}，不在此硬断言为 0
