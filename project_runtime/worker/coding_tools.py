@@ -286,10 +286,10 @@ class BuilderProvider:
 
 
 class ArchDiagramProvider:
-    """架构图渲染: mermaid 源码 → png（mmdc 可用时）/ .mmd 产物文件。
+    """架构图：mermaid → 清单相对 path（.png 需 mmdc；.mmd 只落源码）。
 
-    降级纪律: 无渲染器不是失败——.mmd 文件本身就是合法产物
-    （Artifact 卡片可预览源码），事件里注明"未渲染"。
+    Hermes/良品率 A0：目标为 .png 且无 mmdc 时失败，不写占位 png，
+    也不把旁边的 .mmd 报成 png 槽已交付。
     """
 
     name = "tool:arch_diagram"
@@ -312,38 +312,80 @@ class ArchDiagramProvider:
         return True
 
     async def invoke(self, payload: dict) -> dict:
+        from project_runtime.office.paths import resolve_output_path
+        from project_runtime.worker.tools import tool_error
+
         mermaid = str(payload.get("mermaid") or "").strip()
-        name = re.sub(r"[^\w.-]", "_", str(payload.get("name") or "diagram"))
         if not mermaid.startswith(("graph", "flowchart", "sequenceDiagram",
                                    "classDiagram", "stateDiagram")):
-            return {"ok": False,
-                    "error": "mermaid 必须以 graph/flowchart/sequenceDiagram/"
-                             "classDiagram/stateDiagram 开头"}
-        from project_runtime.worker.tools import resolve_workspace_path
+            return tool_error(
+                "INVALID_MERMAID",
+                "mermaid 必须以 graph/flowchart/sequenceDiagram/"
+                "classDiagram/stateDiagram 开头",
+            )
 
-        try:
-            out_dir = resolve_workspace_path(
-                str(payload.get("out_dir") or "data/tasks"))
-        except ValueError as e:
-            return {"ok": False, "error": str(e)}
-        out_dir.mkdir(parents=True, exist_ok=True)
-        mmd_path = out_dir / f"{name}.mmd"
-        mmd_path.write_text(mermaid, encoding="utf-8")
+        fmt = str(payload.get("format") or "").lower().strip()
+        raw_path = payload.get("path")
+        legacy_name = str(payload.get("name") or "diagram")
+        if not raw_path:
+            # 兼容旧 name/out_dir：拼成相对 path
+            suffix = ".mmd" if fmt == "mmd" else ".png"
+            safe = re.sub(r"[^\w.-]", "_", legacy_name)
+            sub = str(payload.get("out_dir") or "").strip()
+            raw_path = f"{safe}{suffix}" if not sub else f"{sub.rstrip('/')}/{safe}{suffix}"
 
-        # mmdc 可用性探测（10s 冒烟）
+        out = resolve_output_path(
+            payload, path=str(raw_path), default_name="diagram.png",
+        )
+        if isinstance(out, dict):
+            return out
+        out_path, display = out
+        want_mmd = (
+            fmt == "mmd"
+            or out_path.suffix.lower() == ".mmd"
+        )
+        if want_mmd:
+            out_path = out_path.with_suffix(".mmd")
+            display = display.rsplit(".", 1)[0] + ".mmd"
+            out_path.write_text(mermaid, encoding="utf-8")
+            return {
+                "ok": True, "rendered": False, "path": display,
+                "abs_path": str(out_path),
+                "stdout": f"已写入 mermaid 源码 {display}",
+            }
+
+        # .png（或其它）目标：必须 mmdc 成功
+        out_path = out_path.with_suffix(".png")
+        display = display.rsplit(".", 1)[0] + ".png"
+        mmd_side = out_path.with_suffix(".mmd")
+        mmd_side.write_text(mermaid, encoding="utf-8")
         probe = await _run_cmd("mmdc --version", Path.cwd(), timeout=15)
         if not probe.get("ok"):
-            return {"ok": True, "rendered": False,
-                    "path": str(mmd_path),
-                    "note": "mermaid-cli (mmdc) 不可用——已落 .mmd 源码文件"}
-        png_path = out_dir / f"{name}.png"
+            try:
+                mmd_side.unlink(missing_ok=True)
+            except OSError:
+                pass
+            return tool_error(
+                "RENDERER_UNAVAILABLE",
+                "mermaid-cli (mmdc) 不可用——无法生成 .png",
+                "请安装 mmdc，或改用 path 以 .mmd 结尾只交源码；"
+                "示意图也可用 image_raster",
+            )
         result = await _run_cmd(
-            f'mmdc -i "{mmd_path}" -o "{png_path}"', Path.cwd(),
+            f'mmdc -i "{mmd_side}" -o "{out_path}"', Path.cwd(),
             timeout=120,
         )
-        result.setdefault("path", str(png_path if png_path.exists() else mmd_path))
-        result["rendered"] = png_path.exists()
-        return result
+        if not out_path.exists():
+            return tool_error(
+                "RENDER_FAILED",
+                result.get("stderr") or result.get("error") or "mmdc 未产出 png",
+                "检查 mermaid 语法或改用 image_raster",
+            )
+        return {
+            "ok": True, "rendered": True, "path": display,
+            "abs_path": str(out_path),
+            "stdout": f"已渲染 {display}",
+        }
 
 
 # ── todo（Agent 任务自管理——低优先简版）────────────────────────────

@@ -70,43 +70,31 @@ async def lifespan(app: FastAPI):
             await _aio.sleep(60)
 
     # 返修单-可靠性②: 僵尸 execution 恢复——runtime 重启后非终态
-    # execution 无人消费（实测 exec9 RUNNING 卡 39 分钟, run() 对非
-    # QUEUED 直接 return 救不活）。QUEUED 重新拉 runner, RUNNING
-    # 判死清场（任务回 READY 由心跳/用户重提交接管）
+    # execution 无人消费。QUEUED 重新拉 runner；RUNNING 判死停住
+    # （exec+task→FAILED，释放 Agent；不自动重提，见 orphan_recovery）。
     async def _orphan_recovery():
-        from sqlalchemy import select as _sel
         from sqlalchemy.ext.asyncio import AsyncSession as _Asess2
 
         from infrastructure.database import engine as _eng
-        from project_runtime.execution.models import Execution as _Ex
+        from project_runtime.execution.orphan_recovery import (
+            recover_orphan_executions,
+        )
         from project_runtime.execution.service import ExecutionRunner
 
         async with _Asess2(_eng) as _s:
-            zombies = list((
-                await _s.execute(
-                    _sel(_Ex).where(
-                        _Ex.status.in_(["RUNNING", "QUEUED"])
-                    )
-                )
-            ).scalars().all())
-        if not zombies:
-            return
-        logger.info("orphan recovery: %d zombie execution(s)", len(zombies))
-        async with _Asess2(_eng) as _s:
-            for z in zombies:
-                if z.status == "QUEUED":
-                    # 未开跑——重新拉 runner
-                    _bg = _aio.get_event_loop().create_task(
-                        ExecutionRunner().run(z.id)
-                    )
-                    _BACKGROUND_HEARTBEATS.add(_bg)
-                    _bg.add_done_callback(_BACKGROUND_HEARTBEATS.discard)
-                else:
-                    # RUNNING 中断——标记失败清场, 任务留给心跳重拉
-                    z.status = "FAILED"
-                    z.error_code = "ORPHAN_RECOVERY"
-                    z.error_message = "runtime restart orphan"
+            queued_ids = await recover_orphan_executions(_s)
             await _s.commit()
+        if queued_ids:
+            logger.info(
+                "orphan recovery: re-dispatch %d QUEUED execution(s)",
+                len(queued_ids),
+            )
+        for eid in queued_ids:
+            _bg = _aio.get_event_loop().create_task(
+                ExecutionRunner().run(eid)
+            )
+            _BACKGROUND_HEARTBEATS.add(_bg)
+            _bg.add_done_callback(_BACKGROUND_HEARTBEATS.discard)
 
     _aio.get_event_loop().create_task(_orphan_recovery())
 

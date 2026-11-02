@@ -75,10 +75,10 @@ class TestDerivePure:
         plugins, _ = derive_controller_whitelist(
             "misc", "需要生成汇报 PPT 与待办清单", None
         )
-        assert "slide_generator" in plugins
+        assert "office_pptx" in plugins
         assert "todo" in plugins
         assert set(plugins) <= set(BASELINE_PLUGINS) | {
-            "slide_generator", "todo",
+            "office_pptx", "todo",
         }
 
     def test_shell_never_from_contract(self):

@@ -1,6 +1,15 @@
+#[tauri::command]
+fn pick_directory() -> Option<String> {
+  rfd::FileDialog::new()
+    .set_title("选择项目工作区")
+    .pick_folder()
+    .map(|p| p.to_string_lossy().into_owned())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
   tauri::Builder::default()
+    .invoke_handler(tauri::generate_handler![pick_directory])
     .setup(|app| {
       if cfg!(debug_assertions) {
         app.handle().plugin(

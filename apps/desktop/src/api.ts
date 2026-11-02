@@ -215,14 +215,26 @@ export async function listProjects(): Promise<
 
 export async function createProject(
   name: string,
-  automationMode = 'FULL_AUTO'
-): Promise<{ id: number; name: string }> {
+  automationMode = 'FULL_AUTO',
+  workspacePath?: string | null,
+): Promise<{ id: number; name: string; workspace_path?: string | null }> {
+  const body: Record<string, string> = {
+    name,
+    automation_mode: automationMode,
+  };
+  const ws = (workspacePath || '').trim();
+  if (ws) body.workspace_path = ws;
   const resp = await fetch(`${API_BASE}/api/projects`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name, automation_mode: automationMode }),
+    body: JSON.stringify(body),
   });
-  if (!resp.ok) throw new Error(`Create project failed: ${resp.status}`);
+  if (!resp.ok) {
+    const detail = await resp.text().catch(() => '');
+    throw new Error(
+      `Create project failed: ${resp.status}${detail ? ` ${detail}` : ''}`,
+    );
+  }
   return resp.json();
 }
 

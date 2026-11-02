@@ -71,7 +71,7 @@ def _names(tools) -> set[str]:
 
 class TestToolLoopWhitelist:
     def test_coder_view_intersected(self, full_registry):
-        """coder 白名单 → 5 工具（白名单外 slide_generator 等不可见）。"""
+        """coder 白名单 → 5 工具（白名单外 office_pptx 等不可见）。"""
         w = _worker()
         tools = w._search_tools(whitelist=[
             "read_file", "list_dir", "write_file", "append_file",
@@ -86,19 +86,22 @@ class TestToolLoopWhitelist:
         w = _worker()
         tools = w._search_tools(whitelist=[
             "read_file", "list_dir", "write_file", "append_file",
-            "web_search", "webfetch", "slide_generator",
+            "web_search", "webfetch", "office_pptx",
         ])
         assert _names(tools) == {
             "web_search", *_FILE_TOOLS,
-            "tool:webfetch", "tool:slide_generator",
+            "tool:webfetch", "tool:office_pptx",
         }
         # shell 对 analyst 不可见（环节边界——护栏生效）
         assert "tool:shell" not in _names(tools)
 
     def test_none_means_all(self, full_registry):
-        """None = 不限（老路径语义零回归——14 个全量）。"""
+        """None = 不限（含 Hermes office 工具族）。"""
         w = _worker()
-        assert len(w._search_tools(whitelist=None)) == 14
+        names = _names(w._search_tools(whitelist=None))
+        assert "tool:office_pptx" in names
+        assert "tool:image_raster" in names
+        assert len(names) >= 18
 
     def test_empty_list_fail_closed(self, full_registry):
         """[] = 零工具（fail-closed，Hermes #82010 约定）。"""

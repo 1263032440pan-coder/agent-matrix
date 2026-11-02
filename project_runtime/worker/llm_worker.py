@@ -86,7 +86,7 @@ def _check_delivery_workspace(ws_root: Path, tags: list[str]) -> list[str]:
         if tag == "ppt":
             if not any(n.lower().endswith(".pptx") for n in names):
                 problems.append(
-                    "方案PPT: 工作区无 .pptx——请用 slide_generator 生成"
+                    "方案PPT: 工作区无 .pptx——请用 office_pptx 生成"
                     "（不少于 6 页，封面含项目名）"
                 )
         elif tag == "code":
@@ -402,7 +402,9 @@ class LLMWorkerAdapter(WorkerAdapter):
         ]
 
     def _task_ws_root(self) -> Path:
-        """本任务的工作区根（artifact_mgr 的 workspace_root/{task_id}）。"""
+        """本任务的工作区根（优先 WP.workspace_root）。"""
+        if self._workspace_root:
+            return Path(self._workspace_root)
         if self._artifact_mgr is not None:
             return Path(self._artifact_mgr._workspace_root) / str(  # noqa: SLF001
                 self._current_task_id or ""
@@ -505,7 +507,12 @@ class LLMWorkerAdapter(WorkerAdapter):
                 raise DeliveryBaselineError(
                     "交付校验脚本缺失或被篡改，请重新生成计划"
                 )
-            project_root = Path(f"data/tasks/{int(pid)}")
+            if self._artifact_mgr is not None:
+                project_root = Path(
+                    self._artifact_mgr._workspace_root  # noqa: SLF001
+                )
+            else:
+                project_root = Path(f"data/tasks/{int(pid)}")
             t0 = time.monotonic()
             result = await run_validator_script(script, project_root, ids)
             elapsed = int((time.monotonic() - t0) * 1000)
@@ -564,6 +571,64 @@ class LLMWorkerAdapter(WorkerAdapter):
             scan_path=str(ws).replace("\\", "/"),
         )
 
+    def _integrity_stop_action(
+        self, report, *, allow_repair: bool = True,
+    ) -> tuple[str, object] | None:
+        """存在性通过后的完整性闸。返回 ('repair', nudge) | ('soft', kwargs) | None。"""
+        from pathlib import Path as _Path
+
+        from project_runtime.procedure.artifact_integrity import (
+            check_paths_integrity,
+            collect_scan_rel_paths,
+            integrity_repair_nudge,
+        )
+        from project_runtime.procedure.token_stop import ObligationStopResult
+
+        scan = str(getattr(report, "scan_path", "") or "").strip()
+        if not scan:
+            return None
+        root = _Path(scan)
+        failures = check_paths_integrity(root, collect_scan_rel_paths(root))
+        if not failures:
+            return None
+        problems = [
+            f"假/损坏：{f['path']}（{f.get('detail') or f.get('kind')}）"
+            for f in failures
+        ]
+        soft_report = ObligationStopResult(
+            problems=problems,
+            unmet=[
+                {"token_id": None, "kind": "integrity", "hint": p}
+                for p in problems
+            ],
+            scan_root=getattr(report, "scan_root", "task"),
+            scan_path=scan,
+        )
+        tid = int(getattr(self, "_current_task_id", 0) or 0)
+        used = self._delivery_repair_counts.get(tid, 0)
+        if allow_repair and used < _DELIVERY_REPAIR_MAX:
+            self._delivery_repair_counts[tid] = used + 1
+            return (
+                "repair",
+                integrity_repair_nudge(
+                    used, failures, max_repairs=_DELIVERY_REPAIR_MAX,
+                ),
+            )
+        return (
+            "soft",
+            {
+                "reason": "CONTENT_INTEGRITY_SOFT",
+                "report": soft_report,
+                "message": (
+                    "内容完整性未通过（软放行）：" + "；".join(problems)
+                ),
+                "extra": {
+                    "ui_visibility": "audit_only",
+                    "integrity_failures": failures,
+                },
+            },
+        )
+
     def _raise_delivery_gap_soft(
         self,
         *,
@@ -571,6 +636,7 @@ class LLMWorkerAdapter(WorkerAdapter):
         report,
         message: str,
         tool_rounds: int | None = None,
+        extra: dict | None = None,
     ) -> None:
         import datetime as _dt
 
@@ -585,6 +651,8 @@ class LLMWorkerAdapter(WorkerAdapter):
         }
         if tool_rounds is not None:
             gap["tool_rounds"] = tool_rounds
+        if extra:
+            gap.update(extra)
         raise DeliveryGapSoftAcceptError(message, delivery_gap=gap)
 
     async def cancel(self, task_id: int) -> None:
@@ -1082,6 +1150,22 @@ class LLMWorkerAdapter(WorkerAdapter):
                         used + 1, _DELIVERY_REPAIR_MAX, tid, problems,
                     )
                     continue
+                # H4: 存在性通过后再做内容完整性（假 pptx/png 等）
+                integrity_action = self._integrity_stop_action(report)
+                if integrity_action is not None:
+                    kind, payload = integrity_action
+                    if kind == "soft":
+                        self._raise_delivery_gap_soft(**payload)
+                    tid = int(getattr(wp, "task_id", 0) or 0)
+                    if content.strip():
+                        messages.append({
+                            "role": "assistant", "content": content,
+                        })
+                    messages.append({"role": "user", "content": payload})
+                    logger.info(
+                        "delivery integrity repair task=%s", tid,
+                    )
+                    continue
                 return await self._archive_session(
                     task_id, wp, session_store, content, context_stats
                 )
@@ -1232,6 +1316,16 @@ class LLMWorkerAdapter(WorkerAdapter):
                 ),
                 tool_rounds=_TOOL_ROUNDS,
             )
+        # 预算用尽：完整性失败不再返工，直接静默软放行
+        integrity_action = self._integrity_stop_action(
+            report, allow_repair=False,
+        )
+        if integrity_action is not None:
+            kind, payload = integrity_action
+            if kind == "soft":
+                self._raise_delivery_gap_soft(
+                    **payload, tool_rounds=_TOOL_ROUNDS,
+                )
         return await self._archive_session(
             task_id, wp, session_store, content, context_stats,
         )
@@ -1368,7 +1462,11 @@ class LLMWorkerAdapter(WorkerAdapter):
                 "path": str(args.get("path") or "")[:200],
             })
             return text
-        if bare not in ("write_file", "append_file", "slide_generator"):
+        if bare not in (
+            "write_file", "append_file", "office_pptx", "slide_generator",
+            "office_docx", "office_xlsx", "office_pdf", "image_raster",
+            "arch_diagram",
+        ):
             return text
         try:
             from project_runtime.procedure.token_stop import (
@@ -1557,7 +1655,10 @@ class LLMWorkerAdapter(WorkerAdapter):
                     if name in (
                         "tool:read_file", "tool:list_dir",
                         "tool:write_file", "tool:append_file",
-                        "tool:slide_generator",
+                        "tool:office_pptx", "tool:office_docx",
+                        "tool:office_xlsx", "tool:office_pdf",
+                        "tool:image_raster", "tool:office_inspect",
+                        "tool:arch_diagram",
                     ) and self._workspace_root:
                         payload["__ws_root"] = self._workspace_root
                     return await info.provider.invoke(payload)

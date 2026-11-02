@@ -70,7 +70,7 @@ class TestBackfillValidator:
 
         r = await BackfillValidator().validate(_mk_task(), [_A()])
         assert r.status == GateStatus.FAIL
-        assert ".pptx" in r.message and "slide_generator" in r.message
+        assert ".pptx" in r.message and "office_pptx" in r.message
 
     @pytest.mark.asyncio
     async def test_real_pptx_passes(self, dbengine, tmp_path):
@@ -133,7 +133,7 @@ class TestBackfillValidator:
         r = await BackfillValidator().validate(_mk_task(), [_A()])
         assert r.status == GateStatus.FAIL, r.message
         assert "非空" in r.message or "空" in r.message or "80%" in r.message
-        assert "slide_generator" in r.message
+        assert "office_pptx" in r.message
 
     @pytest.mark.asyncio
     async def test_pptx_too_few_pages_blocked(self, dbengine, tmp_path):

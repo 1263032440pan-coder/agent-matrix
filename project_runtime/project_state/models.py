@@ -69,6 +69,10 @@ class Project(Base):
     plan_status: Mapped[str | None] = mapped_column(
         String(16), nullable=True, default="READY"
     )
+    # 用户指定的项目工作区绝对路径；NULL=回落 data/tasks/{id}
+    workspace_path: Mapped[str | None] = mapped_column(
+        String(1024), nullable=True
+    )
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False
     )

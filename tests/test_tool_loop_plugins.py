@@ -37,7 +37,9 @@ _EXPECTED_TOOLS = {
     "tool:webfetch", "tool:read_file", "tool:list_dir", "tool:write_file",
     "tool:append_file",
     "tool:shell",
-    "tool:code_search", "tool:slide_generator",
+    "tool:code_search",
+    "tool:office_pptx", "tool:office_docx", "tool:office_xlsx",
+    "tool:office_pdf", "tool:image_raster", "tool:office_inspect",
     "tool:git", "tool:test_runner", "tool:builder",
     "tool:arch_diagram", "tool:todo",
 }

@@ -120,7 +120,7 @@ def _pptx_quality_check(pptx_arts: list) -> str:
     if not path:
         return (
             "方案PPT: 有 .pptx 登记但文件不可读——请确认产物已落盘后"
-            "用 slide_generator 重生成（≥6 页、非空≥80%、封面有字）"
+            "用 office_pptx 重生成（≥6 页、非空≥80%、封面有字）"
         )
     try:
         from pptx import Presentation as _Pres
@@ -129,12 +129,12 @@ def _pptx_quality_check(pptx_arts: list) -> str:
     except Exception as e:  # noqa: BLE001
         return (
             f"方案PPT: 无法读回 {_relpath(path)}（{e}）——"
-            "请用 slide_generator 重生成合规大纲（每页一个 ##）"
+            "请用 office_pptx 重生成合规大纲（每页一个 ##）"
         )
     n = len(slides)
     if n < 6:
         return (
-            f"方案PPT: 仅 {n} 页（要求≥6）——请用 slide_generator 按"
+            f"方案PPT: 仅 {n} 页（要求≥6）——请用 office_pptx 按"
             "`##` 一节一页重生成（建议 6-12 页，封面用 `#`）"
         )
     non_empty = sum(
@@ -149,7 +149,7 @@ def _pptx_quality_check(pptx_arts: list) -> str:
     if ratio < 0.8:
         return (
             f"方案PPT: 非空页 {non_empty}/{n}（占比 {ratio:.0%} < 80%）——"
-            "空壳页过多，请按一节一页大纲用 slide_generator 重生成"
+            "空壳页过多，请按一节一页大纲用 office_pptx 重生成"
         )
     cover_ok = bool(
         slides
@@ -161,7 +161,7 @@ def _pptx_quality_check(pptx_arts: list) -> str:
     if not cover_ok:
         return (
             "方案PPT: 封面无文字——请用 `# 项目名` 作封面后"
-            "经 slide_generator 重生成"
+            "经 office_pptx 重生成"
         )
     return ""
 
@@ -252,7 +252,7 @@ class BackfillValidator(Validator):
                 ]
                 if not pptx_arts:
                     problems.append(
-                        "方案PPT: 无 .pptx 文件——可用 slide_generator 生成"
+                        "方案PPT: 无 .pptx 文件——可用 office_pptx 生成"
                         "（不少于 6 页, 封面含项目名）"
                     )
                 else:

@@ -173,11 +173,11 @@ class TestPptFallback:
 
         assert resolve_ppt_backend(
             {"skill_id": "ppt-master"}, ppt_master_health=False,
-        ) == "slide_generator"
+        ) == "office_pptx"
         assert resolve_ppt_backend(
             {"skill_id": "ppt-master"}, ppt_master_health=True,
         ) == "ppt-master"
-        assert resolve_ppt_backend(None) == "slide_generator"
+        assert resolve_ppt_backend(None) == "office_pptx"
 
 
 class TestShellSkillWhitelist:

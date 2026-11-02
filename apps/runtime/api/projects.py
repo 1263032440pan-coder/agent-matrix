@@ -45,6 +45,8 @@ async def get_session():
 class CreateProjectRequest(BaseModel):
     name: str
     automation_mode: str = "FULL_AUTO"
+    # 用户工作区绝对路径；创建时指定。空则回落 data/tasks/{id}
+    workspace_path: str | None = None
 
 
 class ModeUpdateRequest(BaseModel):
@@ -57,16 +59,33 @@ async def create_project(
 ):
     if req.automation_mode not in ("FULL_AUTO", "MANUAL"):
         raise HTTPException(400, "automation_mode must be FULL_AUTO or MANUAL")
+    ws_stored: str | None = None
+    if req.workspace_path and str(req.workspace_path).strip():
+        from project_runtime.workspace import validate_workspace_path
+
+        try:
+            resolved = validate_workspace_path(
+                str(req.workspace_path), must_exist=False
+            )
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        resolved.mkdir(parents=True, exist_ok=True)
+        (resolved / ".agent-matrix" / "tasks").mkdir(
+            parents=True, exist_ok=True
+        )
+        ws_stored = str(resolved)
     project = Project(
         name=req.name,
         automation_mode=AutomationMode(req.automation_mode),
         status=ProjectStatus.CREATED,
+        workspace_path=ws_stored,
     )
     session.add(project)
     await session.flush()
     pid, pname = project.id, project.name
+    ws_out = project.workspace_path
     await session.commit()
-    return {"id": pid, "name": pname}
+    return {"id": pid, "name": pname, "workspace_path": ws_out}
 
 
 @router.post("/{project_id}/understanding", status_code=201)
@@ -802,6 +821,7 @@ async def list_projects(session: AsyncSession = Depends(get_session)):
             "created_at": p.created_at.isoformat() if p.created_at else None,
             # V1.6 序6: 交付画像（UI 标识 + 重新判定入口数据源）
             "delivery_profile": p.delivery_profile,
+            "workspace_path": p.workspace_path,
         }
         for p in projects
     ]
@@ -1182,7 +1202,10 @@ async def project_dashboard(project_id: int, session: AsyncSession = Depends(get
                 node_outputs_by_name.get(t.name),
             ),
             "delivery_gap": gap_by_task.get(t.id),
-            "verification_level": _verification_level(project_id, t.id),
+            "verification_level": _verification_level(
+                project_id, t.id,
+                workspace_path=project.workspace_path,
+            ),
             **_task_delivery_stats(
                 t, attempt_by_task, fail_by_task, gap_by_task,
             ),
@@ -1291,7 +1314,9 @@ async def project_dashboard(project_id: int, session: AsyncSession = Depends(get
         ),
         "delivery_checklist": _delivery_checklist_view(
             project_id, manifest, tasks, artifacts,
+            workspace_path=project.workspace_path,
         ),
+        "workspace_path": project.workspace_path,
         "delivery_quality": await _delivery_quality(
             session, tasks, gap_by_task,
         ),
@@ -1529,9 +1554,16 @@ async def _delivery_quality(session, tasks, gap_by_task: dict) -> dict:
     return out
 
 
-def _verification_level(project_id: int, task_id: int) -> str:
+def _verification_level(
+    project_id: int,
+    task_id: int,
+    *,
+    workspace_path: str | None = None,
+) -> str:
     """SYS-159: 只读验证等级（compile / syntax / none），不进 Gate。"""
-    root = Path("data/tasks") / str(project_id) / str(task_id)
+    from project_runtime.workspace import resolve_task_workspace
+
+    root = resolve_task_workspace(project_id, task_id, workspace_path)
     if not root.exists():
         return "none"
     names = [p.name.lower() for p in root.rglob("*") if p.is_file()]
@@ -1651,6 +1683,8 @@ def _delivery_checklist_view(
     manifest: dict | None,
     tasks: list,
     artifacts: list,
+    *,
+    workspace_path: str | None = None,
 ) -> dict:
     """概览「产物清单实时对比」：清单项 vs 工作区/产物命中。"""
     from datetime import datetime, timezone
@@ -1660,6 +1694,7 @@ def _delivery_checklist_view(
         list_match_hits,
         project_workspace_rel_paths,
     )
+    from project_runtime.workspace import resolve_project_workspace
 
     if not manifest:
         return {
@@ -1673,7 +1708,10 @@ def _delivery_checklist_view(
     owner_by_id = {str(i["id"]): i for i in assign["items"]}
     task_by_id = {t.id: t for t in tasks}
 
-    files = project_workspace_rel_paths(project_id)
+    files = project_workspace_rel_paths(
+        project_id,
+        root=resolve_project_workspace(project_id, workspace_path),
+    )
     seen = set(files)
     for a in artifacts:
         name = getattr(a, "name", None) or ""

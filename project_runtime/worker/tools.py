@@ -84,6 +84,9 @@ class WebFetchProvider:
 # 旧名 file_rw → 拆分后的单一用途工具（USER/CONTROLLER 定义存库不随 seed 更新）
 _TOOL_ALIASES: dict[str, tuple[str, ...]] = {
     "file_rw": ("read_file", "list_dir", "write_file", "append_file"),
+    # Hermes 方案：slide_generator 演进为 office_pptx（白名单旧名兼容）
+    "slide_generator": ("office_pptx",),
+    "tool:slide_generator": ("office_pptx",),
 }
 RENAMED_TOOLS = frozenset({"file_rw", "tool:file_rw"})
 _FILE_TOOL_EXAMPLES = (
@@ -316,6 +319,10 @@ def _persist_text(provider: _FileToolBase, payload: dict, *, append: bool) -> di
             f'示例: {tool} {{"path": "README.md", "content": "..."}}',
         )
     content = str(content)
+    from project_runtime.office.controlled import (
+        binary_suffix_denied,
+        controlled_suffix_of,
+    )
     from project_runtime.procedure.delivery_validator import (
         SCRIPT_NAME,
         is_validator_script_path,
@@ -326,6 +333,8 @@ def _persist_text(provider: _FileToolBase, payload: dict, *, append: bool) -> di
             f"禁止写入冻结校验脚本 {SCRIPT_NAME}",
             "请重新「生成计划」更新闸门",
         )
+    if controlled_suffix_of(path):
+        return binary_suffix_denied(path)
     ws_root = provider._ws_root(payload)
     resolved, err = provider._target(path, ws_root, write=True)
     if err:
@@ -578,6 +587,87 @@ def run_win_text_cmd(cmd_name: str, args: str, cwd: Path) -> dict:
     return {"ok": True, "code": 0, "stdout": out[:_OUTPUT_LIMIT], "stderr": ""}
 
 
+_REDIR_TARGET = re.compile(r"(>>?)\s*[\"']?([^\s\"'|&;]+)")
+
+
+def _deny_controlled_redirect(command: str) -> dict | None:
+    """A1b: echo/cmd 重定向到受控后缀则拒绝。"""
+    from project_runtime.office.controlled import controlled_suffix_of
+
+    for m in _REDIR_TARGET.finditer(command):
+        target = m.group(2)
+        if controlled_suffix_of(target):
+            return tool_error(
+                "BINARY_SUFFIX_DENIED",
+                f"禁止重定向写入受控后缀: {target}",
+                "请改用 office_* / image_raster / arch_diagram 生成",
+            )
+    return None
+
+
+def _snapshot_controlled(cwd: Path) -> dict[str, tuple[int, int, bytes | None]]:
+    """path → (size, mtime_ns, bytes|None)。小文件保留字节以便还原。"""
+    from project_runtime.office.controlled import controlled_suffix_of
+
+    snap: dict[str, tuple[int, int, bytes | None]] = {}
+    if not cwd.exists():
+        return snap
+    for p in cwd.rglob("*"):
+        if not p.is_file() or not controlled_suffix_of(p.name):
+            continue
+        try:
+            st = p.stat()
+            data = p.read_bytes() if st.st_size <= 2_000_000 else None
+            snap[str(p.relative_to(cwd))] = (
+                st.st_size, st.st_mtime_ns, data,
+            )
+        except OSError:
+            continue
+    return snap
+
+
+def _restore_controlled(
+    cwd: Path, snap: dict[str, tuple[int, int, bytes | None]],
+) -> list[str]:
+    """还原新建/变更的受控后缀文件；返回被还原的相对路径。"""
+    from project_runtime.office.controlled import controlled_suffix_of
+
+    restored: list[str] = []
+    current: set[str] = set()
+    if cwd.exists():
+        for p in cwd.rglob("*"):
+            if p.is_file() and controlled_suffix_of(p.name):
+                try:
+                    current.add(str(p.relative_to(cwd)))
+                except ValueError:
+                    continue
+    # 新建 → 删除
+    for rel in current - set(snap):
+        try:
+            (cwd / rel).unlink(missing_ok=True)
+            restored.append(rel)
+        except OSError:
+            pass
+    # 变更 → 写回
+    for rel, (size, mtime_ns, data) in snap.items():
+        p = cwd / rel
+        try:
+            if not p.exists():
+                if data is not None:
+                    p.parent.mkdir(parents=True, exist_ok=True)
+                    p.write_bytes(data)
+                    restored.append(rel)
+                continue
+            st = p.stat()
+            if st.st_size != size or st.st_mtime_ns != mtime_ns:
+                if data is not None:
+                    p.write_bytes(data)
+                    restored.append(rel)
+        except OSError:
+            continue
+    return restored
+
+
 class ShellProvider:
     """受限 shell——三防: 命令白名单+参数模式 / cwd 硬锁 / 超时截断。"""
 
@@ -669,6 +759,16 @@ class ShellProvider:
         if win_text:
             return run_win_text_cmd(cmd_name, args, cwd)
 
+        # A1b: 重定向写入受控二进制后缀 → 拒绝
+        redir_err = _deny_controlled_redirect(command)
+        if redir_err is not None:
+            return redir_err
+
+        # A1b: 非 skill 的 python 写受控后缀 → 执行前后摘要还原
+        snap = None
+        if cmd_name in ("python", "python3") and not skill_script_ok:
+            snap = _snapshot_controlled(cwd)
+
         # ③ 受限执行
         import subprocess
 
@@ -683,9 +783,23 @@ class ShellProvider:
                 asyncio.to_thread(_blocking), timeout=_SHELL_TIMEOUT_S + 10
             )
         except subprocess.TimeoutExpired:
+            if snap is not None:
+                _restore_controlled(cwd, snap)
             return {"ok": False, "error": f"超时（>{_SHELL_TIMEOUT_S}s）"}
         except Exception as e:  # noqa: BLE001
+            if snap is not None:
+                _restore_controlled(cwd, snap)
             return {"ok": False, "error": f"执行失败: {e}"}
+        if snap is not None:
+            restored = _restore_controlled(cwd, snap)
+            if restored:
+                return tool_error(
+                    "BINARY_WRITE_ESCAPE",
+                    "非 skill 的 python 改写了受控二进制后缀，已还原："
+                    + ", ".join(restored[:8]),
+                    "请改用 office_pptx / office_docx / office_xlsx / "
+                    "office_pdf / image_raster / arch_diagram",
+                )
         out = (proc.stdout or "")[:_OUTPUT_LIMIT]
         err = (proc.stderr or "")[:2000]
         return {"ok": proc.returncode == 0, "code": proc.returncode,
@@ -757,226 +871,7 @@ class CodeSearchProvider:
         return {"ok": True, "count": len(hits), "hits": hits[:50]}
 
 
-# ── slide_generator（python-pptx——批次 1 刚需）─────────────────────
-
-
-class SlideGeneratorProvider:
-    """md → .pptx（基础版式: 标题页/目录/内容页/要点页/结尾）。
-
-    输入 markdown 约定:
-      # 一级标题        → 演示文稿标题（首页）
-      ## 二级标题       → 每节一页（页标题）
-      - 要点            → 要点列表（bullet）
-      普通段落          → 内容文本框
-    产物落 Artifact（调用方经 file 管理器登记——本 provider 返回写盘路径）。
-    """
-
-    name = "tool:slide_generator"
-    capability = None
-    permission = "READ_ONLY"
-    priority = 150
-    enabled = True
-
-    def tool_schema(self) -> dict:
-        from project_runtime.worker.tool_schemas import tool_schema_for
-
-        return tool_schema_for(self.name)
-
-    def __init__(self) -> None:
-        from project_runtime.plugin.capability import CapabilityType
-
-        SlideGeneratorProvider.capability = CapabilityType.TOOL
-
-    async def health(self) -> bool:
-        try:
-            import pptx  # noqa: F401
-
-            return True
-        except ImportError:
-            return False
-
-    async def invoke(self, payload: dict) -> dict:
-        markdown = str(payload.get("markdown") or "")
-        workspace = payload.get("workspace") or "."
-        filename = str(payload.get("filename") or "slides.pptx")
-        if not markdown.strip():
-            return {"ok": False, "error": "markdown 必填"}
-        # 返修单-slide_generator落点逃逸: 任务级禁闭——__ws_root 注入时
-        # 输出目录强制= 任务工作区, workspace 参数被忽略（与 write_file 同构;
-        # 实测 5 个 pptx 散落工位外, harvest 收割不到 → Gate 误判死循环）
-        ws_root_raw = payload.get("__ws_root")
-        if ws_root_raw:
-            out_dir = Path(str(ws_root_raw)).resolve()
-        else:
-            try:
-                out_dir = resolve_workspace_path(str(workspace))
-            except ValueError as e:
-                return {"ok": False, "error": str(e)}
-        out_dir.mkdir(parents=True, exist_ok=True)
-        out_path = out_dir / re.sub(r'[<>:"/\\|?*]', "_", filename)
-
-        def _blocking() -> tuple[int, int]:
-            """返修单 V3 批D-D1: 按节建页（对齐 md2pptx）。
-
-            建页单位=节（`##`）而非行；段落/表格/代码归并本页；
-            `#` 封面；`---` 显式分页；fence 行不建页。
-            返回 (slide_count, h2_section_count)。
-            """
-            from pptx import Presentation
-            from pptx.util import Pt
-
-            prs = Presentation()
-            # 默认模板 layout[1]=标题+内容（官方 Title and Content）
-            content_layout = prs.slide_layouts[1]
-
-            h2_count = 0
-            title_slide_added = False
-            current_title: str | None = None
-            body_lines: list[str] = []
-            in_fence = False
-
-            def flush_section(*, keep_title: str | None = None) -> None:
-                """把当前节刷成一页；keep_title 用于 --- 后续页无新 ##。"""
-                nonlocal current_title, body_lines
-                title = current_title
-                if title is None and not body_lines:
-                    return
-                slide = prs.slides.add_slide(content_layout)
-                if title and hasattr(slide.shapes, "title") and slide.shapes.title:
-                    slide.shapes.title.text = title
-                # 优先 placeholders[1]；否则跳过正文
-                body_ph = None
-                try:
-                    body_ph = slide.placeholders[1]
-                except (KeyError, IndexError):
-                    for sh in slide.shapes:
-                        if sh.has_text_frame and sh != getattr(
-                            slide.shapes, "title", None
-                        ):
-                            body_ph = sh
-                            break
-                if body_ph is not None and body_lines:
-                    tf = body_ph.text_frame
-                    tf.clear()
-                    for i, line in enumerate(body_lines[:24]):
-                        p = tf.paragraphs[0] if i == 0 else tf.add_paragraph()
-                        text = line
-                        if text.startswith(("- ", "* ")):
-                            text = text[2:]
-                            p.level = 0
-                        p.text = text[:500]
-                        p.font.size = Pt(16)
-                elif title and body_ph is not None and not body_lines:
-                    # 仅标题也算非空页（标题本身有字）
-                    pass
-                body_lines = []
-                current_title = keep_title
-
-            for raw in markdown.splitlines():
-                stripped = raw.strip()
-                # fenced code: 整块归并，fence 行本身不建页
-                if stripped.startswith("```"):
-                    in_fence = not in_fence
-                    if current_title is not None or body_lines:
-                        body_lines.append(stripped[:200])
-                    continue
-                if in_fence:
-                    if current_title is not None or body_lines or title_slide_added:
-                        body_lines.append(stripped[:500] if stripped else "")
-                    continue
-
-                if stripped == "---":
-                    # 显式分页（Marp/md2pptx 语义）
-                    flush_section(keep_title=None)
-                    continue
-
-                if stripped.startswith("# ") and not stripped.startswith("## "):
-                    flush_section()
-                    slide = prs.slides.add_slide(prs.slide_layouts[0])
-                    slide.shapes.title.text = stripped[2:].strip()
-                    try:
-                        slide.placeholders[1].text = (
-                            "autogenerated · Project Autonomous Agent"
-                        )
-                    except (KeyError, IndexError):
-                        pass
-                    title_slide_added = True
-                    current_title = None
-                    body_lines = []
-                    continue
-
-                if stripped.startswith("## "):
-                    flush_section()
-                    h2_count += 1
-                    current_title = stripped[3:].strip()
-                    body_lines = []
-                    continue
-
-                if not stripped:
-                    continue
-
-                # 表格行 / 要点 / 普通段落 → 归并进当前节
-                if current_title is None and not title_slide_added:
-                    # 无封面无节时，隐式开一节
-                    current_title = "内容"
-                    h2_count += 1
-                if current_title is None and title_slide_added:
-                    # 封面后、--- 后的孤儿正文：开无标题续页
-                    current_title = ""
-                body_lines.append(stripped[:500])
-
-            flush_section()
-            if not title_slide_added and len(prs.slides._sldIdLst) == 0:  # noqa: SLF001
-                slide = prs.slides.add_slide(prs.slide_layouts[0])
-                slide.shapes.title.text = "演示文稿"
-            count = len(prs.slides._sldIdLst)  # noqa: SLF001
-            prs.save(str(out_path))
-            return count, h2_count
-
-        def _meta() -> dict:
-            """V1.6 序4: 读回 pptx 元数据（事实返回——判定归模型/skill）。"""
-            from pptx import Presentation as _Pres
-
-            m = _Pres(str(out_path))
-            slides = list(m.slides)
-            non_empty = sum(
-                1 for sl in slides
-                if any(sh.has_text_frame and sh.text_frame.text.strip()
-                       for sh in sl.shapes)
-            )
-            has_title = bool(
-                slides and any(
-                    sh.has_text_frame and sh.text_frame.text.strip()
-                    for sh in slides[0].shapes
-                )
-            )
-            return {"slides": len(slides),
-                    "non_empty_slides": non_empty,
-                    "has_title_text": has_title}
-
-        try:
-            _count, h2_count = await asyncio.to_thread(_blocking)
-            meta = await asyncio.to_thread(_meta)
-        except Exception as e:  # noqa: BLE001
-            return {"ok": False, "error": f"生成失败: {e}"}
-        # V1.6 序4 + 批D-D3: 元数据 + 页数偏斜归因（事实陈述，判定归模型）
-        stdout = (
-            f"已生成 {out_path.name}: {meta['slides']} 页"
-            f"（{meta['non_empty_slides']} 页有内容）——"
-            "请对照交付基线自查页数与内容要求"
-        )
-        if h2_count > 0 and meta["slides"] > 2 * h2_count:
-            stdout += (
-                "；可能未按一节一页格式，建议重生成"
-                f"（二级标题 {h2_count} vs 实际 {meta['slides']} 页）"
-            )
-        return {
-            "ok": True, "path": str(out_path),
-            "slides": meta["slides"],
-            "non_empty_slides": meta["non_empty_slides"],
-            "has_title_text": meta["has_title_text"],
-            "stdout": stdout,
-        }
+# slide_generator → office_pptx：见 project_runtime.office.providers
 
 
 # ── 注册（组合根——与 search providers 同模式）─────────────────────
@@ -994,4 +889,6 @@ def register_worker_tools(registry) -> None:
     registry.register(AppendFileProvider())
     registry.register(ShellProvider())
     registry.register(CodeSearchProvider())
-    registry.register(SlideGeneratorProvider())
+    from project_runtime.office.providers import register_office_tools
+
+    register_office_tools(registry)

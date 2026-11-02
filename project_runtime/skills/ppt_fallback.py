@@ -1,4 +1,4 @@
-"""返修V3 批C: PPT 双层兜底——ppt-master 优先，不可用退 slide_generator。"""
+"""返修V3 批C: PPT 双层兜底——ppt-master 优先，不可用退 office_pptx。"""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ def resolve_ppt_backend(
     *,
     ppt_master_health: bool | None = None,
 ) -> str:
-    """返回 'ppt-master' | 'slide_generator'。
+    """返回 'ppt-master' | 'office_pptx'。
 
     ppt_master_health: 调用方探测结果；None 时若 skill 绑定含 ppt-master 则尝试视为可用。
     """
@@ -26,12 +26,12 @@ def resolve_ppt_backend(
         )
     wants_master = "ppt-master" in str(skill_id).lower()
     if not wants_master and skill_ctx is None and ppt_master_health is None:
-        return "slide_generator"
+        return "office_pptx"
     if ppt_master_health is False:
-        logger.info("ppt-master unavailable — fallback slide_generator")
-        return "slide_generator"
+        logger.info("ppt-master unavailable — fallback office_pptx")
+        return "office_pptx"
     if wants_master and ppt_master_health is not False:
         return "ppt-master"
     if ppt_master_health is True:
         return "ppt-master"
-    return "slide_generator"
+    return "office_pptx"

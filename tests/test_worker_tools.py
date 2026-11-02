@@ -4,7 +4,7 @@
   [x] read_file / list_dir 工作区禁闭（越界拒绝/不存在 404 语义/合法读）
   [x] shell 三防（白名单/参数模式/注入黑名单/cd 逃逸/git 只读子命令）
   [x] code_search 正则命中+glob+越界拒绝
-  [x] slide_generator md→pptx（读回验证页数/标题）+ 文件名清洗
+  [x] office_pptx md→pptx（读回验证页数/标题）
   [x] webfetch URL 校验（非 http 拒绝）
   [x] register_worker_tools 组合根（TOOL capability 注册齐）
 """
@@ -43,12 +43,12 @@ def workspace(tmp_path, monkeypatch):
 
 @pytest.fixture
 def providers(workspace):
+    from project_runtime.office.providers import OfficePptxProvider
     from project_runtime.worker.tools import (
         CodeSearchProvider,
         ListDirProvider,
         ReadFileProvider,
         ShellProvider,
-        SlideGeneratorProvider,
         WebFetchProvider,
     )
 
@@ -57,7 +57,7 @@ def providers(workspace):
         "list": ListDirProvider(),
         "shell": ShellProvider(),
         "search": CodeSearchProvider(),
-        "slide": SlideGeneratorProvider(),
+        "slide": OfficePptxProvider(),
         "fetch": WebFetchProvider(),
     }
 
@@ -208,34 +208,39 @@ class TestSlideGenerator:
         )
         out = workspace / "p1" / "t1"
         r = await providers["slide"].invoke({
-            "markdown": md, "workspace": str(out), "filename": "方案.pptx",
+            "markdown": md,
+            "path": "方案.pptx",
+            "__ws_root": str(out),
         })
         assert r["ok"], r
         assert r["slides"] >= 4  # 标题页+至少 3 节页
         # 读回验证
         from pptx import Presentation
 
-        prs = Presentation(r["path"])
+        prs = Presentation(r["abs_path"])
         assert len(prs.slides._sldIdLst) == r["slides"]  # 返回值与读回一致
         first_title = prs.slides[0].shapes.title.text
         assert "项目方案汇报" in first_title
-        os.unlink(r["path"])
+        os.unlink(r["abs_path"])
 
     @pytest.mark.asyncio
     async def test_filename_sanitized(self, providers, workspace):
         r = await providers["slide"].invoke({
             "markdown": "# T\n\n## A\n- b",
-            "workspace": str(workspace),
-            "filename": "坏/名:字?.pptx",
+            "path": "坏/名:字?.pptx",
+            "__ws_root": str(workspace),
         })
-        assert r["ok"]
-        assert "/" not in os.path.basename(r["path"])
-        os.unlink(r["path"])
+        assert r["ok"], r
+        # 非法字符清洗；/ 保留为子目录
+        assert (workspace / "坏" / "名_字_.pptx").exists()
+        os.unlink(r["abs_path"])
 
     @pytest.mark.asyncio
     async def test_empty_md_rejected(self, providers, workspace):
         r = await providers["slide"].invoke({
-            "markdown": "  ", "workspace": str(workspace),
+            "markdown": "  ",
+            "path": "empty.pptx",
+            "__ws_root": str(workspace),
         })
         assert not r["ok"]
 
@@ -261,58 +266,60 @@ class TestRegistration:
         reg = ExtensionRegistry()
         register_worker_tools(reg)
         names = {i.name for i in reg.list_providers(CapabilityType.TOOL)}
-        assert names == {
+        assert "tool:office_pptx" in names
+        assert "tool:office_docx" in names
+        assert "tool:image_raster" in names
+        assert "tool:slide_generator" not in names
+        for base in (
             "tool:webfetch", "tool:read_file", "tool:list_dir",
             "tool:write_file", "tool:append_file", "tool:shell",
-            "tool:code_search", "tool:slide_generator",
-        }
+            "tool:code_search",
+        ):
+            assert base in names
 
 
-# ═══ 返修单-slide_generator落点逃逸 专项 ════════════════════════
+# ═══ office_pptx 路径合同 ═══════════════════════════════════════
 
 class TestSlideGenConfinement:
     @pytest.mark.asyncio
     async def test_ws_root_forces_task_workspace(self, tmp_path,
                                                  monkeypatch):
-        """__ws_root 注入: workspace 参数被忽略, PPT 必落任务工作区。"""
+        """__ws_root 注入: path 相对任务工作区。"""
         monkeypatch.chdir(tmp_path)
-        from project_runtime.worker.tools import SlideGeneratorProvider
+        (tmp_path / "data/tasks/2/18").mkdir(parents=True)
+        from project_runtime.office.providers import OfficePptxProvider
 
-        prov = SlideGeneratorProvider()
+        prov = OfficePptxProvider()
         r = await prov.invoke({
             "markdown": "# T\n## 内容\n- a",
-            "workspace": "data/tasks/2",          # 模型猜的错路径
-            "filename": "方案.pptx",
-            "__ws_root": "data/tasks/2/18",        # 真实任务工作区
+            "path": "方案.pptx",
+            "__ws_root": str(tmp_path / "data/tasks/2/18"),
         })
         assert r["ok"] is True, r
         assert (tmp_path / "data/tasks/2/18/方案.pptx").exists()
-        # 错误路径不该有文件
         assert not (tmp_path / "data/tasks/2/方案.pptx").exists()
 
     @pytest.mark.asyncio
-    async def test_no_ws_root_legacy(self, tmp_path, monkeypatch):
-        """无 __ws_root: 维持全域语义（向后兼容）。"""
+    async def test_subdir_path_preserved(self, tmp_path, monkeypatch):
+        """子目录分隔符保留（不再把 / 洗成 _）。"""
         monkeypatch.chdir(tmp_path)
-        from project_runtime.worker.tools import SlideGeneratorProvider
+        ws = tmp_path / "data/tasks/1/1"
+        ws.mkdir(parents=True)
+        from project_runtime.office.providers import OfficePptxProvider
 
-        prov = SlideGeneratorProvider()
-        r = await prov.invoke({
+        r = await OfficePptxProvider().invoke({
             "markdown": "# T\n## 内容\n- a",
-            "workspace": "data/tasks/x",
-            "filename": "y.pptx",
+            "path": "deliverables/slides/方案.pptx",
+            "__ws_root": str(ws),
         })
-        assert r["ok"] is True
-        assert (tmp_path / "data/tasks/x/y.pptx").exists()
+        assert r["ok"], r
+        assert (ws / "deliverables" / "slides" / "方案.pptx").exists()
+        assert r["path"] == "deliverables/slides/方案.pptx"
 
-    def test_schema_says_ignored(self):
-        """schema 契约: workspace 描述含'已忽略'（不引导模型猜路径）。"""
-        from project_runtime.worker.tool_schemas import SLIDE_SCHEMA
+    def test_schema_has_path(self):
+        from project_runtime.worker.tool_schemas import OFFICE_PPTX_SCHEMA
 
-        desc = SLIDE_SCHEMA["parameters"]["properties"]["workspace"][
-            "description"
-        ]
-        assert "已忽略" in desc
+        assert "path" in OFFICE_PPTX_SCHEMA["parameters"]["properties"]
 
 
 # ═══ 返修单 V3 批D: PPT 按节建页 / Schema 方言 / 归因提示 ══════════
@@ -364,8 +371,8 @@ class TestSlideGeneratorV3BatchD:
         out = workspace / "p1" / "t1"
         r = await providers["slide"].invoke({
             "markdown": _DOC_7_SECTIONS,
-            "workspace": str(out),
-            "filename": "方案.pptx",
+            "path": "方案.pptx",
+            "__ws_root": str(out),
         })
         assert r["ok"], r
         # 1 封面 + 7 节 = 8；不得炸成数十页
@@ -374,9 +381,9 @@ class TestSlideGeneratorV3BatchD:
         assert r.get("has_title_text") is True
         from pptx import Presentation
 
-        prs = Presentation(r["path"])
+        prs = Presentation(r["abs_path"])
         assert len(list(prs.slides)) == 8
-        os.unlink(r["path"])
+        os.unlink(r["abs_path"])
 
     @pytest.mark.asyncio
     async def test_plain_lines_merge_into_section(self, providers, workspace):
@@ -392,12 +399,12 @@ class TestSlideGeneratorV3BatchD:
         )
         r = await providers["slide"].invoke({
             "markdown": md,
-            "workspace": str(workspace),
-            "filename": "merge.pptx",
+            "path": "p1/t1/merge.pptx",
+            "__ws_root": str(workspace),
         })
         assert r["ok"], r
         assert r["slides"] == 2  # 封面 + 1 节
-        os.unlink(r["path"])
+        os.unlink(r["abs_path"])
 
     @pytest.mark.asyncio
     async def test_hr_is_explicit_page_break(self, providers, workspace):
@@ -413,13 +420,13 @@ class TestSlideGeneratorV3BatchD:
         )
         r = await providers["slide"].invoke({
             "markdown": md,
-            "workspace": str(workspace),
-            "filename": "hr.pptx",
+            "path": "p1/t1/hr.pptx",
+            "__ws_root": str(workspace),
         })
         assert r["ok"], r
         # 封面 + 甲 + --- 后一页 = 3；代码块不另起页
         assert r["slides"] == 3, r
-        os.unlink(r["path"])
+        os.unlink(r["abs_path"])
 
     @pytest.mark.asyncio
     async def test_skew_hint_when_pages_explode(self, providers, workspace):
@@ -429,23 +436,18 @@ class TestSlideGeneratorV3BatchD:
         md = "# 封面\n\n" + body
         r = await providers["slide"].invoke({
             "markdown": md,
-            "workspace": str(workspace),
-            "filename": "skew.pptx",
+            "path": "p1/t1/skew.pptx",
+            "__ws_root": str(workspace),
         })
         assert r["ok"], r
         assert r["slides"] > 2 * 1  # h2=1
         assert "可能未按一节一页" in (r.get("stdout") or "")
-        os.unlink(r["path"])
+        os.unlink(r["abs_path"])
 
     def test_schema_teaches_slide_dialect(self):
-        """SYS-083: markdown 参数描述含 ## 方言与拒绝项。"""
-        from project_runtime.worker.tool_schemas import SLIDE_SCHEMA
+        """office_pptx description 引导 JSON/markdown，禁止 write_file。"""
+        from project_runtime.worker.tool_schemas import OFFICE_PPTX_SCHEMA
 
-        md_desc = SLIDE_SCHEMA["parameters"]["properties"]["markdown"][
-            "description"
-        ]
-        top = SLIDE_SCHEMA["description"]
-        blob = md_desc + top
-        assert "##" in blob
-        assert "6" in blob and "12" in blob
-        assert "表格" in blob or "代码" in blob or "---" in blob
+        blob = OFFICE_PPTX_SCHEMA["description"]
+        assert "pptx" in blob.lower()
+        assert "write_file" in blob or "spec" in blob

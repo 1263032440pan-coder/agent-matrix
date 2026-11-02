@@ -7,7 +7,8 @@
   ① 环节上限（天花板）: 继承该环节内置模板的 plugins 全集
      —— 上限是人工评审过的静态代码（§2.3 三层依据），非 LLM 推导物
   ② 契约增量（只加安全集）: 扫 Task.contract 能力词，从安全增量集加
-     {arch_diagram, slide_generator, todo, builder, test_runner}
+     {arch_diagram, office_pptx, office_docx, office_xlsx, office_pdf,
+      image_raster, office_inspect, todo, builder, test_runner}
      —— 全部只读或工作区禁闭型，无文件系统越界面
      —— shell / git 永不进增量集（只能经 ① 的环节上限获得）
   ③ misc 兜底: 无对应环节 → 三能力基线（文件工具 + web_search）
@@ -39,13 +40,21 @@ BASELINE_PLUGINS = (
 
 # 契约安全增量集（§2.1 ②——只读/工作区禁闭型，shell/git 永不在）
 SAFE_INCREMENT_PLUGINS = {
-    "arch_diagram", "slide_generator", "todo", "builder", "test_runner",
+    "arch_diagram", "office_pptx", "office_docx", "office_xlsx",
+    "office_pdf", "image_raster", "office_inspect",
+    "todo", "builder", "test_runner",
+    # 旧名：expand_tool_whitelist 会映射到 office_pptx
+    "slide_generator",
 }
 
 # 契约能力词 → 插件（扫描 Task.contract 的关键词映射）
 _CONTRACT_PLUGIN_KEYWORDS: list[tuple[str, str]] = [
     (r"架构图|流程图|时序图|mermaid|diagram", "arch_diagram"),
-    (r"PPT|幻灯|汇报材料|演示文稿|slides?", "slide_generator"),
+    (r"PPT|幻灯|汇报材料|演示文稿|slides?", "office_pptx"),
+    (r"Word|docx|报告|合同|说明书", "office_docx"),
+    (r"Excel|xlsx|表格|台账|spreadsheet", "office_xlsx"),
+    (r"\bPDF\b|pdf报告", "office_pdf"),
+    (r"示意图|海报|封面图|位图", "image_raster"),
     (r"待办|任务清单|todo", "todo"),
     (r"构建|打包|docker|镜像|npm build", "builder"),
     (r"测试|pytest|单测|用例", "test_runner"),

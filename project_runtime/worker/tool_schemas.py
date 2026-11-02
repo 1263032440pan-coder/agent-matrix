@@ -66,10 +66,11 @@ LIST_DIR_SCHEMA = {
 
 WRITE_FILE_SCHEMA = {
     "description": (
-        "在本任务工作区新建或覆盖文件（目录自动创建）。落盘源码、README、"
-        "文档等产物时使用。没有写入次数或配额限制；只能写本任务工作区，"
-        "其他任务目录只读。内容很长时先 write_file 首段，再用 append_file "
-        "追加（单次 content 建议不超过 6000 字符）。"
+        "在本任务工作区新建或覆盖 UTF-8 文本文件（目录自动创建）。"
+        "用于源码、README、JSON/MD 规格等。禁止写入 .pptx/.docx/.xlsx/"
+        ".pdf/.png/.jpg/.jpeg/.webp（返回 BINARY_SUFFIX_DENIED）——"
+        "请改用 office_pptx / office_docx / office_xlsx / office_pdf / "
+        "image_raster / arch_diagram。单次 content 建议不超过 6000 字符。"
     ),
     "parameters": {
         "type": "object",
@@ -83,8 +84,8 @@ WRITE_FILE_SCHEMA = {
 
 APPEND_FILE_SCHEMA = {
     "description": (
-        "向本任务工作区文件追加内容（文件不存在则创建）。长文件分段写入时"
-        "使用；禁闭与 write_file 相同，没有写入配额。单次 content 建议"
+        "向本任务工作区 UTF-8 文本文件追加内容（文件不存在则创建）。"
+        "禁闭与受控后缀拒写规则与 write_file 相同。单次 content 建议"
         "不超过 6000 字符。"
     ),
     "parameters": {
@@ -134,31 +135,104 @@ CODE_SEARCH_SCHEMA = {
     },
 }
 
-SLIDE_SCHEMA = {
+OFFICE_PPTX_SCHEMA = {
     "description": (
-        "把 markdown 大纲生成 .pptx 演示文稿（python-pptx）。"
-        "分页方言（对齐 markdown-pptx/md2pptx）：每页=一个 `##` 二级标题"
-        "+其下要点/段落；`#` 一级标题作封面；建议 6-12 页。"
-        "勿用表格、代码块或 `---` 作为正文结构（`---` 仅显式分页）。"
-        "参数: markdown（大纲）, filename（workspace 已忽略——自动存任务工作区）。"
+        "生成真实 .pptx（python-pptx）。优先传 JSON spec 或 spec_path；"
+        "也可传 markdown 大纲（# 封面 / ## 一节一页）。"
+        "path 为相对任务工作区路径（可含子目录）。勿用 write_file 写 pptx。"
+        "可选 preview=true（有 LibreOffice 时尝试预览转换）。"
     ),
     "parameters": {
         "type": "object",
         "properties": {
-            "markdown": {
-                "type": "string",
-                "description": (
-                    "幻灯片大纲。格式：`# 封面标题`；每页用 `## 页标题` 起节，"
-                    "节下用 `- 要点` 或短段落；建议总共 6-12 页。"
-                    "避免表格、代码块；不要把 `---` 当装饰线（会分页）。"
-                ),
-            },
-            "workspace": {"type": "string", "description": (
-                "已忽略——PPT 自动保存到当前任务工作区（无需传路径）"
-            )},
-            "filename": {"type": "string", "description": "输出文件名"},
+            "path": {"type": "string",
+                     "description": "输出相对路径，如 deliverables/方案.pptx"},
+            "markdown": {"type": "string", "description": "markdown 大纲（过渡）"},
+            "spec": {"type": "object", "description": "JSON：title + slides[]"},
+            "spec_path": {"type": "string", "description": "工作区内 JSON 规格文件"},
+            "filename": {"type": "string", "description": "兼容旧字段；优先用 path"},
+            "preview": {"type": "boolean"},
         },
-        "required": ["markdown"],
+        "required": [],
+    },
+}
+
+OFFICE_DOCX_SCHEMA = {
+    "description": (
+        "生成真实 .docx（python-docx）。输入 JSON spec/spec_path："
+        "title、paragraphs[]、tables[]。path 为清单相对路径。"
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string"},
+            "spec": {"type": "object"},
+            "spec_path": {"type": "string"},
+        },
+        "required": ["path"],
+    },
+}
+
+OFFICE_XLSX_SCHEMA = {
+    "description": (
+        "生成真实 .xlsx（openpyxl）。spec.sheets[] 含 name 与 data 二维表。"
+        "path 为清单相对路径。勿用 write_file 写 xlsx。"
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string"},
+            "spec": {"type": "object"},
+            "spec_path": {"type": "string"},
+        },
+        "required": ["path"],
+    },
+}
+
+OFFICE_PDF_SCHEMA = {
+    "description": (
+        "生成真实 .pdf（reportlab）。spec：title + paragraphs[]。"
+        "path 为清单相对路径。勿用 write_file 写 pdf。"
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string"},
+            "spec": {"type": "object"},
+            "spec_path": {"type": "string"},
+        },
+        "required": ["path"],
+    },
+}
+
+IMAGE_RASTER_SCHEMA = {
+    "description": (
+        "按 JSON 规格用 Pillow 绘制示意图/封面图（.png/.jpg/.webp）。"
+        "spec：title、lines/bullets、boxes[]。架构流程图优先 arch_diagram。"
+        "勿用 write_file 写假 png。"
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string"},
+            "spec": {"type": "object"},
+            "spec_path": {"type": "string"},
+        },
+        "required": ["path"],
+    },
+}
+
+OFFICE_INSPECT_SCHEMA = {
+    "description": (
+        "读回办公/图片文件结构（页数、段落、sheet、是否合法 OOXML 等）。"
+        "不要用 read_file 读 .pptx/.docx/.xlsx。"
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string"},
+        },
+        "required": ["path"],
     },
 }
 
@@ -223,16 +297,19 @@ BUILDER_SCHEMA = {
 
 ARCH_DIAGRAM_SCHEMA = {
     "description": (
-        "把 mermaid 源码渲染成架构图（png——需 mmdc；无渲染器时落 "
-        ".mmd 源文件）。绘制系统架构/流程图、嵌入文档或 PPT 时使用。"
-        "参数: mermaid（源码）, name（文件名）, out_dir。"
+        "把 mermaid 渲染到清单相对 path。目标 .png 需本机 mmdc；"
+        "无 mmdc 时返回 RENDERER_UNAVAILABLE（不写假 png）。"
+        "只要源码时 path 以 .mmd 结尾或 format=mmd。参数: mermaid, path。"
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "mermaid": {"type": "string", "description": "mermaid 源码"},
-            "name": {"type": "string"},
-            "out_dir": {"type": "string"},
+            "path": {"type": "string",
+                     "description": "输出相对路径，如 deliverables/arch.png"},
+            "format": {"type": "string", "enum": ["png", "mmd"]},
+            "name": {"type": "string", "description": "兼容旧字段"},
+            "out_dir": {"type": "string", "description": "兼容旧字段"},
         },
         "required": ["mermaid"],
     },
@@ -270,7 +347,12 @@ TOOL_SCHEMAS: dict[str, dict] = {
     "tool:append_file": APPEND_FILE_SCHEMA,
     "tool:shell": SHELL_SCHEMA,
     "tool:code_search": CODE_SEARCH_SCHEMA,
-    "tool:slide_generator": SLIDE_SCHEMA,
+    "tool:office_pptx": OFFICE_PPTX_SCHEMA,
+    "tool:office_docx": OFFICE_DOCX_SCHEMA,
+    "tool:office_xlsx": OFFICE_XLSX_SCHEMA,
+    "tool:office_pdf": OFFICE_PDF_SCHEMA,
+    "tool:image_raster": IMAGE_RASTER_SCHEMA,
+    "tool:office_inspect": OFFICE_INSPECT_SCHEMA,
     "tool:git": GIT_SCHEMA,
     "tool:test_runner": TEST_RUNNER_SCHEMA,
     "tool:builder": BUILDER_SCHEMA,

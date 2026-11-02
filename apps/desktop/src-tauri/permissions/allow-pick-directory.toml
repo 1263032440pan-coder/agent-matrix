@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "allow-pick-directory"
+description = "允许前端调用 pick_directory 选择项目工作区文件夹"
+commands.allow = ["pick_directory"]

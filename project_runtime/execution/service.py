@@ -377,10 +377,33 @@ class ExecutionRunner:
             logger.debug("context build failed for %s", execution_id,
                          exc_info=True)
 
+        # 项目工作区：创建时指定的绝对路径，或回落 data/tasks/{pid}
+        proj_ws_path: str | None = None
+        try:
+            async with AsyncSession(engine) as s:
+                from project_runtime.project_state.models import Project
+
+                prow = await s.get(Project, project_id)
+                if prow is not None:
+                    proj_ws_path = prow.workspace_path
+        except Exception:  # noqa: BLE001
+            logger.debug("load project workspace_path failed", exc_info=True)
+
+        from project_runtime.workspace import (
+            resolve_project_workspace,
+            resolve_task_workspace,
+        )
+
+        project_ws = resolve_project_workspace(project_id, proj_ws_path)
+        task_ws = resolve_task_workspace(
+            project_id, task_id, proj_ws_path,
+        )
+        task_ws.mkdir(parents=True, exist_ok=True)
+
         worker_session = AsyncSession(engine)
         try:
             artifact_mgr = ArtifactManager(
-                worker_session, workspace_root=f"data/tasks/{project_id}"
+                worker_session, workspace_root=str(project_ws)
             )
             worker = LLMWorkerAdapter(worker_session, artifact_mgr=artifact_mgr)
             result = await worker.assign(
@@ -412,7 +435,7 @@ class ExecutionRunner:
                     # V1.5a-1: code_stage 透传（playbook_ref 解析——软提醒用）
                     code_stage=_code_stage_of(task_playbook_ref_snapshot),
                     # V1.6 序0: 任务工作区根（文件工具写禁闭）
-                    workspace_root=f"data/tasks/{project_id}/{task_id}",
+                    workspace_root=str(task_ws),
                     # V1.6 序3: delivery_tags 透传（收工自查钩子消费）
                     delivery_tags=_delivery_tags_of(
                         task_playbook_ref_snapshot),
@@ -840,7 +863,6 @@ class ExecutionRunner:
 async def _delivery_closeout_check(project_id: int) -> None:
     """V1.6d: 收口——优先冻结脚本扫项目根；脚本无效则事件不瞎补。"""
     import json as _json
-    from pathlib import Path
 
     from project_runtime.event import EventEngine, RuntimeEventType
     from project_runtime.procedure.delivery_manifest import (
@@ -895,7 +917,11 @@ async def _delivery_closeout_check(project_id: int) -> None:
             ).scalars().all()
         )
         all_names = [a.name or "" for a in arts]
-        ws_root = Path(f"data/tasks/{project_id}")
+        from project_runtime.workspace import resolve_project_workspace
+
+        ws_root = resolve_project_workspace(
+            project_id, getattr(proj, "workspace_path", None),
+        )
         if ws_root.exists():
             all_names = list({*all_names, *workspace_file_names(ws_root)})
 

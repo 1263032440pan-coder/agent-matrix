@@ -495,7 +495,8 @@ BUILT_IN_TEMPLATES = [
         "name": "分析智能体",
         "role_description": "负责项目理解与需求基线阶段——理解输入材料、"
                             "定义结构化需求并产出汇报材料（PPT）。",
-        "plugins": [*FILE_TOOLS, "web_search", "webfetch", "slide_generator"],
+        "plugins": [*FILE_TOOLS, "web_search", "webfetch",
+                    "office_pptx", "office_docx", "office_inspect"],
         "skills": None,
         "stage_affinity": ["项目理解", "需求基线"],
         "source": AgentSource.BUILT_IN,
@@ -506,7 +507,9 @@ BUILT_IN_TEMPLATES = [
         "role_description": "负责解决方案、原型设计与架构设计阶段——"
                             "产出方案文档、架构图与评审材料。",
         "plugins": [*FILE_TOOLS, "web_search", "webfetch",
-                    "slide_generator", "arch_diagram"],
+                    "office_pptx", "office_docx", "office_xlsx",
+                    "office_pdf", "image_raster", "arch_diagram",
+                    "office_inspect"],
         "skills": None,
         "stage_affinity": ["解决方案", "原型设计", "架构设计"],
         "source": AgentSource.BUILT_IN,
@@ -516,7 +519,10 @@ BUILT_IN_TEMPLATES = [
         "name": "编码智能体",
         "role_description": "负责开发实现阶段——按契约实现功能代码。",
         # V1.4: +web_search（三能力③基线）; lsp 摘除（provider 未实现）
-        "plugins": [*FILE_TOOLS, "web_search", "shell", "code_search", "git"],
+        # A3：SOFTWARE_DEV 清单仍强制 .pptx → 编码上限须含 office_pptx，
+        # 否则拒写后无法合法交 PPT。
+        "plugins": [*FILE_TOOLS, "web_search", "shell", "code_search", "git",
+                    "office_pptx", "office_inspect"],
         # V1.4: skills None=不限（[] 是 fail-closed 零 skill——违反
         # "安装即可被程序利用"定则）
         "skills": None,
@@ -538,7 +544,8 @@ BUILT_IN_TEMPLATES = [
         "name": "交付智能体",
         "role_description": "负责交付打包与使用文档阶段——构建交付物与文档。",
         "plugins": [*FILE_TOOLS, "web_search", "shell", "builder",
-                    "slide_generator"],
+                    "office_pptx", "office_docx", "office_xlsx",
+                    "office_pdf", "image_raster", "office_inspect"],
         "skills": None,
         "stage_affinity": ["交付打包", "使用文档"],
         "source": AgentSource.BUILT_IN,
