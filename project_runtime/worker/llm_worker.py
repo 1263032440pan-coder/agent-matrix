@@ -714,7 +714,6 @@ class LLMWorkerAdapter(WorkerAdapter):
         )
 
         # AOP-P2-2 清偿: litellm 直调 → LLM Capability Provider
-        from project_runtime.llm.provider import llm_acomplete
 
         cfg = load_llm_settings()
         if not (cfg.base_url and cfg.api_key and cfg.model):
@@ -901,6 +900,16 @@ class LLMWorkerAdapter(WorkerAdapter):
         # V1.4: Agent 白名单交集（wp 透传——None=不限）
         tool_wl = getattr(wp, "tool_whitelist", None)
         tools = self._search_tools(whitelist=tool_wl)
+        self._tool_adapter = None
+        if tools:
+            from project_runtime.llm import require_tools_compat
+            from project_runtime.llm.tool_name_adapter import ToolNameAdapter
+
+            _compat = require_tools_compat(cfg)
+            self._tool_adapter = ToolNameAdapter(
+                style=_compat.tool_name_style,
+            )
+            tools = self._tool_adapter.adapt_tools(tools)
         content = ""
         # V1.4h: 工具历史（强收时拼摘要——防"垃圾成功"空话产物）
         tool_history: list[tuple[str, bool, int]] = []
@@ -958,26 +967,22 @@ class LLMWorkerAdapter(WorkerAdapter):
                     raise RuntimeError(result.get("error", "LLM failed"))
                 stream = result["response"]
             except Exception as e:  # noqa: BLE001
-                # 降级: 网关不支持 tools（报错）→ 剔除 tools 重发单轮
+                # 已拍板：禁止因非法函数名等再 fallback single（剥 tools 假跑）
                 if tools and round_no == 1:
-                    logger.info("tools unsupported (%s) — fallback single", e)
-                    tools = None
-                    result = await llm_acomplete(
-                        model=model,
-                        api_base=cfg.base_url,
-                        api_key=cfg.api_key,
-                        messages=messages,
-                        max_tokens=self._max_tokens,
-                        timeout=600,
-                        stream=True,
+                    from project_runtime.llm.compat import (
+                        is_invalid_function_name_error,
                     )
-                    if not result.get("ok"):
+
+                    if is_invalid_function_name_error(e):
                         raise RuntimeError(
-                            result.get("error", "LLM failed")
-                        )
-                    stream = result["response"]
-                else:
-                    raise
+                            "网关工具名与本地 compat 不一致，"
+                            "请到设置重新测试连通"
+                        ) from e
+                    raise RuntimeError(
+                        "工具调用请求失败（已禁止静默去工具降级）："
+                        f"{e}"
+                    ) from e
+                raise
 
             reasoning_parts: list[str] = []
             content_parts: list[str] = []
@@ -1221,12 +1226,18 @@ class LLMWorkerAdapter(WorkerAdapter):
                     logger.debug("inflight session checkpoint failed",
                                  exc_info=True)
             for i, tc in enumerate(tool_calls):
+                wire_name = tc["name"]
+                internal_name = (
+                    self._tool_adapter.to_canonical(wire_name)
+                    if self._tool_adapter is not None
+                    else wire_name
+                )
                 result_text, ok = await self._run_search_tool(
-                    task_id, tc["name"], tc["arguments"], round_no,
+                    task_id, internal_name, tc["arguments"], round_no,
                     whitelist=tool_wl,
                 )
                 tool_history.append((
-                    tc["name"], ok, len(result_text)
+                    internal_name, ok, len(result_text)
                 ))
                 messages.append({
                     "role": "tool",

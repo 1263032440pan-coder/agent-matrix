@@ -2,7 +2,7 @@
 
 > 版本：2026-11-02（r3：拍板锁定）  
 > 前置：工具循环 `_build_tools` / `_run_tool_plugin`；MoMA `deepseek-v4.1-flash-1017` 拒收 `tool:read_file`（仅 `a-zA-Z0-9_.-`）→ 误 `fallback single` → 无产物。  
-> 状态：**已拍板，可实施**（本文为唯一方案文档）  
+> 状态：**已落地**（设置测试探测 + compat 落盘 + ToolNameAdapter + Worker 禁止 fallback single）  
 >  
 > **已拍板：**  
 > 1. 设置「测试」探测合法工具名风格并写入本地 `compat`；运行期只读配置出站。  

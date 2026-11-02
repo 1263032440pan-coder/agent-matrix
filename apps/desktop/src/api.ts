@@ -375,11 +375,22 @@ export async function executeProject(
   return resp.json();
 }
 
+export interface LLMCompatInfo {
+  ok?: boolean;
+  chat_ok?: boolean;
+  tools_supported?: boolean;
+  tool_name_style?: 'colon' | 'underscore' | 'dot' | 'none';
+  probed_at?: string;
+  notes?: string;
+}
+
 export interface LLMConfig {
   base_url: string;
   model: string;
   api_key_set?: boolean;
   api_key_preview?: string;
+  compat_valid?: boolean;
+  compat?: LLMCompatInfo | null;
 }
 
 export async function getLLMSettings(): Promise<LLMConfig> {
@@ -406,7 +417,13 @@ export async function testLLMConnection(cfg: {
   base_url: string;
   model: string;
   api_key?: string;
-}): Promise<{ ok: boolean; sample?: string; error?: string }> {
+}): Promise<{
+  ok: boolean;
+  sample?: string;
+  error?: string;
+  compat_valid?: boolean;
+  compat?: LLMCompatInfo | null;
+}> {
   const resp = await fetch(`${API_BASE}/api/settings/llm/test`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

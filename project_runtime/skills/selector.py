@@ -140,11 +140,27 @@ class SkillSelector:
             if extra:
                 content = f"{content}\\n\\n[上下文]\\n{extra[:1000]}"
 
+            from project_runtime.llm.compat import compat_valid
+            from project_runtime.llm.tool_name_adapter import ToolNameAdapter
+
+            adapter = None
+            if (
+                compat_valid(cfg)
+                and cfg.compat is not None
+                and cfg.compat.tools_supported
+                and cfg.compat.tool_name_style != "none"
+            ):
+                adapter = ToolNameAdapter(style=cfg.compat.tool_name_style)
+                tools = adapter.adapt_tools(tools) or tools
+
             def _pick(resp) -> str | None:
                 msg = resp.choices[0].message
                 tcs = getattr(msg, "tool_calls", None) or []
                 if tcs:
-                    return tcs[0].function.name
+                    name = tcs[0].function.name
+                    if adapter is not None:
+                        name = adapter.to_canonical(name)
+                    return name
                 # 某些网关不吐 tool_calls — 文本里找 skill_ 前缀
                 text = msg.content or ""
                 for sk in pool:

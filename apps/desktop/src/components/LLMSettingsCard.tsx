@@ -1,11 +1,28 @@
 import { useEffect, useState } from 'react';
-import { getLLMSettings, saveLLMSettings, testLLMConnection } from '../api';
+import {
+  getLLMSettings,
+  saveLLMSettings,
+  testLLMConnection,
+  type LLMCompatInfo,
+} from '../api';
+
+function formatCompat(c: LLMCompatInfo | null | undefined, valid?: boolean): string {
+  if (!valid || !c) {
+    return '网关格式未探测或已过期，请点击测试';
+  }
+  const chat = c.chat_ok ? '聊天 ✓' : '聊天 ✗';
+  if (!c.tools_supported || c.tool_name_style === 'none') {
+    return `${chat} · 不支持工具 ✗（仅聊天可用）`;
+  }
+  return `${chat} · 工具名风格：${c.tool_name_style}`;
+}
 
 export function LLMSettingsCard() {
   const [baseUrl, setBaseUrl] = useState('');
   const [model, setModel] = useState('');
   const [apiKey, setApiKey] = useState('');
   const [status, setStatus] = useState<string | null>(null);
+  const [compatHint, setCompatHint] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -13,6 +30,7 @@ export function LLMSettingsCard() {
       .then((cfg) => {
         setBaseUrl(cfg.base_url);
         setModel(cfg.model);
+        setCompatHint(formatCompat(cfg.compat, cfg.compat_valid));
       })
       .catch((e) => setStatus(String(e)));
   }, []);
@@ -27,8 +45,13 @@ export function LLMSettingsCard() {
   const doSave = async () => {
     setBusy(true);
     try {
-      await saveLLMSettings({ base_url: baseUrl, model, api_key: apiKey });
+      const saved = await saveLLMSettings({
+        base_url: baseUrl,
+        model,
+        api_key: apiKey,
+      });
       setStatus('已保存');
+      setCompatHint(formatCompat(saved.compat, saved.compat_valid));
       setApiKey('');
     } catch (e) {
       setStatus(String(e));
@@ -39,10 +62,23 @@ export function LLMSettingsCard() {
 
   const doTest = async () => {
     setBusy(true);
-    setStatus('测试中…');
+    setStatus('测试中（含工具名探测）…');
     try {
-      const r = await testLLMConnection({ base_url: baseUrl, model, api_key: apiKey });
-      setStatus(r.ok ? `连通正常：${r.sample ?? 'ok'}` : `失败：${r.error}`);
+      const r = await testLLMConnection({
+        base_url: baseUrl,
+        model,
+        api_key: apiKey,
+      });
+      if (!r.ok) {
+        setStatus(`失败：${r.error}`);
+        return;
+      }
+      setCompatHint(formatCompat(r.compat, r.compat_valid));
+      const style = r.compat?.tool_name_style ?? 'none';
+      const tools = r.compat?.tools_supported
+        ? `工具名风格 ${style}`
+        : '不支持工具';
+      setStatus(`连通正常：${r.sample ?? 'ok'} · ${tools}`);
     } catch (e) {
       setStatus(String(e));
     } finally {
@@ -90,7 +126,24 @@ export function LLMSettingsCard() {
           测试连通
         </button>
       </div>
-      {status && <p style={{ color: '#555', fontSize: 13, marginBottom: 0 }}>{status}</p>}
+      {compatHint && (
+        <p
+          data-testid="llm-compat-hint"
+          style={{
+            color: compatHint.includes('过期') || compatHint.includes('未探测')
+              ? '#a61b1b'
+              : '#555',
+            fontSize: 13,
+            marginTop: 10,
+            marginBottom: 0,
+          }}
+        >
+          {compatHint}
+        </p>
+      )}
+      {status && (
+        <p style={{ color: '#555', fontSize: 13, marginBottom: 0 }}>{status}</p>
+      )}
     </section>
   );
 }
