@@ -39,6 +39,17 @@ export interface DashboardData {
       scan_root?: string;
       scan_path?: string;
     } | null;
+    /** 义务驱动：绑定 Agent vs 所需插件 */
+    bound_agent?: {
+      instance_id: number;
+      definition_id?: number;
+      name?: string;
+      agent_id?: string;
+      status?: string;
+    } | null;
+    agent_plugins?: string[] | null;
+    required_plugins?: string[];
+    plugin_gap?: string[];
   }>;
   current_task: { id: number; name: string } | null;
   worker_status: { running: number; ready: number };

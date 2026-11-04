@@ -263,7 +263,10 @@ class ExecutionRunner:
         # current_task_id; best-effort——无实例照常执行老路径）
         agent_binding = None
         try:
-            from project_runtime.worker.lifecycle import bind_agent
+            from project_runtime.worker.lifecycle import (
+                bind_agent,
+                ensure_capability_binding,
+            )
 
             async with AsyncSession(engine) as s:
                 agent_binding = await bind_agent(
@@ -272,7 +275,53 @@ class ExecutionRunner:
                     task_contract=task_contract_snapshot,
                     task_content=task_select_content or "",
                 )
+                # 义务驱动前门禁：改绑 / 派生补齐 / BLOCKED（不进空转）
+                man = None
+                try:
+                    from project_runtime.procedure.delivery_manifest import (
+                        validate_manifest,
+                    )
+                    from project_runtime.project_state.models import Project
+
+                    prow = await s.get(Project, project_id)
+                    if prow is not None and prow.delivery_manifest:
+                        man = validate_manifest(prow.delivery_manifest)
+                except Exception:  # noqa: BLE001
+                    man = None
+                gate = await ensure_capability_binding(
+                    s, project_id, task_id, agent_binding,
+                    playbook_ref=task_playbook_ref_snapshot,
+                    manifest=man,
+                    task_type=task_type_snapshot,
+                    task_contract=task_contract_snapshot,
+                )
+                agent_binding = gate.binding
                 await s.commit()
+                if gate.blocked:
+                    # 勿在本函数内再 import ExecutionRepository——会遮蔽
+                    # 模块顶层导入，导致 Phase A 的 UnboundLocalError。
+                    async with AsyncSession(engine) as s2:
+                        repo = ExecutionRepository(s2)
+                        ex = await repo.get(execution_id)
+                        if ex is not None:
+                            await repo.mark_finished(
+                                ex, False,
+                                error_code="CAPABILITY_GAP",
+                                error_message=gate.reason[:500],
+                            )
+                            await s2.commit()
+                    await _emit(
+                        RuntimeEventType.EXECUTION_FAILED,
+                        project_id=project_id, task_id=task_id,
+                        execution_id=execution_id,
+                        phase="WORKER_EXECUTION",
+                        message=gate.reason or "capability gap",
+                        payload={
+                            "error_code": "CAPABILITY_GAP",
+                            "plugin_gap": sorted(gate.gap),
+                        },
+                    )
+                    return
         except Exception:  # noqa: BLE001 — Agent 面绝不阻断执行
             logger.debug("agent bind failed", exc_info=True)
         skill_ctx = None

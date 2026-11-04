@@ -23,14 +23,11 @@ def controlled_suffix_of(path: str) -> str | None:
     return None
 
 
-def binary_suffix_denied(path: str) -> dict:
-    from project_runtime.worker.tools import tool_error
+def binary_suffix_denied(
+    path: str,
+    *,
+    visible_tools: list[str] | None = None,
+) -> dict:
+    from project_runtime.worker.obligation_plugins import binary_denied_hint
 
-    suf = controlled_suffix_of(path) or ""
-    tool = CONTROLLED_BINARY_SUFFIXES.get(suf, "专用渲染工具")
-    return tool_error(
-        "BINARY_SUFFIX_DENIED",
-        f"禁止用 write_file/append_file 写入 {suf or '二进制'}——"
-        "请只写 UTF-8 规格（.json/.md），再调用专用工具生成",
-        f"请改用 {tool}，path 使用清单相对路径（如 deliverables/.../文件{suf}）",
-    )
+    return binary_denied_hint(path, visible_tools=visible_tools)

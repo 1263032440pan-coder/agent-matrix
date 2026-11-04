@@ -1186,6 +1186,9 @@ async def project_dashboard(project_id: int, session: AsyncSession = Depends(get
     except Exception:  # noqa: BLE001
         logger.debug("dashboard gate fail count failed", exc_info=True)
 
+    # 义务驱动：绑定 Agent / 插件缺口（只读对照）
+    agent_by_task = await _bound_agents_by_task(session, project_id, tasks)
+
     task_list = [
         {
             "id": t.id,
@@ -1210,6 +1213,9 @@ async def project_dashboard(project_id: int, session: AsyncSession = Depends(get
                 t, attempt_by_task, fail_by_task, gap_by_task,
             ),
             **_task_load_fields(t.playbook_ref),
+            **_plugin_capability_fields(
+                t.playbook_ref, manifest, agent_by_task.get(t.id),
+            ),
         }
         for t in tasks
     ]
@@ -1601,6 +1607,93 @@ def _task_load_fields(playbook_ref: str | None) -> dict:
         "bin_packed": bool(ref.get("bin_packed")),
         "decomposed_from": ref.get("decomposed_from"),
     }
+
+
+async def _bound_agents_by_task(
+    session, project_id: int, tasks: list,
+) -> dict[int, dict]:
+    """task_id → {bound_agent, agent_plugins}（当前 BUSY 或最近 current_task）。"""
+    out: dict[int, dict] = {}
+    try:
+        from project_runtime.worker.agent_models import (
+            AgentDefinition,
+            AgentInstance,
+            AgentStatus,
+        )
+
+        task_ids = [t.id for t in tasks]
+        if not task_ids:
+            return out
+        rows = (
+            await session.execute(
+                select(AgentInstance, AgentDefinition)
+                .join(
+                    AgentDefinition,
+                    AgentInstance.definition_id == AgentDefinition.id,
+                )
+                .where(
+                    AgentInstance.project_id == project_id,
+                    AgentInstance.current_task_id.in_(task_ids),
+                )
+            )
+        ).all()
+        for inst, dfn in rows:
+            tid = inst.current_task_id
+            if tid is None:
+                continue
+            out[int(tid)] = {
+                "bound_agent": {
+                    "instance_id": inst.id,
+                    "definition_id": dfn.id,
+                    "name": dfn.name,
+                    "agent_id": dfn.agent_id,
+                    "status": (
+                        inst.status.value
+                        if isinstance(inst.status, AgentStatus)
+                        else str(inst.status)
+                    ),
+                },
+                "agent_plugins": list(dfn.plugins or []),
+            }
+    except Exception:  # noqa: BLE001
+        logger.debug("dashboard bound agent lookup failed", exc_info=True)
+    return out
+
+
+def _plugin_capability_fields(
+    playbook_ref: str | None,
+    manifest: dict | None,
+    bound: dict | None,
+) -> dict:
+    """义务所需插件 vs Agent 插件缺口。"""
+    try:
+        from project_runtime.worker.obligation_plugins import (
+            plugin_gap,
+            required_plugins_for_playbook_ref,
+        )
+
+        need = sorted(
+            required_plugins_for_playbook_ref(
+                playbook_ref, manifest=manifest,
+            )
+        )
+        plugins = list((bound or {}).get("agent_plugins") or [])
+        have = plugins if bound else None
+        gap = sorted(plugin_gap(set(need), have)) if need else []
+        return {
+            "bound_agent": (bound or {}).get("bound_agent"),
+            "agent_plugins": plugins or None,
+            "required_plugins": need,
+            "plugin_gap": gap,
+        }
+    except Exception:  # noqa: BLE001
+        logger.debug("plugin capability fields failed", exc_info=True)
+        return {
+            "bound_agent": (bound or {}).get("bound_agent") if bound else None,
+            "agent_plugins": None,
+            "required_plugins": [],
+            "plugin_gap": [],
+        }
 
 
 def _required_deliverables_of(

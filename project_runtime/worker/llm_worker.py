@@ -899,6 +899,7 @@ class LLMWorkerAdapter(WorkerAdapter):
         # 模型自主决定调用；上限 4 轮；降级矩阵见 §4.4。
         # V1.4: Agent 白名单交集（wp 透传——None=不限）
         tool_wl = getattr(wp, "tool_whitelist", None)
+        self._tool_whitelist = tool_wl
         tools = self._search_tools(whitelist=tool_wl)
         self._tool_adapter = None
         if tools:
@@ -1672,6 +1673,18 @@ class LLMWorkerAdapter(WorkerAdapter):
                         "tool:arch_diagram",
                     ) and self._workspace_root:
                         payload["__ws_root"] = self._workspace_root
+                    # 义务驱动：拒写回执需可见工具列表
+                    if name in ("tool:write_file", "tool:append_file"):
+                        wl = getattr(self, "_tool_whitelist", None)
+                        if wl is None:
+                            payload["__visible_tools"] = None
+                        else:
+                            from project_runtime.worker.tools import (
+                                expand_tool_whitelist,
+                            )
+                            payload["__visible_tools"] = list(
+                                expand_tool_whitelist(wl) or []
+                            )
                     return await info.provider.invoke(payload)
                 except Exception as e:  # noqa: BLE001 — 降级不炸循环
                     return {"ok": False, "error": str(e)[:300]}

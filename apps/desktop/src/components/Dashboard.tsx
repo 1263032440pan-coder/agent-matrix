@@ -562,6 +562,45 @@ export function Dashboard({
                   )}
                 </div>
               )}
+              {((selected.required_plugins?.length ?? 0) > 0 ||
+                selected.bound_agent ||
+                (selected.plugin_gap?.length ?? 0) > 0) && (
+                <div
+                  data-testid="plugin-capability"
+                  style={{ fontSize: 12, color: '#444', marginTop: 6 }}
+                >
+                  <div>
+                    Agent{' '}
+                    {selected.bound_agent?.name ||
+                      selected.bound_agent?.agent_id ||
+                      '—'}
+                    {selected.bound_agent?.instance_id != null
+                      ? ` #${selected.bound_agent.instance_id}`
+                      : ''}
+                  </div>
+                  {(selected.agent_plugins?.length ?? 0) > 0 && (
+                    <div style={{ color: '#666', wordBreak: 'break-all' }}>
+                      插件：{selected.agent_plugins!.join(', ')}
+                    </div>
+                  )}
+                  {(selected.required_plugins?.length ?? 0) > 0 && (
+                    <div style={{ color: '#666', wordBreak: 'break-all' }}>
+                      义务所需：{selected.required_plugins!.join(', ')}
+                    </div>
+                  )}
+                  {(selected.plugin_gap?.length ?? 0) > 0 && (
+                    <div
+                      style={{
+                        color: '#cf1322',
+                        fontWeight: 600,
+                        wordBreak: 'break-all',
+                      }}
+                    >
+                      缺口：{selected.plugin_gap!.join(', ')}
+                    </div>
+                  )}
+                </div>
+              )}
               {selected.verification_level && (
                 <div
                   data-testid="task-verify-level"

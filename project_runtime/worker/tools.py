@@ -334,7 +334,10 @@ def _persist_text(provider: _FileToolBase, payload: dict, *, append: bool) -> di
             "请重新「生成计划」更新闸门",
         )
     if controlled_suffix_of(path):
-        return binary_suffix_denied(path)
+        vis = payload.get("__visible_tools")
+        if vis is not None and not isinstance(vis, list):
+            vis = None
+        return binary_suffix_denied(path, visible_tools=vis)
     ws_root = provider._ws_root(payload)
     resolved, err = provider._target(path, ws_root, write=True)
     if err:

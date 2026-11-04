@@ -12,12 +12,16 @@
   失败后  fail_agent()      record_failure（3 连败→DEGRADED）→ 快照 → 传播
                              （备胎转派/升级 block）
   未选上  无实例照常执行    （老路径零回归——Agent 面是增强不是依赖）
+
+义务驱动（2026-11）:
+  bind 后 ensure_capability_binding()——缺口则改绑/派生补齐/BLOCKED，
+  禁止带着缺能力进工具空转。
 """
 
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -38,6 +42,17 @@ class AgentBinding:
     # None=不限（全部已注册可见）; list=白名单（fail-closed）
     tool_whitelist: list[str] | None = None
     skill_whitelist: list[str] | None = None
+
+
+@dataclass
+class CapabilityGateResult:
+    """执行前门禁结果。"""
+
+    binding: AgentBinding | None
+    blocked: bool = False
+    gap: set[str] = field(default_factory=set)
+    reason: str = ""
+    rebound: bool = False
 
 
 async def bind_agent(
@@ -212,3 +227,242 @@ async def provision_after_plan(
     except Exception:  # noqa: BLE001 — Agent 面绝不阻断规划
         logger.debug("provision_after_plan failed", exc_info=True)
         return 0
+
+
+def _plugins_cover(have: list[str] | None, need: set[str]) -> bool:
+    from project_runtime.worker.obligation_plugins import plugin_gap
+
+    return not plugin_gap(need, have)
+
+
+async def _find_covering_instance(
+    session: AsyncSession,
+    project_id: int,
+    need: set[str],
+    *,
+    exclude_id: int | None = None,
+) -> AgentInstance | None:
+    """同项目 IDLE/CREATED 且 plugins ⊇ need 的实例。"""
+    from sqlalchemy import select
+
+    from project_runtime.worker.agent_models import AgentDefinition
+
+    rows = (
+        await session.execute(
+            select(AgentInstance, AgentDefinition)
+            .join(
+                AgentDefinition,
+                AgentInstance.definition_id == AgentDefinition.id,
+            )
+            .where(
+                AgentInstance.project_id == project_id,
+                AgentInstance.status.in_([
+                    AgentStatus.IDLE, AgentStatus.CREATED,
+                ]),
+            )
+        )
+    ).all()
+    for inst, dfn in rows:
+        if exclude_id is not None and inst.id == exclude_id:
+            continue
+        if _plugins_cover(dfn.plugins, need):
+            return inst
+    return None
+
+
+async def _release_busy_quietly(
+    session: AsyncSession, binding: AgentBinding,
+) -> None:
+    from project_runtime.worker.registry import AgentFSM
+
+    inst = await session.get(AgentInstance, binding.instance_id)
+    if inst is None:
+        return
+    if inst.status is AgentStatus.BUSY:
+        await AgentFSM(session).transition(
+            inst, AgentStatus.IDLE, actor="SYSTEM",
+            reason="capability rebind",
+        )
+    inst.current_task_id = None
+    await session.flush()
+
+
+async def _bind_instance(
+    session: AsyncSession,
+    inst: AgentInstance,
+    project_id: int,
+    task_id: int,
+) -> AgentBinding:
+    from project_runtime.worker.agent_models import AgentDefinition
+    from project_runtime.worker.registry import AgentFSM
+
+    fsm = AgentFSM(session)
+    if inst.status is AgentStatus.CREATED:
+        await fsm.transition(
+            inst, AgentStatus.IDLE, actor="SYSTEM", reason="capability bind",
+        )
+    await fsm.transition(
+        inst, AgentStatus.BUSY, actor="SYSTEM",
+        reason=f"task {task_id} capability bind",
+    )
+    inst.current_task_id = task_id
+    d = await session.get(AgentDefinition, inst.definition_id)
+    await session.flush()
+    return AgentBinding(
+        instance_id=inst.id,
+        project_id=project_id,
+        task_id=task_id,
+        tool_whitelist=(d.plugins if d else None),
+        skill_whitelist=(d.skills if d else None),
+    )
+
+
+async def ensure_capability_binding(
+    session: AsyncSession,
+    project_id: int,
+    task_id: int,
+    binding: AgentBinding | None,
+    *,
+    playbook_ref: str | None,
+    manifest: dict | None = None,
+    task_type: str | None = None,
+    task_contract: str | None = None,
+) -> CapabilityGateResult:
+    """义务驱动执行前门禁：改绑 → SAFE_INCREMENT 派生补齐 → BLOCKED。
+
+    binding=None（无 Agent 老路径）且 need 非空时仍尝试派生绑定；
+    派生失败则不阻断（老路径工具面不限——与既有零回归一致）。
+    """
+    from project_runtime.worker.obligation_plugins import (
+        contract_hint_for_plugins,
+        plugin_gap,
+        required_plugins_for_playbook_ref,
+    )
+
+    need = required_plugins_for_playbook_ref(
+        playbook_ref, manifest=manifest,
+    )
+    if not need:
+        return CapabilityGateResult(binding=binding)
+
+    have = binding.tool_whitelist if binding is not None else None
+    gap = plugin_gap(need, have)
+    if not gap:
+        return CapabilityGateResult(binding=binding)
+
+    # 1) 改绑到已有覆盖实例
+    try:
+        alt = await _find_covering_instance(
+            session, project_id, need,
+            exclude_id=binding.instance_id if binding else None,
+        )
+        if alt is not None:
+            if binding is not None:
+                await _release_busy_quietly(session, binding)
+            new_b = await _bind_instance(session, alt, project_id, task_id)
+            return CapabilityGateResult(
+                binding=new_b, rebound=True, gap=set(),
+                reason=f"rebound to instance#{alt.id}",
+            )
+    except Exception:  # noqa: BLE001
+        logger.debug("capability rebind scan failed", exc_info=True)
+
+    # 2) Controller 派生 + 补齐 SAFE_INCREMENT，再绑定
+    try:
+        from project_runtime.worker.derive import (
+            SAFE_INCREMENT_PLUGINS,
+            ensure_controller_template,
+        )
+        from project_runtime.worker.registry import AgentProvisioner
+
+        if gap <= SAFE_INCREMENT_PLUGINS:
+            aug = contract_hint_for_plugins(need, task_contract)
+            d = await ensure_controller_template(
+                session, project_id, task_type or "misc", aug,
+            )
+            if d is not None:
+                # 强制补齐缺口（派生词可能漏扫）
+                plugs = list(d.plugins or [])
+                changed = False
+                for p in gap:
+                    if p in SAFE_INCREMENT_PLUGINS and p not in plugs:
+                        plugs.append(p)
+                        changed = True
+                if changed:
+                    d.plugins = plugs
+                    await session.flush()
+                await AgentProvisioner(session).provision(
+                    project_id, [task_type or "misc"],
+                )
+                alt = await _find_covering_instance(
+                    session, project_id, need,
+                    exclude_id=binding.instance_id if binding else None,
+                )
+                # 也可能刚建的实例仍是 CREATED；再找含本定义的
+                if alt is None:
+                    from sqlalchemy import select
+
+
+                    rows = (
+                        await session.execute(
+                            select(AgentInstance).where(
+                                AgentInstance.project_id == project_id,
+                                AgentInstance.definition_id == d.id,
+                                AgentInstance.status != AgentStatus.TERMINATED,
+                            )
+                        )
+                    ).scalars().all()
+                    for inst in rows:
+                        if _plugins_cover(plugs, need):
+                            alt = inst
+                            break
+                if alt is not None:
+                    if binding is not None:
+                        await _release_busy_quietly(session, binding)
+                    new_b = await _bind_instance(
+                        session, alt, project_id, task_id,
+                    )
+                    return CapabilityGateResult(
+                        binding=new_b, rebound=True, gap=set(),
+                        reason=f"derived+bound instance#{alt.id}",
+                    )
+    except Exception:  # noqa: BLE001
+        logger.debug("capability derive fill failed", exc_info=True)
+
+    # 3) 有白名单缺口且无法补齐 → BLOCKED（禁止空转）
+    # 无 binding（老路径不限工具）→ 不阻断
+    if binding is None and have is None:
+        return CapabilityGateResult(
+            binding=None, gap=gap,
+            reason="no agent; legacy unlimited tools",
+        )
+
+    try:
+        from project_runtime.project_state.enums import TaskStatus
+        from project_runtime.project_state.fsm import StateTransitionService
+        from project_runtime.project_state.models import Task
+
+        task = await session.get(Task, task_id)
+        if task is not None and task.status in (
+            TaskStatus.READY, TaskStatus.RUNNING, TaskStatus.CREATED,
+        ):
+            if binding is not None:
+                await _release_busy_quietly(session, binding)
+            await StateTransitionService(session).transition_task(
+                task, TaskStatus.BLOCKED,
+            )
+            await session.flush()
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "capability BLOCKED transition failed task=%s gap=%s",
+            task_id, sorted(gap), exc_info=True,
+        )
+        return CapabilityGateResult(
+            binding=binding, blocked=True, gap=gap,
+            reason=f"capability gap {sorted(gap)} (transition failed)",
+        )
+
+    return CapabilityGateResult(
+        binding=None, blocked=True, gap=gap,
+        reason=f"capability gap: {', '.join(sorted(gap))}",
+    )

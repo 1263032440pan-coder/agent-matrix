@@ -929,19 +929,36 @@ async def assign_in_session(
         for d in (manifest.get("deliverables") or [])
     }
     seed_obligation_tokens(graph, deliverables_by_id=deliverables_by_id)
+    # 义务驱动：code↔办公/位图矛盾消解（只改内存图）
+    # 顺序：消解 → 过载拆分（内含整闸）→ 再落库；禁止消解后提前整闸把
+    # 本可由拆分消化的超负荷直接打成 INVALID。
+    from project_runtime.procedure.task_load import compute_task_load as _ctl
+    from project_runtime.worker.obligation_plugins import (
+        resolve_code_media_mismatches,
+    )
+
+    code_media_stats = resolve_code_media_mismatches(
+        graph, manifest=manifest,
+    )
+    for _nd in graph["nodes"].values():
+        _nd["load"] = _ctl(list(_nd.get("obligation_tokens") or []))
+
     overload = check_graph_loads(graph)
+    media_split = bool(code_media_stats.get("code_media_split"))
     decompose_stats: dict[str, Any] = {
         "decomposed": 0, "bin_packed": 0, "overloads": 0,
+        **code_media_stats,
     }
     original_ids = {t.name: t.id for t in tasks}
     if overload:
         try:
-            decompose_stats = await decompose_memory_graph(
+            overload_stats = await decompose_memory_graph(
                 graph,
                 manifest=manifest,
                 categories=categories,
                 llm=llm,
             )
+            decompose_stats = {**decompose_stats, **overload_stats}
             await commit_decomposed_graph(
                 session, project_id, graph,
                 original_task_ids=original_ids,
@@ -972,8 +989,14 @@ async def assign_in_session(
                 pref["load_max"] = LOAD_MAX
                 t.playbook_ref = json.dumps(pref, ensure_ascii=False)
             raise
+    elif media_split:
+        # 矛盾已拆、无过载：落库新节点（整闸仅在过载拆分路径内）
+        await commit_decomposed_graph(
+            session, project_id, graph,
+            original_task_ids=original_ids,
+        )
     else:
-        # 无过载：仍写入令牌与 load，便于 Dashboard / Stop
+        # 无过载且无媒体拆分：仍写入令牌与 load，便于 Dashboard / Stop
         for t in tasks:
             if t.name in accepted_names:
                 continue
@@ -986,6 +1009,17 @@ async def assign_in_session(
                 pref = {}
             if not isinstance(pref, dict):
                 pref = {}
+            nd_pref = nd.get("playbook_ref") if isinstance(
+                nd.get("playbook_ref"), dict
+            ) else {}
+            for k in (
+                "delivery_tags", "deliverable_ids", "code_ppt_resolved",
+                "code_media_resolved", "stage_outputs", "code_stage",
+            ):
+                if k in nd_pref:
+                    pref[k] = nd_pref[k]
+            if nd.get("deliverable_ids") is not None:
+                pref["deliverable_ids"] = list(nd["deliverable_ids"])
             pref["obligation_tokens"] = list(nd.get("obligation_tokens") or [])
             pref["task_load"] = int(nd.get("load") or 0)
             pref["load_max"] = LOAD_MAX
