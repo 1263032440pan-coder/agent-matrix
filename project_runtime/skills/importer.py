@@ -29,6 +29,11 @@ ALLOWED_EXTENSIONS = {".md", ".yaml", ".yml", ".json", ".txt"}
 EXECUTABLE_EXTENSIONS = {".py", ".sh", ".ps1", ".bat", ".exe", ".dll", ".so", ".com"}
 # 返修V3 批C / ADR-039: EXECUTION 层级允许的脚本扩展（仍拒 .exe/.dll）
 EXECUTION_ALLOWED_EXTRA = {".py", ".sh"}
+# 执行型包常见附属文本（Claude office skills 的 schema / 前端片段等）
+EXECUTION_ALLOWED_TEXT_EXTRA = {
+    ".xml", ".xsd", ".xsl", ".xslt", ".html", ".htm", ".css",
+    ".js", ".mjs", ".cjs", ".ts", ".tsx", ".jsx", ".svg", ".csv",
+}
 MAX_FILES = 100
 MAX_PACKAGE_BYTES = 10 * 1024 * 1024  # 10MB
 MAX_FILES_EXECUTION = 300
@@ -63,21 +68,36 @@ def _validate_file(
 ) -> None:
     ext = Path(relpath).suffix.lower()
     if allow_executable:
-        # ADR-039 EXECUTION: 允许 .py/.sh；仍拒二进制可执行
+        # ADR-039 EXECUTION: 允许 .py/.sh + 常见文本附属；仍拒二进制可执行
         hard_ban = EXECUTABLE_EXTENSIONS - EXECUTION_ALLOWED_EXTRA
         if ext in hard_ban:
             raise SkillImportError(f"Executable content forbidden: {relpath}")
-        if ext not in ALLOWED_EXTENSIONS and ext not in EXECUTION_ALLOWED_EXTRA:
+        allowed = (
+            ALLOWED_EXTENSIONS
+            | EXECUTION_ALLOWED_EXTRA
+            | EXECUTION_ALLOWED_TEXT_EXTRA
+        )
+        if ext not in allowed:
             raise SkillImportError(f"File type not allowed: {relpath}")
     else:
         if ext in EXECUTABLE_EXTENSIONS:
-            raise SkillImportError(f"Executable content forbidden: {relpath}")
+            raise SkillImportError(
+                f"Executable content forbidden: {relpath}；"
+                "含 .py/.sh 请勾选「允许执行型」后再导入"
+            )
         if ext not in ALLOWED_EXTENSIONS:
             raise SkillImportError(f"File type not allowed: {relpath}")
-    try:
-        data.decode("utf-8")
-    except UnicodeDecodeError as e:
-        raise SkillImportError(f"Non-UTF-8 file: {relpath}") from e
+    # 字体等二进制在执行型里仍可能出现：仅对文本类做 UTF-8 校验
+    text_like = (
+        ALLOWED_EXTENSIONS
+        | EXECUTION_ALLOWED_EXTRA
+        | EXECUTION_ALLOWED_TEXT_EXTRA
+    )
+    if ext in text_like or not allow_executable:
+        try:
+            data.decode("utf-8")
+        except UnicodeDecodeError as e:
+            raise SkillImportError(f"Non-UTF-8 file: {relpath}") from e
 
 
 def parse_frontmatter(skill_md: str) -> dict:
@@ -133,7 +153,14 @@ class SkillPackageImporter:
                 continue
             count += 1
             if count > max_files:
-                raise SkillImportError(f"Package exceeds {max_files} files")
+                hint = (
+                    f"；当前已扫到超过 {max_files} 个文件。"
+                    "默认文本 Skill ≤100；含脚本/大包请勾选「允许执行型」"
+                    f"（上限 {MAX_FILES_EXECUTION}）"
+                )
+                raise SkillImportError(
+                    f"Package exceeds {max_files} files{hint}"
+                )
             data = f.read_bytes()
             total += len(data)
             if total > max_bytes:
@@ -165,14 +192,21 @@ class SkillPackageImporter:
             ) from e
         with zf_ctx as zf:
             infos = zf.infolist()
-            if len(infos) > max_files:
-                raise SkillImportError(f"Package exceeds {max_files} files")
-            for info in infos:
+            # 只计文件条目（目录不占额度；此前把 dir 也算进 100 会误杀）
+            file_infos = [i for i in infos if not i.is_dir()]
+            if len(file_infos) > max_files:
+                hint = (
+                    f"；当前 {len(file_infos)} 个文件。"
+                    "默认文本 Skill ≤100；含脚本/大包请勾选「允许执行型」"
+                    f"（上限 {MAX_FILES_EXECUTION}）"
+                )
+                raise SkillImportError(
+                    f"Package exceeds {max_files} files{hint}"
+                )
+            for info in file_infos:
                 # Symlink check: unix mode high bits
                 if (info.external_attr >> 16) & 0o120000 == 0o120000:
                     raise SkillImportError(f"Symlink entry rejected: {info.filename}")
-                if info.is_dir():
-                    continue
                 rel = info.filename
                 _validate_relpath(rel)
                 data = zf.read(info)

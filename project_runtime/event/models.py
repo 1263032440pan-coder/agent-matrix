@@ -78,6 +78,7 @@ class RuntimeEventType(str, enum.Enum):
     PLAN_DECOMPOSE_INVALID = "PLAN_DECOMPOSE_INVALID"  # 过载拆分整闸失败
     USER_TASK_REWORK = "USER_TASK_REWORK"  # 用户单节点重开 / 连带释放
     TOOL_FAILURE_DIAGNOSIS = "TOOL_FAILURE_DIAGNOSIS"  # 连续工具失败诊断（审计）
+    TOOL_SURFACE_BUILT = "TOOL_SURFACE_BUILT"  # 工具面快照（可见/过滤/手册来源）
 
 
 class RuntimeEvent(Base):

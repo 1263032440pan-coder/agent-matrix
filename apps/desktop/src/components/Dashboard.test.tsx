@@ -111,7 +111,7 @@ describe('Dashboard 节点要求产物', () => {
           phase: 'WORKER',
           message: '工具预算用尽·Grace',
           payload: {
-            tool_rounds: 32,
+            tool_rounds: 64,
             grace_text: 'Grace收尾：缺 README',
           },
         },
@@ -138,7 +138,7 @@ describe('Dashboard 节点要求产物', () => {
         'Grace收尾：缺 README',
       );
     });
-    expect(screen.getByTestId('task-grace')).toHaveTextContent('32 轮');
+    expect(screen.getByTestId('task-grace')).toHaveTextContent('64 轮');
     expect(screen.getByTestId('task-grace-stop')).toHaveTextContent(
       'Stop：未通过',
     );
@@ -157,6 +157,44 @@ describe('Dashboard 节点要求产物', () => {
         '本节点无强制交付项',
       );
     });
+  });
+
+  it('任务详情展示 TOOL_SURFACE_BUILT 快照', async () => {
+    vi.mocked(fetchDashboard).mockResolvedValue({
+      ...base,
+      runtime_events: [
+        {
+          event_id: 1,
+          event_type: 'TOOL_SURFACE_BUILT',
+          timestamp: '2026-11-04T00:00:00Z',
+          execution_id: null,
+          task_id: 10,
+          phase: 'LLM_TOOL',
+          message: '工具面 visible=2 filtered=1',
+          payload: {
+            visible: ['office_pptx', 'read_file'],
+            filtered: [{ name: 'office_cli', reason: 'UNHEALTHY' }],
+            ordering_basis: ['office_pptx'],
+            manual: [{ tool: 'office_pptx', source: 'OBLIGATION' }],
+            degraded: [],
+          },
+        },
+      ],
+    });
+    render(<Dashboard projectId={1} />);
+    await userEvent.click(await screen.findByTestId('task-node-10'));
+    expect(await screen.findByTestId('task-tool-surface')).toHaveTextContent(
+      '工具面快照',
+    );
+    expect(screen.getByTestId('tool-surface-visible')).toHaveTextContent(
+      'office_pptx',
+    );
+    expect(screen.getByTestId('tool-surface-filtered')).toHaveTextContent(
+      'UNHEALTHY',
+    );
+    expect(screen.getByTestId('tool-surface-ordering')).toHaveTextContent(
+      'office_pptx',
+    );
   });
 
   it('节点浮层展示验证等级（项目级交付质量块已移出工作台）', async () => {

@@ -1,12 +1,150 @@
-"""PDF 渲染：JSON spec → reportlab。"""
+"""PDF：docx→pdf 转换（主路径）；reportlab spec 渲染已弃用。"""
 
 from __future__ import annotations
 
+import logging
+import os
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 
+logger = logging.getLogger(__name__)
+
+# Windows 默认安装路径常未进 PATH；health/which 会漏检
+_SOFFICE_CANDIDATES = (
+    r"C:\Program Files\LibreOffice\program\soffice.com",
+    r"C:\Program Files\LibreOffice\program\soffice.exe",
+    r"C:\Program Files (x86)\LibreOffice\program\soffice.com",
+    r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
+    "/usr/bin/soffice",
+    "/usr/bin/libreoffice",
+    "/Applications/LibreOffice.app/Contents/MacOS/soffice",
+)
+
+
+def find_soffice() -> str | None:
+    """定位 LibreOffice CLI；PATH 优先，否则扫常见安装路径。"""
+    for name in ("soffice", "libreoffice"):
+        hit = shutil.which(name)
+        if hit:
+            return hit
+    for cand in _SOFFICE_CANDIDATES:
+        if Path(cand).is_file():
+            return cand
+    return None
+
+
+def _soffice_user_installation() -> str:
+    """独立 UserInstallation，避免本机默认配置损坏导致 soffice 挂死。"""
+    root = Path(tempfile.gettempdir()) / "agent-matrix-lo-profile"
+    root.mkdir(parents=True, exist_ok=True)
+    return "file:///" + root.resolve().as_posix()
+
+
+def convert_docx_to_pdf(
+    source: Path,
+    out_path: Path,
+    *,
+    timeout_s: int = 120,
+) -> dict[str, Any]:
+    """LibreOffice 将 docx 转为 pdf，写入 out_path。
+
+    成功: {"ok": True, "pages": optional}
+    失败: {"ok": False, "error_code": ..., "error": ...}
+    """
+    soffice = find_soffice()
+    if not soffice:
+        return {
+            "ok": False,
+            "error_code": "RENDERER_UNAVAILABLE",
+            "error": "未安装 LibreOffice/soffice——无法将 Word 转为 PDF",
+        }
+    if not source.is_file():
+        return {
+            "ok": False,
+            "error_code": "NOT_FOUND",
+            "error": f"源文件不存在: {source}",
+        }
+    # OOXML 最小魔数
+    try:
+        head = source.read_bytes()[:4]
+    except OSError as e:
+        return {
+            "ok": False,
+            "error_code": "INVALID_SOURCE",
+            "error": f"无法读取源文件: {e}",
+        }
+    if head != b"PK\x03\x04":
+        return {
+            "ok": False,
+            "error_code": "INVALID_SOURCE",
+            "error": "源文件不是合法 OOXML（ZIP）docx",
+        }
+
+    out_path = Path(out_path)
+    out_dir = out_path.parent
+    out_dir.mkdir(parents=True, exist_ok=True)
+    # soffice 在 outdir 写出 source.stem.pdf，再原子改名到 out_path
+    try:
+        proc = subprocess.run(
+            [
+                soffice,
+                "--headless",
+                "--norestore",
+                "--nologo",
+                "--nodefault",
+                f"-env:UserInstallation={_soffice_user_installation()}",
+                "--convert-to",
+                "pdf",
+                "--outdir",
+                str(out_dir),
+                str(source),
+            ],
+            check=False,
+            capture_output=True,
+            timeout=timeout_s,
+            env={**os.environ},
+        )
+    except subprocess.TimeoutExpired:
+        return {
+            "ok": False,
+            "error_code": "RENDER_TIMEOUT",
+            "error": f"soffice 转换超时（>{timeout_s}s）",
+        }
+    except OSError as e:
+        return {
+            "ok": False,
+            "error_code": "RENDERER_FAILED",
+            "error": f"soffice 启动失败: {e}",
+        }
+
+    produced = out_dir / (source.stem + ".pdf")
+    if not produced.is_file():
+        err = (proc.stderr or proc.stdout or b"").decode("utf-8", "replace")[:300]
+        return {
+            "ok": False,
+            "error_code": "RENDERER_FAILED",
+            "error": err or "soffice 未产出 pdf",
+        }
+    if produced.resolve() != out_path.resolve():
+        try:
+            if out_path.exists():
+                out_path.unlink()
+            produced.replace(out_path)
+        except OSError as e:
+            return {
+                "ok": False,
+                "error_code": "RENDERER_FAILED",
+                "error": f"无法写入目标 pdf: {e}",
+            }
+    return {"ok": True, "backend": "soffice"}
+
 
 def render_pdf_from_spec(spec: dict, out_path: Path) -> dict[str, Any]:
+    """已弃用：勿作主路径。保留供过渡期测试；新代码请用 convert_docx_to_pdf。"""
+    logger.warning("render_pdf_from_spec is deprecated; use convert_docx_to_pdf")
     from reportlab.lib.pagesizes import A4
     from reportlab.pdfbase import pdfmetrics
     from reportlab.pdfbase.ttfonts import TTFont
@@ -75,10 +213,7 @@ def _wrap(text: str, width: int) -> list[str]:
 
 def try_soffice_preview(src: Path) -> dict[str, Any]:
     """可选 LibreOffice 转 PDF/预览；缺失则跳过，不写占位文件。"""
-    import shutil
-    import subprocess
-
-    soffice = shutil.which("soffice") or shutil.which("libreoffice")
+    soffice = find_soffice()
     if not soffice:
         return {
             "preview": False,
@@ -88,9 +223,23 @@ def try_soffice_preview(src: Path) -> dict[str, Any]:
     out_dir = src.parent
     try:
         subprocess.run(
-            [soffice, "--headless", "--convert-to", "pdf",
-             "--outdir", str(out_dir), str(src)],
-            check=False, capture_output=True, timeout=120,
+            [
+                soffice,
+                "--headless",
+                "--norestore",
+                "--nologo",
+                "--nodefault",
+                f"-env:UserInstallation={_soffice_user_installation()}",
+                "--convert-to",
+                "pdf",
+                "--outdir",
+                str(out_dir),
+                str(src),
+            ],
+            check=False,
+            capture_output=True,
+            timeout=120,
+            env={**os.environ},
         )
     except (OSError, subprocess.TimeoutExpired) as e:
         return {

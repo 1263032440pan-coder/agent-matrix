@@ -92,17 +92,24 @@ async def read_skill_stages(
     if sk is None:
         # 无绑定 → LLM 按项目内容自动选择（偏离①增强: 自动选 skill）
         try:
+            from project_runtime.skills.catalog import (
+                format_available_skills_xml,
+                list_catalog,
+            )
             from project_runtime.skills.selector import SkillSelector
 
             content = doc_text or await _project_doc_text(session, project_id)
             if not content.strip():
                 return None
+            # F2/收尾：规划侧也能看见全员 Skill 目录（不只 DB 候选）
+            catalog_xml = format_available_skills_xml(list_catalog())
             sk = await SkillSelector(session).select(
                 task_content=content,
                 skill_type=SkillType.PROJECT_METHOD,
                 # 返修V3 批A-A5: 中性引导——防多 skill 时代被『软件交付』带偏
                 extra_context=(
-                    "生成项目流程计划：选择最匹配项目内容的 PROJECT_METHOD skill"
+                    "生成项目流程计划：选择最匹配项目内容的 PROJECT_METHOD skill\n"
+                    + catalog_xml
                 ),
             )
             if sk is not None and not (sk.stages or "").strip():
@@ -111,6 +118,12 @@ async def read_skill_stages(
         except Exception:  # noqa: BLE001 — 自动选择失败不阻断规划
             logger.debug("LLM skill auto-select failed", exc_info=True)
             sk = None
+
+    # FS 权威：DB 无 stages 时，从 installed/ 的 SKILL.md 再试
+    if sk is None or not (sk.stages or "").strip():
+        fs_stages = _stages_from_fs_catalog()
+        if fs_stages:
+            return fs_stages
 
     if sk is None:
         # 返修V3 批B-B1: 禁静默——发 SKILL_GAP（事件+研究单）
@@ -182,6 +195,64 @@ async def read_skill_stages(
     except Exception:  # noqa: BLE001
         logger.debug("skill stages load failed", exc_info=True)
         return None
+
+
+def _stages_from_fs_catalog() -> list[dict] | None:
+    """从 data/skills/installed 扫描 frontmatter.stages（agentskills 对齐）。"""
+    try:
+        from project_runtime.skills.catalog import list_catalog
+    except Exception:  # noqa: BLE001
+        return None
+    import yaml
+
+    for e in list_catalog(include_user_agents=True):
+        try:
+            text = e.path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if not text.startswith("---"):
+            continue
+        end = text.find("\n---", 3)
+        if end == -1:
+            continue
+        try:
+            meta = yaml.safe_load(text[3:end])
+        except yaml.YAMLError:
+            continue
+        if not isinstance(meta, dict):
+            continue
+        raw = meta.get("stages")
+        if not isinstance(raw, list) or not raw:
+            continue
+        stages: list[dict] = []
+        for st in raw:
+            if isinstance(st, dict):
+                name = str(st.get("name") or "").strip()
+                if not name:
+                    continue
+                entry: dict = {
+                    "name": name,
+                    "skill_id": str(meta.get("skill_id") or e.name),
+                    "skill_version": str(meta.get("version") or "fs"),
+                    "code_stage": False,
+                }
+                outs = st.get("outputs") or st.get("expected_outputs")
+                if isinstance(outs, list) and outs:
+                    entry["expected_outputs"] = [str(o) for o in outs]
+                stages.append(entry)
+            elif isinstance(st, str) and st.strip():
+                stages.append({
+                    "name": st.strip(),
+                    "skill_id": str(meta.get("skill_id") or e.name),
+                    "skill_version": str(meta.get("version") or "fs"),
+                    "code_stage": False,
+                })
+        if stages:
+            logger.info(
+                "FS skill stages from %s (%d stages)", e.name, len(stages),
+            )
+            return stages
+    return None
 
 
 def map_nodes_to_stages(

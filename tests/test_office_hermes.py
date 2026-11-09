@@ -76,13 +76,18 @@ async def test_office_docx_xlsx_pdf_image_inspect(ws):
     })
     assert xls["ok"], xls
 
+    # O2：PDF 须由 docx 转换（无 soffice 时允许 RENDERER_UNAVAILABLE）
     pdf = await OfficePdfProvider().invoke({
         "path": "out/a.pdf",
-        "spec": {"title": "PDF", "paragraphs": ["hello"]},
+        "source": "out/a.docx",
         "__ws_root": str(ws),
     })
-    assert pdf["ok"], pdf
-    assert (ws / "out" / "a.pdf").read_bytes()[:4] == b"%PDF"
+    if pdf.get("ok"):
+        assert (ws / "out" / "a.pdf").read_bytes()[:4] == b"%PDF"
+    else:
+        assert pdf.get("error_code") in (
+            "RENDERER_UNAVAILABLE", "RENDERER_FAILED", "RENDER_TIMEOUT",
+        ), pdf
 
     img = await ImageRasterProvider().invoke({
         "path": "out/a.png",

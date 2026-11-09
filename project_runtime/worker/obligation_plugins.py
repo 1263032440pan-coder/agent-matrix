@@ -45,6 +45,14 @@ def _plugins_from_exts(exts: list[object] | None) -> set[str]:
     return out
 
 
+def _with_pdf_implies_docx(need: set[str]) -> set[str]:
+    """PDF 铁律：.pdf 义务隐含 office_docx（须先 Word 再转换）。"""
+    if "office_pdf" in need:
+        need = set(need)
+        need.add("office_docx")
+    return need
+
+
 def required_plugins_for_tokens(tokens: list[dict] | None) -> set[str]:
     need: set[str] = set()
     for tok in tokens or []:
@@ -55,7 +63,7 @@ def required_plugins_for_tokens(tokens: list[dict] | None) -> set[str]:
         lab = _norm_ext(tok.get("label"))
         if lab and lab in _EXT_TO_PLUGIN:
             need.add(_EXT_TO_PLUGIN[lab])
-    return need
+    return _with_pdf_implies_docx(need)
 
 
 def required_plugins_for_manifest_ids(
@@ -100,23 +108,60 @@ def required_plugins_for_playbook_ref(
     ids = ref.get("deliverable_ids") or []
     if ids and manifest:
         need |= required_plugins_for_manifest_ids(list(ids), manifest)
-    return need
+    return _with_pdf_implies_docx(need)
 
 
 def plugin_gap(
     need: set[str],
     have_plugins: list[str] | None,
+    *,
+    available_plugins: set[str] | frozenset[str] | None = None,
 ) -> set[str]:
-    """所需 − 白名单展开后实有。have None = 不限 → 无缺口。"""
+    """所需 − 有效能力。
+
+    have None = 白名单不限；若同时给 available_plugins，则缺口 = need − available。
+    available_plugins：已注册且 enabled 且 usable 的裸名集合（方案 O1）。
+    """
+    def _bares(items: set[str] | frozenset[str] | list[str]) -> set[str]:
+        out: set[str] = set()
+        for h in items:
+            out.add(str(h))
+            out.add(str(h).split(":", 1)[-1])
+        return out
+
     if have_plugins is None:
-        return set()
+        if available_plugins is None:
+            return set()
+        avail = _bares(set(available_plugins))
+        return {p for p in need if p not in avail and f"tool:{p}" not in avail}
+
     from project_runtime.worker.tools import expand_tool_whitelist
 
     expanded = expand_tool_whitelist(list(have_plugins)) or []
-    have = set(expanded)
-    # 也接受带 tool: 前缀的存在形式
-    have |= {h.split(":", 1)[-1] for h in have}
+    have = _bares(set(expanded))
+    if available_plugins is not None:
+        have &= _bares(set(available_plugins))
     return {p for p in need if p not in have and f"tool:{p}" not in have}
+
+
+def available_tool_plugins(registry=None) -> set[str]:
+    """当前 registry 上 usable 的 TOOL 裸名（含 llm_name）。"""
+    from project_runtime.extension.registry import CapabilityType
+    from project_runtime.extension.shared import shared_registry
+    from project_runtime.worker.tool_surface import provider_is_usable
+
+    reg = registry or shared_registry()
+    out: set[str] = set()
+    for info in reg.list_providers(CapabilityType.TOOL):
+        if not info.enabled or info.provider is None:
+            continue
+        if not provider_is_usable(info.provider, reg):
+            continue
+        out.add(info.name.split(":", 1)[-1])
+        llm_n = getattr(info.provider, "llm_name", None)
+        if llm_n:
+            out.add(str(llm_n).split(":", 1)[-1])
+    return out
 
 
 def office_suffixes_of_need(need: set[str]) -> set[str]:

@@ -52,6 +52,8 @@ class WorkPackage:
     code_stage: bool = False
     # V1.6 序0: 任务工作区根（文件工具写禁闭——安全机制）
     workspace_root: str | None = None
+    # 读禁闭：项目工作区根（自定义 workspace_path 或 data/tasks/{pid}）
+    project_workspace_root: str | None = None
     # V1.6 序3: 交付物标记（ppt/code/test_report——收工自查钩子消费）
     delivery_tags: list[str] | None = None
 

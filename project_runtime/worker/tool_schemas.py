@@ -191,17 +191,17 @@ OFFICE_XLSX_SCHEMA = {
 
 OFFICE_PDF_SCHEMA = {
     "description": (
-        "生成真实 .pdf（reportlab）。spec：title + paragraphs[]。"
-        "path 为清单相对路径。勿用 write_file 写 pdf。"
+        "将已有 .docx 转为 .pdf（LibreOffice）。"
+        "参数 source（docx）+ path（pdf）。禁止 spec 直出；"
+        "勿用 write_file 写假 pdf。"
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "path": {"type": "string"},
-            "spec": {"type": "object"},
-            "spec_path": {"type": "string"},
+            "source": {"type": "string", "description": "已有 .docx 相对路径"},
         },
-        "required": ["path"],
+        "required": ["path", "source"],
     },
 }
 
@@ -337,6 +337,37 @@ TODO_SCHEMA = {
     },
 }
 
+SKILLS_LIST_SCHEMA = {
+    "description": (
+        "列出当前 Runtime 已安装的全部 Skill（name/description/path）。"
+        "需要了解有哪些方法包可用时使用；要读某个 Skill 全文请用 skill_view。"
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+    },
+}
+
+SKILL_VIEW_SCHEMA = {
+    "description": (
+        "按需加载某个已安装 Skill 的 SKILL.md 全文，或 Skill 目录内相对路径文件。"
+        "当任务匹配某 Skill 的 description、需要按其指引工作时使用。"
+        "参数: name（Skill 名）；path 可选（相对 Skill 根，默认 SKILL.md）。"
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "name": {"type": "string", "description": "Skill 名称（与目录 name 一致）"},
+            "path": {
+                "type": "string",
+                "description": "相对 Skill 根的文件路径，默认 SKILL.md",
+            },
+        },
+        "required": ["name"],
+    },
+}
+
 
 # name → schema 映射（tool_schema() 通用实现的查表源）
 TOOL_SCHEMAS: dict[str, dict] = {
@@ -358,16 +389,21 @@ TOOL_SCHEMAS: dict[str, dict] = {
     "tool:builder": BUILDER_SCHEMA,
     "tool:arch_diagram": ARCH_DIAGRAM_SCHEMA,
     "tool:todo": TODO_SCHEMA,
+    "tool:skills_list": SKILLS_LIST_SCHEMA,
+    "tool:skill_view": SKILL_VIEW_SCHEMA,
 }
 
 
 def tool_schema_for(name: str) -> dict:
-    """通用 tool_schema 查表（批次 1/3 插件 mixin 用）。"""
-    schema = TOOL_SCHEMAS.get(name, {})
-    return {
-        "name": name,
-        "description": schema.get("description", name),
-        "parameters": schema.get("parameters", {
-            "type": "object", "properties": {},
-        }),
-    }
+    """通用 tool_schema 查表（批次 1/3 插件 mixin 用）。
+
+    经工具卡拼装描述（§13.2）；无拆分字段时整段 description 作 summary。
+    """
+    from project_runtime.worker.tool_card import (
+        schema_from_tool_card,
+        tool_card_from_legacy,
+    )
+
+    raw = TOOL_SCHEMAS.get(name, {})
+    card = tool_card_from_legacy(name, raw)
+    return schema_from_tool_card(name, card)

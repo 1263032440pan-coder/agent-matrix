@@ -236,6 +236,74 @@ class TestBackfillValidator:
         assert r.status == GateStatus.FAIL
         assert "缺 d_ppt" in r.message
 
+    @pytest.mark.asyncio
+    async def test_deliverable_ids_uses_custom_workspace(
+        self, dbengine, tmp_path, monkeypatch,
+    ):
+        """自定义 workspace_path：扫项目根而非 data/tasks/{pid}。"""
+        from project_runtime.project_state.enums import AutomationMode
+        from project_runtime.project_state.models import Project
+        from project_runtime.reviewer.gate import (
+            BackfillValidator,
+            GateStatus,
+        )
+
+        user_ws = tmp_path / "user-repo"
+        ppt_dir = (
+            user_ws / ".agent-matrix" / "tasks" / "9" / "deliverables" / "ppt"
+        )
+        ppt_dir.mkdir(parents=True)
+        (ppt_dir / "方案介绍.pptx").write_bytes(b"PK\x03\x04fake-pptx")
+
+        script = tmp_path / "_delivery_validate.py"
+        # 最小脚本：工作区下存在任意 .pptx 即 ok
+        script.write_text(
+            "import json,sys\n"
+            "from pathlib import Path\n"
+            "ws=Path(sys.argv[sys.argv.index('--workspace')+1])\n"
+            "ok=any(p.suffix.lower()=='.pptx' for p in ws.rglob('*') if p.is_file())\n"
+            "print(json.dumps({'ok': ok, 'problems': [] if ok else ['缺 pptx']},"
+            " ensure_ascii=False))\n"
+            "sys.exit(0 if ok else 1)\n",
+            encoding="utf-8",
+        )
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(
+            "project_runtime.procedure.delivery_validator.validator_path",
+            lambda pid: script,
+        )
+
+        async with AsyncSession(dbengine) as s:
+            p = Project(
+                name="custom-ws",
+                automation_mode=AutomationMode.FULL_AUTO,
+                workspace_path=str(user_ws.resolve()),
+            )
+            s.add(p)
+            await s.flush()
+            pid = p.id
+            await s.commit()
+
+        class _T:
+            id = 9
+            name = "交付补全-PPT-交付打包与文档"
+            project_id = pid
+            status = __import__(
+                "project_runtime.project_state.enums", fromlist=["TaskStatus"]
+            ).TaskStatus.EXECUTION_DONE
+            playbook_ref = json.dumps({
+                "deliverable_ids": ["d_ppt"],
+                "delivery_tags": ["ppt"],
+            })
+
+        # 无 session 时仍会误扫 data/tasks → 应 FAIL；有 session 应对齐自定义根
+        r_wrong = await BackfillValidator().validate(_T(), [])
+        assert r_wrong.status == GateStatus.FAIL
+
+        async with AsyncSession(dbengine) as s:
+            r_ok = await BackfillValidator(session=s).validate(_T(), [])
+        assert r_ok.status == GateStatus.PASS, r_ok.message
+
 
 class TestAntiDeadloop:
     @pytest.mark.asyncio

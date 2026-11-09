@@ -507,6 +507,8 @@ class WorkerRegistry:
 # ── AgentProvisioner（§2.2 路径 1——规划后自动创建）────────────────
 
 FILE_TOOLS = ("read_file", "list_dir", "write_file", "append_file")
+# 只读 Skill 目录工具——全模板必含（勿用 read_file 读 data/skills，会 OUT_OF_SCOPE）
+SKILL_TOOLS = ("skills_list", "skill_view")
 
 BUILT_IN_TEMPLATES = [
     {
@@ -514,7 +516,7 @@ BUILT_IN_TEMPLATES = [
         "name": "分析智能体",
         "role_description": "负责项目理解与需求基线阶段——理解输入材料、"
                             "定义结构化需求并产出汇报材料（PPT）。",
-        "plugins": [*FILE_TOOLS, "web_search", "webfetch",
+        "plugins": [*FILE_TOOLS, *SKILL_TOOLS, "web_search", "webfetch",
                     "office_pptx", "office_docx", "office_inspect"],
         "skills": None,
         "stage_affinity": ["项目理解", "需求基线"],
@@ -525,7 +527,7 @@ BUILT_IN_TEMPLATES = [
         "name": "设计智能体",
         "role_description": "负责解决方案、原型设计与架构设计阶段——"
                             "产出方案文档、架构图与评审材料。",
-        "plugins": [*FILE_TOOLS, "web_search", "webfetch",
+        "plugins": [*FILE_TOOLS, *SKILL_TOOLS, "web_search", "webfetch",
                     "office_pptx", "office_docx", "office_xlsx",
                     "office_pdf", "image_raster", "arch_diagram",
                     "office_inspect"],
@@ -540,8 +542,8 @@ BUILT_IN_TEMPLATES = [
         # V1.4: +web_search（三能力③基线）; lsp 摘除（provider 未实现）
         # A3：SOFTWARE_DEV 清单仍强制 .pptx → 编码上限须含 office_pptx，
         # 否则拒写后无法合法交 PPT。
-        "plugins": [*FILE_TOOLS, "web_search", "shell", "code_search", "git",
-                    "office_pptx", "office_inspect"],
+        "plugins": [*FILE_TOOLS, *SKILL_TOOLS, "web_search", "shell",
+                    "code_search", "git", "office_pptx", "office_inspect"],
         # V1.4: skills None=不限（[] 是 fail-closed 零 skill——违反
         # "安装即可被程序利用"定则）
         "skills": None,
@@ -552,8 +554,8 @@ BUILT_IN_TEMPLATES = [
         "agent_id": "tester",
         "name": "测试智能体",
         "role_description": "负责测试验证阶段——编写与执行测试、产出报告。",
-        "plugins": [*FILE_TOOLS, "web_search", "shell", "test_runner",
-                    "code_search"],
+        "plugins": [*FILE_TOOLS, *SKILL_TOOLS, "web_search", "shell",
+                    "test_runner", "code_search"],
         "skills": None,
         "stage_affinity": ["测试验证"],
         "source": AgentSource.BUILT_IN,
@@ -562,7 +564,7 @@ BUILT_IN_TEMPLATES = [
         "agent_id": "releaser",
         "name": "交付智能体",
         "role_description": "负责交付打包与使用文档阶段——构建交付物与文档。",
-        "plugins": [*FILE_TOOLS, "web_search", "shell", "builder",
+        "plugins": [*FILE_TOOLS, *SKILL_TOOLS, "web_search", "shell", "builder",
                     "office_pptx", "office_docx", "office_xlsx",
                     "office_pdf", "image_raster", "office_inspect"],
         "skills": None,

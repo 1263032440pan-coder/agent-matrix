@@ -334,6 +334,7 @@ async def ensure_capability_binding(
     派生失败则不阻断（老路径工具面不限——与既有零回归一致）。
     """
     from project_runtime.worker.obligation_plugins import (
+        available_tool_plugins,
         contract_hint_for_plugins,
         plugin_gap,
         required_plugins_for_playbook_ref,
@@ -346,7 +347,11 @@ async def ensure_capability_binding(
         return CapabilityGateResult(binding=binding)
 
     have = binding.tool_whitelist if binding is not None else None
-    gap = plugin_gap(need, have)
+    try:
+        available = available_tool_plugins()
+    except Exception:  # noqa: BLE001 — 注册表不可用时退化为只看白名单
+        available = None
+    gap = plugin_gap(need, have, available_plugins=available)
     if not gap:
         return CapabilityGateResult(binding=binding)
 

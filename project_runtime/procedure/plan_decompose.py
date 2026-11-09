@@ -583,6 +583,16 @@ def build_decompose_prompt(
         },
         ensure_ascii=False,
     )
+    catalog_block = ""
+    try:
+        from project_runtime.skills.catalog import (
+            format_available_skills_xml,
+            list_catalog,
+        )
+
+        catalog_block = "\n" + format_available_skills_xml(list_catalog()) + "\n"
+    except Exception:  # noqa: BLE001
+        catalog_block = ""
     return (
         "你是计划拆分助手。只拆当前过载节点，禁止修改其他节点。\n"
         f"负荷阈值 LOAD_MAX={LOAD_MAX}；每个子节点 load 必须严格 < {LOAD_MAX}。\n"
@@ -596,6 +606,7 @@ def build_decompose_prompt(
         f"【已拆结果】{json.dumps(G.get('replaced') or {}, ensure_ascii=False)}\n"
         f"【剩余过载队列】{json.dumps(remaining_queue, ensure_ascii=False)}\n"
         f"【材料摘要·只读】{(material_summary or '')[:800]}\n"
+        f"{catalog_block}"
     )
 
 

@@ -89,6 +89,8 @@ _TOOL_ALIASES: dict[str, tuple[str, ...]] = {
     "tool:slide_generator": ("office_pptx",),
 }
 RENAMED_TOOLS = frozenset({"file_rw", "tool:file_rw"})
+# agentskills.io：目录/按需读——只读，全体 Agent 恒放行（安装即可用）
+SKILL_DISCOVERY_PLUGINS = ("skills_list", "skill_view")
 _FILE_TOOL_EXAMPLES = (
     '读: read_file {"path": "README.md"}；'
     '列: list_dir {"path": "."}；'
@@ -98,13 +100,22 @@ _FILE_TOOL_EXAMPLES = (
 
 
 def expand_tool_whitelist(whitelist):
-    """白名单别名展开（保持顺序、去重）；None 原样返回。"""
+    """白名单别名展开（保持顺序、去重）；None 原样返回。
+
+    非 None 时恒并入 SKILL_DISCOVERY_PLUGINS，避免存量 Agent 定义
+    未含 skills_list/skill_view 时仍 NOT_WHITELISTED。
+    """
     if whitelist is None:
         return None
     out: list[str] = []
     for item in whitelist:
         bare = str(item).split(":", 1)[-1]
         for name in _TOOL_ALIASES.get(bare, (str(item),)):
+            if name not in out:
+                out.append(name)
+    # [] 仍 fail-closed；非空白名单恒并入 Skill 目录只读工具
+    if out:
+        for name in SKILL_DISCOVERY_PLUGINS:
             if name not in out:
                 out.append(name)
     return out
@@ -199,16 +210,34 @@ class _FileToolBase:
     permission = "READ_ONLY"
     priority = 150
     enabled = True
+    needs_workspace_root = True
+
+    def tool_card(self) -> dict:
+        from project_runtime.worker.tool_card import tool_card_from_legacy
+        from project_runtime.worker.tool_schemas import TOOL_SCHEMAS
+
+        raw = TOOL_SCHEMAS.get(self.name, {})
+        card = tool_card_from_legacy(self.name, raw)
+        card["needs_workspace_root"] = True
+        if self.name in ("tool:write_file", "tool:append_file"):
+            card["when_not"] = (
+                "禁止写入 .pptx/.docx/.xlsx/.pdf/.png/.jpg/.jpeg/.webp；"
+                "请改用 office_* / image_raster / arch_diagram。"
+            )
+        return card
 
     def tool_schema(self) -> dict:
-        from project_runtime.worker.tool_schemas import tool_schema_for
+        from project_runtime.worker.tool_card import schema_from_tool_card
 
-        return tool_schema_for(self.name)
+        return schema_from_tool_card(self.name, self.tool_card())
 
     def __init__(self) -> None:
         from project_runtime.plugin.capability import CapabilityType
 
         type(self).capability = CapabilityType.TOOL
+
+    def is_usable(self, registry=None) -> bool:
+        return True
 
     async def health(self) -> bool:
         return True
@@ -219,11 +248,24 @@ class _FileToolBase:
         return Path(str(raw)).resolve() if raw else None
 
     @staticmethod
-    def _target(path: str, ws_root: Path | None, *, write: bool):
+    def _project_ws_root(payload: dict) -> Path | None:
+        raw = payload.get("__project_ws_root")
+        return Path(str(raw)).resolve() if raw else None
+
+    @staticmethod
+    def _target(
+        path: str,
+        ws_root: Path | None,
+        *,
+        write: bool,
+        project_ws: Path | None = None,
+    ):
         """→ (resolved, None) 或 (None, error_dict)。
 
-        读范围: data/tasks 全域（可读上游产物）；写范围: 本任务工作区。
+        写范围: 本任务工作区；读范围: 本项目工作区（可读上游产物）。
         """
+        from project_runtime.workspace import read_allow_root, write_allow_root
+
         try:
             if ws_root is None:
                 return resolve_workspace_path(path), None
@@ -233,20 +275,33 @@ class _FileToolBase:
                 "OUT_OF_SCOPE", str(e),
                 "请用相对路径（以本任务工作区为根），如 README.md、src/main.py",
             )
-        allowed = ws_root if write else _data_tasks_root()
+        if write:
+            allowed = write_allow_root(ws_root)
+            scope = "本任务工作区"
+            hint = (
+                "请用相对路径（以本任务工作区为根），如 README.md、"
+                "src/main.py、tests/test_x.py；其他任务目录只读"
+            )
+        else:
+            allowed = read_allow_root(project_ws=project_ws, task_ws=ws_root)
+            if allowed is None:
+                allowed = _data_tasks_root()
+            scope = "本项目工作区"
+            hint = (
+                "请用相对本任务工作区的路径；本项目工作区内其他任务目录只读"
+                "（自定义工作区 ≠ data/tasks）"
+            )
         if not _within(resolved, allowed):
-            scope = "本任务工作区" if write else "data/tasks"
             return None, tool_error(
                 "OUT_OF_SCOPE",
                 f"路径越界: {path}——只允许{scope}内（{allowed}）",
-                "请用相对路径（以本任务工作区为根），如 README.md、"
-                "src/main.py、tests/test_x.py；其他任务目录只读",
+                hint,
             )
         return resolved, None
 
 
 class ReadFileProvider(_FileToolBase):
-    """读文件（data/tasks 内）。"""
+    """读文件（本项目工作区内）。"""
 
     name = "tool:read_file"
 
@@ -258,7 +313,10 @@ class ReadFileProvider(_FileToolBase):
                 '示例: read_file {"path": "README.md"}',
             )
         ws_root = self._ws_root(payload)
-        resolved, err = self._target(path, ws_root, write=False)
+        resolved, err = self._target(
+            path, ws_root, write=False,
+            project_ws=self._project_ws_root(payload),
+        )
         if err:
             return err
         if not resolved.is_file():
@@ -286,7 +344,10 @@ class ListDirProvider(_FileToolBase):
         path = str(payload.get("path") or "").strip()
         if not path:
             path = "." if ws_root is not None else "data/tasks"
-        resolved, err = self._target(path, ws_root, write=False)
+        resolved, err = self._target(
+            path, ws_root, write=False,
+            project_ws=self._project_ws_root(payload),
+        )
         if err:
             return err
         if not resolved.is_dir():
@@ -394,6 +455,8 @@ _SHELL_WHITELIST: dict[str, str | None] = {
     # （批次1 字符集正则含空格和'-', ' -c evil.cfg' 可注入——批次3 修复;
     #   纯正则负向环视要么误伤 'my-file.py' 要么漏 '-c'——函数才是对的）
     "python": "PATHTOKENS",
+    "python3": "PATHTOKENS",
+    "uv": "PATHTOKENS",  # F4: uv run <skill脚本>
     "pip": r"^(list|show|freeze)( .*)?$",
     "pytest": "PATHTOKENS",
     "npm": r"^(run|test|list)( .*)?$",
@@ -425,6 +488,90 @@ def _path_tokens_ok(args: str) -> bool:
         if not tok or tok.startswith("-"):
             return False
         if not re.match(r"^[a-zA-Z0-9_/.:\\-]+$", tok):
+            return False
+    return True
+
+
+def _resolve_skill_script(
+    cmd_name: str, command: str, cwd: Path,
+) -> tuple[Path | None, Path | None]:
+    """若命令指向已安装 Skill 内脚本，返回 (script, skill_root)。"""
+    import shlex
+
+    try:
+        parts = shlex.split(command, posix=(os.name != "nt"))
+    except ValueError:
+        parts = command.split()
+    if len(parts) < 2:
+        return None, None
+    script_tok = None
+    if cmd_name in ("python", "python3"):
+        script_tok = parts[1]
+    elif cmd_name == "uv" and len(parts) >= 3 and parts[1] == "run":
+        script_tok = parts[2]
+    if not script_tok:
+        return None, None
+    # Windows shlex 可能保留引号
+    script_tok = script_tok.strip().strip('"').strip("'")
+    script = Path(script_tok)
+    if not script.is_absolute():
+        script = (cwd / script).resolve()
+    else:
+        try:
+            script = script.resolve()
+        except OSError:
+            return None, None
+    if not script.is_file():
+        return None, None
+    try:
+        from project_runtime.skills.catalog import find_skill_root_for_path
+
+        root = find_skill_root_for_path(script)
+    except Exception:  # noqa: BLE001
+        return None, None
+    if root is None:
+        return None, None
+    return script, root
+
+
+def _skill_args_confined(
+    args: str, *, cwd: Path, skill_root: Path | None,
+) -> bool:
+    """Skill 脚本参数：允许 --flag；路径须在 skill_root 或 cwd 下。"""
+    import shlex
+
+    if not args.strip():
+        return True
+    try:
+        parts = shlex.split(args, posix=(os.name != "nt"))
+    except ValueError:
+        return False
+    allowed = [cwd.resolve()]
+    if skill_root is not None:
+        allowed.append(skill_root.resolve())
+    for tok in parts:
+        if tok.startswith("-"):
+            continue
+        # 非路径形态（无分隔符且无后缀）跳过
+        if "/" not in tok and "\\" not in tok and not Path(tok).suffix:
+            continue
+        cand = Path(tok)
+        if not cand.is_absolute():
+            cand = (cwd / cand).resolve()
+        else:
+            try:
+                cand = cand.resolve()
+            except OSError:
+                return False
+        ok = False
+        for root in allowed:
+            try:
+                cand.relative_to(root)
+                ok = True
+                break
+            except ValueError:
+                continue
+        if not ok:
             return False
     return True
 
@@ -671,6 +818,121 @@ def _restore_controlled(
     return restored
 
 
+def _payload_task_ws(payload: dict) -> Path | None:
+    raw = payload.get("__ws_root")
+    return Path(str(raw)).resolve() if raw else None
+
+
+def _payload_project_ws(payload: dict) -> Path | None:
+    raw = payload.get("__project_ws_root")
+    return Path(str(raw)).resolve() if raw else None
+
+
+def resolve_task_cwd(
+    payload: dict,
+    *,
+    fallback_cwd: bool = True,
+    mkdir: bool = True,
+) -> Path | dict:
+    """工具 cwd：优先 `__ws_root`；遗留 `workspace` 须落在读允许根 / data/tasks。"""
+    from project_runtime.workspace import read_allow_root
+
+    task = _payload_task_ws(payload)
+    if task is not None:
+        if mkdir and not task.is_dir():
+            task.mkdir(parents=True, exist_ok=True)
+        return task
+
+    workspace = payload.get("workspace")
+    if not workspace:
+        if fallback_cwd:
+            return Path.cwd()
+        return tool_error(
+            "MISSING_FIELD",
+            "缺少工作区：需要 __ws_root 或 workspace",
+        )
+
+    candidate = Path(str(workspace))
+    candidate = (
+        candidate.resolve()
+        if candidate.is_absolute()
+        else (Path.cwd() / candidate).resolve()
+    )
+    project_ws = _payload_project_ws(payload)
+    allowed = read_allow_root(project_ws=project_ws, task_ws=None)
+    if allowed is None:
+        try:
+            return resolve_workspace_path(str(workspace))
+        except ValueError as e:
+            return tool_error("OUT_OF_SCOPE", str(e))
+    if not _within(candidate, allowed):
+        return tool_error(
+            "OUT_OF_SCOPE",
+            f"workspace 越界: {workspace}",
+            "cwd 必须在本项目工作区内",
+        )
+    if mkdir and not candidate.is_dir():
+        candidate.mkdir(parents=True, exist_ok=True)
+    return candidate
+
+
+def resolve_read_scope(payload: dict, scope: str | None) -> Path | dict:
+    """code_search 等读范围：默认本任务根；须落在项目读允许根内。"""
+    from project_runtime.workspace import read_allow_root
+
+    task = _payload_task_ws(payload)
+    project_ws = _payload_project_ws(payload)
+    allowed = read_allow_root(project_ws=project_ws, task_ws=task)
+
+    raw = str(scope or "").strip()
+    if not raw or raw in (".",):
+        if task is not None:
+            return task
+        if allowed is not None:
+            return allowed
+        try:
+            return resolve_workspace_path("data/tasks")
+        except ValueError as e:
+            return tool_error("OUT_OF_SCOPE", str(e))
+
+    # 兼容旧默认 scope=data/tasks：有项目根时等价于读允许根
+    if raw.replace("\\", "/") == "data/tasks" and allowed is not None:
+        return allowed
+
+    p = Path(raw)
+    if p.is_absolute():
+        resolved = p.resolve()
+    elif task is not None:
+        resolved = (task / p).resolve()
+    elif allowed is not None:
+        resolved = (allowed / p).resolve()
+    else:
+        try:
+            return resolve_workspace_path(raw)
+        except ValueError as e:
+            return tool_error("OUT_OF_SCOPE", str(e))
+
+    if allowed is None:
+        try:
+            # 无注入根：仍禁闭到 data/tasks（或 _WORKSPACE_ROOT）
+            if not _within(resolved, _data_tasks_root()):
+                return tool_error(
+                    "OUT_OF_SCOPE",
+                    f"路径越界: {raw}——只允许 {_data_tasks_root()} 工作区内",
+                )
+            return resolved
+        except ValueError as e:
+            return tool_error("OUT_OF_SCOPE", str(e))
+
+    if not _within(resolved, allowed):
+        return tool_error(
+            "OUT_OF_SCOPE",
+            f"路径越界: {raw}——只允许本项目工作区内（{allowed}）",
+            "自定义工作区 ≠ data/tasks",
+        )
+    return resolved
+
+
 class ShellProvider:
     """受限 shell——三防: 命令白名单+参数模式 / cwd 硬锁 / 超时截断。"""
 
@@ -679,11 +941,20 @@ class ShellProvider:
     permission = "READ_ONLY"
     priority = 150
     enabled = True
+    needs_workspace_root = True
 
     def tool_schema(self) -> dict:
         from project_runtime.worker.tool_schemas import tool_schema_for
 
         return tool_schema_for(self.name)
+
+    def tool_card(self) -> dict:
+        from project_runtime.worker.tool_card import tool_card_from_legacy
+        from project_runtime.worker.tool_schemas import TOOL_SCHEMAS
+
+        card = tool_card_from_legacy(self.name, TOOL_SCHEMAS.get(self.name, {}))
+        card["needs_workspace_root"] = True
+        return card
 
     def __init__(self) -> None:
         from project_runtime.plugin.capability import CapabilityType
@@ -698,16 +969,10 @@ class ShellProvider:
         if not command:
             return {"ok": False, "error": "command 必填"}
         # 工作区（cwd 硬锁——§4.1: 不锁 cwd 等于裸奔数据库文件）
-        workspace = payload.get("workspace")  # data/tasks/{pid}/{tid}
-        if workspace:
-            try:
-                cwd = resolve_workspace_path(str(workspace))
-            except ValueError as e:
-                return {"ok": False, "error": str(e)}
-            if not cwd.is_dir():
-                cwd.mkdir(parents=True, exist_ok=True)
-        else:
-            cwd = Path.cwd()
+        cwd_or_err = resolve_task_cwd(payload)
+        if isinstance(cwd_or_err, dict):
+            return cwd_or_err
+        cwd = cwd_or_err
 
         # ① 命令白名单 + 参数模式
         parts = command.split(maxsplit=1)
@@ -726,16 +991,27 @@ class ShellProvider:
                     command = (
                         mapped_name + ((" " + mapped_args) if mapped_args else "")
                     )
-        # 返修V3 批C: skill 固定脚本绝对路径白名单（仍过 PATHTOKENS）
+        # F4 agentskills.io：已安装 Skill 目录内脚本可跑（路径禁闭）
         skill_script_ok = False
-        if cmd_name in ("python", "python3"):
+        skill_root: Path | None = None
+        skill_script_path: Path | None = None
+        if cmd_name in ("python", "python3", "uv"):
             try:
-                from project_runtime.skills.install_gates import (
-                    is_whitelisted_skill_script,
+                skill_script_path, skill_root = _resolve_skill_script(
+                    cmd_name, command, cwd,
                 )
-                skill_script_ok = is_whitelisted_skill_script(command)
+                skill_script_ok = skill_script_path is not None
             except Exception:  # noqa: BLE001
                 skill_script_ok = False
+            # 兼容旧白名单（若仍有条目）
+            if not skill_script_ok and cmd_name in ("python", "python3"):
+                try:
+                    from project_runtime.skills.install_gates import (
+                        is_whitelisted_skill_script,
+                    )
+                    skill_script_ok = is_whitelisted_skill_script(command)
+                except Exception:  # noqa: BLE001
+                    pass
         if cmd_name not in _SHELL_WHITELIST and not skill_script_ok:
             return tool_error(
                 "NOT_WHITELISTED",
@@ -744,11 +1020,13 @@ class ShellProvider:
             )
         pattern = _SHELL_WHITELIST.get(cmd_name)
         if skill_script_ok:
-            # 白名单脚本: 第一参为绝对路径，其后仍禁 -flag
+            # 允许 --flag；路径型参数须落在 Skill 根或任务工作区
             rest = " ".join(command.split()[2:])
-            if rest and not _path_tokens_ok(rest):
+            if rest and not _skill_args_confined(
+                rest, cwd=cwd, skill_root=skill_root,
+            ):
                 return {"ok": False,
-                        "error": f"skill 脚本参数禁 -flag: {rest[:60]}"}
+                        "error": f"skill 脚本参数路径越界: {rest[:80]}"}
         elif pattern == "PATHTOKENS":
             if not _path_tokens_ok(args):
                 return {"ok": False,
@@ -772,13 +1050,63 @@ class ShellProvider:
         if cmd_name in ("python", "python3") and not skill_script_ok:
             snap = _snapshot_controlled(cwd)
 
-        # ③ 受限执行
+        # ③ Skill 脚本：工作区/系统解释器 + PYTHONPATH（无独立 Skill 运行时）
         import subprocess
+
+        run_cmd = command
+        run_env = None
+        if skill_script_ok and skill_script_path is not None:
+            try:
+                from project_runtime.skills.runtime_env import (
+                    resolve_interpreter_for_script,
+                )
+                exe, prefix = resolve_interpreter_for_script(
+                    skill_script_path, cwd=cwd,
+                )
+                # 保留原命令中脚本之后的参数
+                import shlex as _shlex
+                try:
+                    parts = _shlex.split(command, posix=(os.name != "nt"))
+                except ValueError:
+                    parts = command.split()
+                # 找到脚本参数下标
+                script_idx = 1
+                if parts and parts[0].lower() == "uv":
+                    script_idx = 2 if len(parts) > 2 else 1
+                extra = parts[script_idx + 1:] if len(parts) > script_idx + 1 else []
+                if exe.endswith("uv") or Path(exe).name.lower() in ("uv", "uv.exe"):
+                    run_cmd = subprocess.list2cmdline(
+                        [exe, *prefix, *extra]
+                    ) if os.name == "nt" else " ".join(
+                        [exe, *prefix, *extra]
+                    )
+                else:
+                    run_cmd = subprocess.list2cmdline(
+                        [exe, *prefix, *extra]
+                    ) if os.name == "nt" else " ".join(
+                        [exe, *prefix, *extra]
+                    )
+                run_env = os.environ.copy()
+                pp = [
+                    str(skill_script_path.parent),
+                    str(skill_root) if skill_root else "",
+                ]
+                pp = [p for p in pp if p]
+                prev = run_env.get("PYTHONPATH", "")
+                run_env["PYTHONPATH"] = os.pathsep.join(
+                    pp + ([prev] if prev else [])
+                )
+                if skill_root is not None:
+                    run_env["SKILL_DIR"] = str(skill_root)
+            except Exception:  # noqa: BLE001
+                run_cmd = command
+                run_env = None
 
         def _blocking() -> subprocess.CompletedProcess:
             return subprocess.run(  # noqa: S603
-                command, shell=True, cwd=str(cwd),
+                run_cmd, shell=True, cwd=str(cwd),
                 capture_output=True, text=True, timeout=_SHELL_TIMEOUT_S,
+                env=run_env,
             )
 
         try:
@@ -820,11 +1148,20 @@ class CodeSearchProvider:
     permission = "READ_ONLY"
     priority = 150
     enabled = True
+    needs_workspace_root = True
 
     def tool_schema(self) -> dict:
         from project_runtime.worker.tool_schemas import tool_schema_for
 
         return tool_schema_for(self.name)
+
+    def tool_card(self) -> dict:
+        from project_runtime.worker.tool_card import tool_card_from_legacy
+        from project_runtime.worker.tool_schemas import TOOL_SCHEMAS
+
+        card = tool_card_from_legacy(self.name, TOOL_SCHEMAS.get(self.name, {}))
+        card["needs_workspace_root"] = True
+        return card
 
     def __init__(self) -> None:
         from project_runtime.plugin.capability import CapabilityType
@@ -837,13 +1174,15 @@ class CodeSearchProvider:
     async def invoke(self, payload: dict) -> dict:
         pattern = str(payload.get("pattern") or "").strip()
         glob = str(payload.get("glob") or "*.py")
-        scope = payload.get("scope") or "data/tasks"
+        # 有任务根时默认搜本任务；否则兼容旧默认 data/tasks
+        default_scope = "." if payload.get("__ws_root") else "data/tasks"
+        scope = payload.get("scope") or default_scope
         if not pattern:
             return {"ok": False, "error": "pattern 必填"}
-        try:
-            root = resolve_workspace_path(str(scope))
-        except ValueError as e:
-            return {"ok": False, "error": str(e)}
+        root_or_err = resolve_read_scope(payload, str(scope))
+        if isinstance(root_or_err, dict):
+            return root_or_err
+        root = root_or_err
 
         def _blocking() -> list[dict]:
             hits: list[dict] = []
@@ -881,10 +1220,13 @@ class CodeSearchProvider:
 
 
 def register_worker_tools(registry) -> None:
-    """把批次 1 五插件注册进共享 registry（幂等覆盖）。
+    """把批次 1 TOOL 插件注册进共享 registry（幂等覆盖）。
 
-    搜索 provider（web_search）在 research.providers 注册——本函数只管 TOOL 面。
+    web_search 为 TOOL 门面（后端仍 RESEARCH）；办公工具可独立注销。
     """
+    from project_runtime.worker.web_search_tool import WebSearchToolProvider
+
+    registry.register(WebSearchToolProvider())
     registry.register(WebFetchProvider())
     registry.register(ReadFileProvider())
     registry.register(ListDirProvider())
@@ -892,6 +1234,9 @@ def register_worker_tools(registry) -> None:
     registry.register(AppendFileProvider())
     registry.register(ShellProvider())
     registry.register(CodeSearchProvider())
+    from project_runtime.skills.skills_tools import register_skill_tools
+
+    register_skill_tools(registry)
     from project_runtime.office.providers import register_office_tools
 
     register_office_tools(registry)

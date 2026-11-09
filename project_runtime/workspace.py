@@ -53,3 +53,46 @@ def validate_workspace_path(raw: str, *, must_exist: bool = False) -> Path:
     if resolved.exists() and not resolved.is_dir():
         raise ValueError(f"workspace_path 不是目录: {resolved}")
     return resolved
+
+
+def write_allow_root(task_ws: Path) -> Path:
+    """写禁闭根 = 本任务工作区。"""
+    return Path(task_ws).resolve()
+
+
+def derive_project_workspace(task_ws: Path | None) -> Path | None:
+    """从任务根推导项目读允许根（无显式 project_ws 时的兜底）。
+
+    - `{project}/.agent-matrix/tasks/{tid}` → `{project}`
+    - `data/tasks/{pid}/{tid}` → `data/tasks`（兼容跨任务只读旧测例）
+    - 其它 → task_ws 本身（最窄）
+    """
+    if task_ws is None:
+        return None
+    root = Path(task_ws).resolve()
+    parts = root.parts
+    # .../.agent-matrix/tasks/{tid}
+    if (
+        len(parts) >= 3
+        and parts[-2] == "tasks"
+        and parts[-3] == ".agent-matrix"
+    ):
+        return root.parents[2]
+    # .../data/tasks/{pid}/{tid}
+    for i in range(len(parts) - 2):
+        if parts[i] == "data" and parts[i + 1] == "tasks":
+            return Path(*parts[: i + 2])
+    return root
+
+
+def read_allow_root(
+    *,
+    project_ws: Path | str | None = None,
+    task_ws: Path | str | None = None,
+) -> Path | None:
+    """读禁闭根：显式项目根优先，否则从任务根推导。"""
+    if project_ws:
+        return Path(project_ws).resolve()
+    if task_ws:
+        return derive_project_workspace(Path(task_ws))
+    return None

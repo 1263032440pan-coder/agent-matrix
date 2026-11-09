@@ -121,10 +121,11 @@ Hermes 办公 Skill 的固定套路：
 
 | 工具 | 库 | 说明 |
 |--|--|--|
-| `tool:office_pdf` | reportlab（V0） | `path` + `spec`（标题/段落/简单表）→ `.pdf` |
+| `tool:office_pdf` | reportlab（V0 已交付） | 历史：`path` + `spec` → `.pdf` |
 
-- LibreOffice `soffice --headless --convert-to pdf`：**可选增强**（从已生成的 docx/pptx 转 PDF），缺失则 `RENDERER_UNAVAILABLE`，**不**写占位 pdf。  
-- V0 不把「任意 HTML→PDF」当主路径。
+> **修订（2026-11-03，见《办公产物观感升级》方案）：** PDF **只能**由已生成的 `.docx` 转换（`source` + `path`）；`spec` 直出废弃。转换后端：LibreOffice `soffice` 为主，OfficeCLI exporter 可选。无转换器 → `RENDERER_UNAVAILABLE`，**不**写占位 pdf。`.pdf` 义务隐含 `office_docx`。
+
+- V0 不把「任意 HTML→PDF」当主路径（仍成立）。
 
 ### 4.4 图片
 
@@ -182,7 +183,8 @@ Shell 旁路（良品率 A1b）：受控后缀重定向拒绝 + 非 skill `pytho
 | `@mermaid-js/mermaid-cli`（mmdc） | 可选 | 无则 arch 对 png 目标失败，不写假 png |
 | LibreOffice / poppler | 可选 | 预览与「转 PDF」增强；缺失跳过并明示 |
 
-**不**引入 DocuLane/OfficeCLI 二进制；**不**要求用户安装 Microsoft Office。
+**不**要求用户安装 Microsoft Office。  
+> **修订（2026-11-03）：** OfficeCLI 可作为**可注册/可注销**的增强后端（独立插件进程），不再是本方案绝对非目标；详见《办公产物观感升级》与 ADR-044。内置 python-* 仍为默认后端。
 
 ---
 
@@ -235,7 +237,7 @@ H4  完整性 nudge 文案对齐 Hermes 工具名；可选 soffice 预览（有�
 
 ## 九、非目标
 
-- 不接入 DocuLane / OfficeCLI / 第三方 Office MCP 全家桶。  
+- ~~不接入 DocuLane / OfficeCLI / 第三方 Office MCP 全家桶。~~ → **部分修订**：不接入 DocuLane / 不把 OfficeCLI MCP/命令面暴露给模型；OfficeCLI **可作为**独立 `ARTIFACT_PROCESSOR` 后端插件（ADR-044）。  
 - 不做 Hermes Bot Mode / pm environment 复制。  
 - 不支持老式 `.doc/.ppt/.xls`（除非另案 LibreOffice 转换）。  
 - 不把文生图当默认图片主路径。  

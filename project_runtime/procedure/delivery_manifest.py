@@ -219,6 +219,61 @@ class DeliveryManifestError(ValueError):
         self.message = message
 
 
+_META_PROSE_RE = re.compile(
+    r"(?is)\b("
+    r"we need|need ensure|need produce|need continue|need be careful|"
+    r"answer only\s+json|only json object|let me think|i will|"
+    r"i'll|continue from previous|produce deliverables"
+    r")\b"
+)
+
+
+def looks_like_meta_prose(text: str) -> bool:
+    """英文自检/续写指令冒充正文（无 deliverables JSON）。"""
+    raw = (text or "").strip()
+    if not raw:
+        return True
+    if '"deliverables"' in raw or "'deliverables'" in raw:
+        return False
+    if "{" not in raw:
+        return True
+    return bool(_META_PROSE_RE.search(raw))
+
+
+def software_dev_baseline_manifest() -> dict:
+    """SOFTWARE_DEV 三件基线——LLM 抽清单彻底失败时的确定性回落。"""
+    return validate_manifest({
+        "version": 1,
+        "source": "baseline_fallback",
+        "deliverables": [
+            {
+                "id": "d_ppt",
+                "name": "方案介绍PPT",
+                "match": {"ext": [".pptx"], "min_count": 1},
+            },
+            {
+                "id": "d_code",
+                "name": "可运行代码",
+                "match": {
+                    "ext": [".py", ".ts", ".js", ".md"],
+                    "any_name_prefix": ["readme"],
+                    "min_count": 1,
+                },
+            },
+            {
+                "id": "d_test",
+                "name": "测试报告",
+                "match": {
+                    "slot": "testing",
+                    "rel_dir": "deliverables/testing",
+                    "ext": [".md"],
+                    "min_count": 1,
+                },
+            },
+        ],
+    })
+
+
 def extract_json_dict(text: str) -> dict:
     """从模型输出中取出清单 JSON 对象。
 
@@ -253,11 +308,11 @@ def extract_json_dict(text: str) -> dict:
         )
 
     for obj in candidates:
-        if "deliverables" in obj:
+        if isinstance(obj.get("deliverables"), list):
             return obj
-    # 退而求其次：带 version 的根对象
+    # 退而求其次：带 version 的根对象（仍须后续 validate 有 deliverables）
     for obj in candidates:
-        if "version" in obj:
+        if "version" in obj and "deliverables" in obj:
             return obj
     raise DeliveryManifestError(
         "模型未返回交付清单根对象（缺 deliverables）；"
@@ -661,62 +716,103 @@ async def extract_manifest_from_materials(
     )
     import asyncio
 
-    async def _once(messages: list[dict], max_tokens: int) -> str:
+    async def _once(
+        messages: list[dict],
+        max_tokens: int,
+        *,
+        json_mode: bool = False,
+    ) -> str:
+        kwargs: dict[str, Any] = {
+            "model": model_id,
+            "api_base": cfg.base_url,
+            "api_key": cfg.api_key,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "timeout": 120,
+        }
+        if json_mode:
+            kwargs["response_format"] = {"type": "json_object"}
         result = await asyncio.wait_for(
-            llm_complete(
-                model=model_id,
-                api_base=cfg.base_url,
-                api_key=cfg.api_key,
-                messages=messages,
-                max_tokens=max_tokens,
-                timeout=120,
-            ),
+            llm_complete(**kwargs),
             timeout=130,
         )
         if not result.get("ok"):
-            raise DeliveryManifestError(
-                f"交付清单抽取失败：{result.get('error', 'LLM error')}"
-            )
+            # 网关拒 json_object 时降级再试一次
+            if json_mode:
+                kwargs.pop("response_format", None)
+                result = await asyncio.wait_for(
+                    llm_complete(**kwargs),
+                    timeout=130,
+                )
+            if not result.get("ok"):
+                raise DeliveryManifestError(
+                    f"交付清单抽取失败：{result.get('error', 'LLM error')}"
+                )
         return llm_message_text(result["response"].choices[0].message)
 
+    def _maybe_baseline(err: Exception) -> dict:
+        """SOFTWARE_DEV 有基线提示时，LLM 仍失败 → 确定性三件，不阻断规划。"""
+        if not (skill_hint or "").strip():
+            raise err
+        if "三件基线" not in skill_hint and "pptx" not in skill_hint.lower():
+            raise err
+        logger.warning(
+            "delivery manifest LLM failed (%s); using SOFTWARE_DEV baseline",
+            err,
+        )
+        return software_dev_baseline_manifest()
+
+    hard_fix = (
+        "停止自检与英文思考。你的整段回复必须是一个 JSON 对象，"
+        "第一个非空白字符必须是 { ，最后一个是 }。"
+        "禁止 markdown、禁止解释、禁止 We need / Need ensure 这类句子。\n"
+        "固定形状：\n"
+        '{"version":1,"source":"plan_extract","deliverables":['
+        '{"id":"d_ppt","name":"方案介绍PPT",'
+        '"match":{"ext":[".pptx"],"min_count":1}},'
+        '{"id":"d_code","name":"可运行代码",'
+        '"match":{"ext":[".py",".md"],"any_name_prefix":["readme"],'
+        '"min_count":1}},'
+        '{"id":"d_test","name":"测试报告",'
+        '"match":{"slot":"testing","ext":[".md"],"min_count":1}}'
+        "]}\n"
+        "可按材料增删项，但必须保留 deliverables 数组。"
+    )
+
     text = await _once([{"role": "user", "content": prompt}], 4000)
-    if not text.strip():
-        # 推理模型偶发空 content：再要一次，强制只吐 JSON
+    if not text.strip() or looks_like_meta_prose(text):
+        # 推理模型偶发空 content / 英文自检：强制 JSON
         text = await _once(
             [
                 {"role": "user", "content": prompt},
-                {
-                    "role": "user",
-                    "content": (
-                        "上一次未返回正文。请立刻只输出一个合法 JSON 对象，"
-                        "不要思考过程、不要 markdown、不要解释。"
-                    ),
-                },
+                {"role": "user", "content": hard_fix},
             ],
             4000,
+            json_mode=True,
         )
     try:
         raw = extract_json_dict(text)
-    except DeliveryManifestError:
-        # 一次纠错：把坏输出喂回，要求只吐根对象
+    except DeliveryManifestError as e1:
+        # 一次纠错：坏输出 + 硬约束 + json_mode
         text = await _once(
             [
                 {"role": "user", "content": prompt},
-                {"role": "assistant", "content": (text or "")[:2000]},
+                {"role": "assistant", "content": (text or "")[:1500]},
                 {
                     "role": "user",
                     "content": (
-                        "上一段不是合法的交付清单根对象。"
-                        "请只输出一个 JSON："
-                        '{"version":1,"source":"plan_extract","deliverables":[...]}，'
-                        "deliverables 每项含 id/name/match；"
-                        "不要解释、不要单独输出 match 碎片。"
+                        "上一段不是合法的交付清单根对象（缺 deliverables 或非 JSON）。\n"
+                        + hard_fix
                     ),
                 },
             ],
             4000,
+            json_mode=True,
         )
-        raw = extract_json_dict(text)
+        try:
+            raw = extract_json_dict(text)
+        except DeliveryManifestError as e2:
+            return _maybe_baseline(e2 if text.strip() else e1)
     try:
         return validate_manifest(raw)
     except DeliveryManifestError as ve:
@@ -740,8 +836,12 @@ async def extract_manifest_from_materials(
                 },
             ],
             4000,
+            json_mode=True,
         )
-        return validate_manifest(extract_json_dict(text))
+        try:
+            return validate_manifest(extract_json_dict(text))
+        except DeliveryManifestError as e3:
+            return _maybe_baseline(e3)
 
 
 def assign_ids_heuristic(

@@ -64,6 +64,7 @@ class GitProvider:
     permission = "READ_ONLY"
     priority = 150
     enabled = True
+    needs_workspace_root = True
 
     def tool_schema(self) -> dict:
         from project_runtime.worker.tool_schemas import tool_schema_for
@@ -92,25 +93,18 @@ class GitProvider:
                          " 写: add / commit -m \"..\" / checkout -b ..）",
             }
         cwd = self._workspace(payload)
+        if isinstance(cwd, dict):
+            return cwd
         result = await _run_cmd(f"git {args}", cwd)
         if result.get("ok"):
             result["structured"] = _git_structured(args, result.get("stdout", ""))
         return result
 
     @staticmethod
-    def _workspace(payload: dict) -> Path:
-        ws = payload.get("workspace")
-        if ws:
-            try:
-                from project_runtime.worker.tools import resolve_workspace_path
+    def _workspace(payload: dict) -> Path | dict:
+        from project_runtime.worker.tools import resolve_task_cwd
 
-                cwd = resolve_workspace_path(str(ws))
-                if not cwd.is_dir():
-                    cwd.mkdir(parents=True, exist_ok=True)
-                return cwd
-            except ValueError:
-                return Path.cwd()
-        return Path.cwd()
+        return resolve_task_cwd(payload, fallback_cwd=True, mkdir=True)
 
 
 def _git_structured(args: str, stdout: str) -> dict:
@@ -142,6 +136,7 @@ class TestRunnerProvider:
     permission = "READ_ONLY"
     priority = 150
     enabled = True
+    needs_workspace_root = True
 
     def tool_schema(self) -> dict:
         from project_runtime.worker.tool_schemas import tool_schema_for
@@ -169,6 +164,8 @@ class TestRunnerProvider:
         if not re.match(r"^[A-Za-z0-9_/.:\\ -]*$", target):
             return {"ok": False, "error": "target 参数模式不合规"}
         cwd = GitProvider._workspace(payload)  # noqa: SLF001
+        if isinstance(cwd, dict):
+            return cwd
         cmd = (
             f"pytest {target} -q --no-header"
             if runner == "pytest" else f"npm test -- {target}"
@@ -219,6 +216,7 @@ class BuilderProvider:
     permission = "READ_ONLY"
     priority = 150
     enabled = True
+    needs_workspace_root = True
 
     def tool_schema(self) -> dict:
         from project_runtime.worker.tool_schemas import tool_schema_for
@@ -244,6 +242,8 @@ class BuilderProvider:
                 "（npm_build/docker_build/mvn_compile/py_compile/tsc_noemit）",
             )
         cwd = GitProvider._workspace(payload)  # noqa: SLF001
+        if isinstance(cwd, dict):
+            return cwd
         if kind == "npm_build":
             cmd = "npm run build"
         elif kind == "docker_build":
@@ -293,6 +293,7 @@ class ArchDiagramProvider:
     """
 
     name = "tool:arch_diagram"
+    needs_workspace_root = True
     capability = None
     permission = "READ_ONLY"
     priority = 150
@@ -399,11 +400,20 @@ class TodoProvider:
     permission = "READ_ONLY"
     priority = 140
     enabled = True
+    needs_workspace_root = True
 
     def tool_schema(self) -> dict:
         from project_runtime.worker.tool_schemas import tool_schema_for
 
         return tool_schema_for(self.name)
+
+    def tool_card(self) -> dict:
+        from project_runtime.worker.tool_card import tool_card_from_legacy
+        from project_runtime.worker.tool_schemas import TOOL_SCHEMAS
+
+        card = tool_card_from_legacy(self.name, TOOL_SCHEMAS.get(self.name, {}))
+        card["needs_workspace_root"] = True
+        return card
 
     def __init__(self) -> None:
         from project_runtime.plugin.capability import CapabilityType
@@ -414,10 +424,7 @@ class TodoProvider:
         return True
 
     async def invoke(self, payload: dict) -> dict:
-        from project_runtime.worker.tools import (
-            resolve_workspace_path,
-            tool_error,
-        )
+        from project_runtime.worker.tools import resolve_task_cwd, tool_error
 
         action = str(payload.get("action") or "").strip()
         if not action:
@@ -426,12 +433,15 @@ class TodoProvider:
                 '示例: todo {"action": "add", "text": "..."}（可选 list / add / toggle）',
             )
 
-        try:
-            ws = resolve_workspace_path(
-                str(payload.get("workspace") or "data/tasks"))
-        except ValueError as e:
-            return {"ok": False, "error": str(e)}
-        ws.mkdir(parents=True, exist_ok=True)
+        # 无 __ws_root 时兼容旧测例 workspace=data/tasks/...
+        if not payload.get("__ws_root") and not payload.get("workspace"):
+            payload = {**payload, "workspace": "data/tasks"}
+        ws_or_err = resolve_task_cwd(
+            payload, fallback_cwd=False, mkdir=True,
+        )
+        if isinstance(ws_or_err, dict):
+            return ws_or_err
+        ws = ws_or_err
         todo_path = ws / ".todo.json"
         items: list[dict] = []
         if todo_path.exists():

@@ -200,9 +200,24 @@ class BackfillValidator(Validator):
 
     name = "backfill"
 
+    def __init__(self, session: AsyncSession | None = None) -> None:
+        self._session = session
+
+    async def _project_workspace(self, task: Task):
+        """项目验收根：自定义 workspace_path 优先，否则 data/tasks/{pid}。"""
+        from project_runtime.workspace import resolve_project_workspace
+
+        ws_path = getattr(task, "workspace_path", None)
+        if ws_path is None and self._session is not None:
+            from project_runtime.project_state.models import Project
+
+            proj = await self._session.get(Project, int(task.project_id))
+            if proj is not None:
+                ws_path = getattr(proj, "workspace_path", None)
+        return resolve_project_workspace(int(task.project_id), ws_path)
+
     async def validate(self, task: Task, artifacts: list[Artifact]) -> ValidatorResult:
         import json as _json
-        from pathlib import Path
 
         try:
             ref = _json.loads(task.playbook_ref or "{}")
@@ -223,8 +238,8 @@ class BackfillValidator(Validator):
             )
 
             script = validator_path(int(task.project_id))
-            # SYS-123: 清单验收扫项目根（与 Stop/收口同口径）
-            ws = Path(f"data/tasks/{task.project_id}")
+            # 与 Worker Stop / 自定义工作区同口径（禁止写死 data/tasks/{pid}）
+            ws = await self._project_workspace(task)
             if not script.exists():
                 return ValidatorResult(
                     GateStatus.FAIL,
@@ -317,7 +332,7 @@ class GateCore:
             TestValidator(),
             # 返修单v2 P2: 补建任务存在性门（非补建任务自 PASS——validate
             # 内双判断: delivery_tags + 任务名前缀, 普通任务零影响）
-            BackfillValidator(),
+            BackfillValidator(session=session),
         ]
 
     async def evaluate(self, task_id: int) -> GateResult:

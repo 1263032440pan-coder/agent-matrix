@@ -31,8 +31,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# 全局工具循环上限：全部走本 Worker 的任务统一 32，无按节点例外。
-_TOOL_ROUNDS = 32
+# 全局工具循环上限：全部走本 Worker 的任务统一 64，无按节点例外。
+_TOOL_ROUNDS = 64
 
 # V1.6b: Claude Stop 对齐——交付存在性硬闸独立返工轮次（仅提前收工路径）
 _DELIVERY_REPAIR_MAX = 3
@@ -175,7 +175,9 @@ def _tool_result_text(result: dict) -> str:
         if result.get("hint"):
             text += f"\n建议：{result['hint']}"
         return text[:6000]
+    # stdout 优先；skill_view 等工具正文在 content
     return str(result.get("stdout")
+               or result.get("content")
                or result.get("result")
                or result.get("error")
                or "")[:6000]
@@ -202,6 +204,8 @@ class LLMWorkerAdapter(WorkerAdapter):
         self._delivery_repair_counts: dict[int, int] = {}
         # V1.6 序0: 任务工作区根（文件工具写禁闭）
         self._workspace_root: str | None = None
+        # 读禁闭：项目工作区根
+        self._project_workspace_root: str | None = None
         # 返修单 B: 当前 Agent 归属（实时思维链事件 payload）
         self._current_agent: dict | None = None
         self._current_project_id: int | None = None
@@ -229,6 +233,9 @@ class LLMWorkerAdapter(WorkerAdapter):
                 # re-applied in this session.
                 self._current_task_id = task.id
                 self._workspace_root = getattr(wp, "workspace_root", None)
+                self._project_workspace_root = getattr(
+                    wp, "project_workspace_root", None
+                )
                 return
             if task.status != TaskStatus.READY:
                 raise ValueError(
@@ -236,6 +243,9 @@ class LLMWorkerAdapter(WorkerAdapter):
                 )
             self._current_task_id = task.id
             self._workspace_root = getattr(wp, "workspace_root", None)
+            self._project_workspace_root = getattr(
+                wp, "project_workspace_root", None
+            )
             await self._fsm.transition_task(task, TaskStatus.RUNNING)
 
         async with self._db_lock:
@@ -396,10 +406,18 @@ class LLMWorkerAdapter(WorkerAdapter):
         root = self._task_ws_root()
         if not root.exists():
             return []
-        return [
-            p for p in root.rglob("*")
-            if p.is_file() and str(p.relative_to(root)) not in snapshot
-        ]
+        out: list[Path] = []
+        for p in root.rglob("*"):
+            if not p.is_file():
+                continue
+            rel_native = str(p.relative_to(root))
+            rel = rel_native.replace("\\", "/")
+            # O5：预览目录不计交付物
+            if rel.startswith(".matrix/preview/"):
+                continue
+            if rel_native not in snapshot:
+                out.append(p)
+        return out
 
     def _task_ws_root(self) -> Path:
         """本任务的工作区根（优先 WP.workspace_root）。"""
@@ -730,8 +748,33 @@ class LLMWorkerAdapter(WorkerAdapter):
             prompt_parts.append(f"上下文：{wp.playbook_ref}")
         if wp.contract:
             prompt_parts.append(f"契约：{wp.contract}")
+        # F2 agentskills.io：全员共享 Skill 目录（name+description+path）
+        try:
+            from project_runtime.skills.catalog import (
+                format_available_skills_xml,
+                list_catalog,
+            )
+
+            preferred: set[str] = set()
+            if wp.skill_context is not None:
+                preferred.add(wp.skill_context.skill_id)
+                preferred.add(getattr(wp.skill_context, "skill_id", "") or "")
+            prompt_parts.append(
+                format_available_skills_xml(
+                    list_catalog(preferred_names=preferred),
+                )
+            )
+        except Exception:  # noqa: BLE001 — 目录失败不阻断执行
+            logger.debug("skill catalog inject failed", exc_info=True)
         if wp.skill_context:
-            prompt_parts.append(f"方法指导：\n{wp.skill_context.skill_body[:3000]}")
+            # F2/收尾：绑定仅标 preferred；全文由 skill_view 按需加载，不再硬塞 3000 字
+            sid = wp.skill_context.skill_id
+            prompt_parts.append(
+                f"preferred_skill：{sid}@"
+                f"{wp.skill_context.skill_version}。"
+                f"请先 skill_view(\"{sid}\") 或读取目录中的 path 再执行；"
+                "勿假设已加载全文。"
+            )
         # SYS-137: slot:/count: → 必写槽目录（分片仅有 count 时也要提示）
         slot_dirs: list[str] = []
         try:
@@ -900,7 +943,31 @@ class LLMWorkerAdapter(WorkerAdapter):
         # V1.4: Agent 白名单交集（wp 透传——None=不限）
         tool_wl = getattr(wp, "tool_whitelist", None)
         self._tool_whitelist = tool_wl
+        # T3：义务 → 工具排序 / 手册
+        try:
+            from project_runtime.worker.obligation_plugins import (
+                required_plugins_for_playbook_ref,
+            )
+
+            self._obligation_plugins = required_plugins_for_playbook_ref(
+                getattr(wp, "playbook_ref", None),
+            )
+        except Exception:  # noqa: BLE001
+            self._obligation_plugins = set()
+        self._error_detail_counts: dict[str, int] = {}
+        self._error_detail_seen: set[str] = set()
         tools = self._search_tools(whitelist=tool_wl)
+        # 工具手册注入当前用户提示（事前义务）
+        manual = getattr(self, "_tool_manual", "") or ""
+        if manual:
+            # 挂到 messages 最后一条 user（或 prompt 已拼好的结构）
+            if messages and messages[-1].get("role") == "user":
+                messages[-1]["content"] = (
+                    str(messages[-1].get("content") or "")
+                    + "\n\n" + manual
+                )
+                messages[-1]["_tool_manual"] = True
+        await self._emit_tool_surface_built(getattr(wp, "task_id", None))
         self._tool_adapter = None
         if tools:
             from project_runtime.llm import require_tools_compat
@@ -1458,10 +1525,39 @@ class LLMWorkerAdapter(WorkerAdapter):
                 card = facts + "\n" + gap_txt
             tr.summary_card = card[:800]
 
+    async def _emit_tool_surface_built(self, task_id: int | None) -> None:
+        snap = getattr(self, "_tool_surface_snapshot", None)
+        if not snap:
+            return
+        try:
+            from project_runtime.event import EventEngine, RuntimeEventType
+
+            await EventEngine().record(
+                RuntimeEventType.TOOL_SURFACE_BUILT,
+                project_id=getattr(self, "_current_project_id", None),
+                task_id=task_id,
+                phase="LLM_TOOL",
+                message=(
+                    f"工具面 visible={len(snap.get('visible') or [])} "
+                    f"filtered={len(snap.get('filtered') or [])}"
+                )[:120],
+                actor="WORKER",
+                payload={
+                    "visible": snap.get("visible"),
+                    "filtered": snap.get("filtered"),
+                    "ordering_basis": snap.get("ordering_basis"),
+                    "manual": snap.get("manual"),
+                    "degraded": snap.get("degraded"),
+                    "text": "⚙ 工具面已构建",
+                },
+            )
+        except Exception:  # noqa: BLE001
+            pass
+
     def _enrich_tool_text(
         self, name: str, args: dict, ok: bool, text: str, result: dict,
     ) -> str:
-        """SYS-152/155: 失败记账；写入成功附缺口回执。"""
+        """SYS-152/155: 失败记账；写入成功附缺口回执；T3 出错补 detail。"""
         if not hasattr(self, "_tool_failures"):
             self._tool_failures = []
         if not hasattr(self, "_obligation_tokens"):
@@ -1473,6 +1569,7 @@ class LLMWorkerAdapter(WorkerAdapter):
                 "error_code": result.get("error_code") or "",
                 "path": str(args.get("path") or "")[:200],
             })
+            text = self._attach_error_detail_text(name, result, text)
             return text
         if bare not in (
             "write_file", "append_file", "office_pptx", "slide_generator",
@@ -1497,6 +1594,61 @@ class LLMWorkerAdapter(WorkerAdapter):
             return text.rstrip() + "\n" + format_gap_receipt(report)
         except Exception:  # noqa: BLE001
             logger.debug("gap receipt failed", exc_info=True)
+            return text
+
+    def _attach_error_detail_text(
+        self, name: str, result: dict, text: str,
+    ) -> str:
+        """T3：按工具卡 error_sections 附说明（去重/限次）。"""
+        try:
+            from project_runtime.extension.registry import CapabilityType
+            from project_runtime.extension.shared import shared_registry
+            from project_runtime.worker.tool_card import resolve_tool_card
+            from project_runtime.worker.tool_surface import attach_error_detail
+
+            code = str(result.get("error_code") or "")
+            if not code:
+                return text
+            key = f"{name}:{code}"
+            counts = getattr(self, "_error_detail_counts", None)
+            if counts is None:
+                self._error_detail_counts = {}
+                counts = self._error_detail_counts
+            prior = counts.get(key, 0)
+            counts[key] = prior + 1
+            seen = getattr(self, "_error_detail_seen", None)
+            if seen is None:
+                self._error_detail_seen = set()
+                seen = self._error_detail_seen
+
+            card = None
+            bare = name.split(":", 1)[-1]
+            for info in shared_registry().list_providers(CapabilityType.TOOL):
+                bn = info.name.split(":", 1)[-1]
+                llm_n = getattr(info.provider, "llm_name", None)
+                if info.name == name or bn == bare or (
+                    llm_n and llm_n == name
+                ):
+                    card = resolve_tool_card(info.provider)
+                    if card is not None:
+                        card = {**card, "name": info.name}
+                    break
+            extra = attach_error_detail(
+                card, code, prior_count=prior, seen_keys=seen,
+            )
+            if not extra:
+                # 也尝试把已有 hint 保留
+                hint = result.get("hint")
+                if hint and str(hint) not in text:
+                    return text.rstrip() + "\n" + str(hint)
+                return text
+            # 写入 result.hint 供审计；正文给模型
+            merged = (str(result.get("hint") or "") + "\n" + extra).strip()
+            result["hint"] = merged
+            result["_protect_detail"] = True
+            return text.rstrip() + "\n【纠错说明】\n" + extra
+        except Exception:  # noqa: BLE001
+            logger.debug("error detail attach failed", exc_info=True)
             return text
 
     async def _maybe_inject_tool_diagnosis(
@@ -1537,93 +1689,32 @@ class LLMWorkerAdapter(WorkerAdapter):
     def _search_tools(
         self, whitelist: list[str] | None = None
     ) -> list[dict] | None:
-        """工具循环的工具面: web_search + 全部 TOOL 插件（描述即调用策略）。
+        """工具循环的工具面（方案 §13.3 工具面构建器）。
 
-        20号规范 §4.3 三能力①: 插件自主调用——白名单内全部插件以
-        tool 形式进循环，模型按任务上下文自决调不调/怎么调。
-        可见性 = 白名单 ∩ 已注册（返修-20号-V1.4）:
-        whitelist=None → 全部已注册 TOOL 插件（老路径/不限模板）;
-        whitelist=list → 仅列内插件（裸名比对——剥 tool: 前缀）。
-        web_search 同受白名单门控（三能力③配额内基线必含）。
-        RESEARCH 无 provider → 无 web_search; TOOL 面零注册 →
-        仅 web_search（若在）。全空 → None。
+        可见性 = 白名单 ∩ enabled ∩ usable ∩ 有工具卡。
+        web_search 为普通 TOOL 门面（tool:web_search），不再内联特例。
         """
+        from project_runtime.extension.registry import CapabilityType
         from project_runtime.extension.shared import shared_registry
-        from project_runtime.plugin.capability import CapabilityType
-        from project_runtime.worker.tools import expand_tool_whitelist
+        from project_runtime.worker.tool_surface import build_tool_surface
+        from project_runtime.worker.web_search_tool import WebSearchToolProvider
 
         registry = shared_registry()
-        providers = registry.list_providers(CapabilityType.RESEARCH)
-        search_ok = any(i.enabled for i in providers)
+        # 仅补注册 web_search 门面（不重注 RESEARCH，以免覆盖测试摘除）
+        if not any(
+            i.name == "tool:web_search"
+            for i in registry.list_providers(CapabilityType.TOOL)
+        ):
+            registry.register(WebSearchToolProvider())
 
-        # TOOL 插件面（V1.4: 白名单 ∩ 已注册——裸名比对剥前缀）
-        allowed = (
-            None if whitelist is None
-            else set(expand_tool_whitelist(whitelist))
+        built = build_tool_surface(
+            registry,
+            whitelist=whitelist,
+            obligation_plugins=getattr(self, "_obligation_plugins", None),
         )
-        tool_defs: list[dict] = []
-        for info in registry.list_providers(CapabilityType.TOOL):
-            if allowed is not None:
-                bare = info.name.split(":", 1)[-1]
-                if bare not in allowed and info.name not in allowed:
-                    continue  # 白名单外——模型不可见（护栏）
-            if not info.enabled:
-                continue
-            schema_fn = getattr(info.provider, "tool_schema", None)
-            if not callable(schema_fn):
-                continue  # 无 schema 契约的 provider 不进循环
-            schema = schema_fn()
-            if not isinstance(schema, dict) or not schema.get("name"):
-                continue
-            tool_defs.append({
-                "type": "function",
-                "function": {
-                    "name": schema["name"],
-                    "description": (
-                        schema.get("description") or schema["name"]
-                    )[:600],
-                    "parameters": schema.get("parameters") or {
-                        "type": "object", "properties": {},
-                    },
-                },
-            })
-        if not search_ok and not tool_defs:
-            return None  # 可用性决定可见性（opencode 同款）
-        # web_search 门控（三能力③: web_search 是每模板基线——
-        # 但白名单显式列出且不含它时同样不可见，护栏优先）
-        if allowed is not None and "web_search" not in allowed:
-            search_ok = False
-        if not search_ok:
-            return tool_defs
-
-        web_search_def = [{
-            "type": "function",
-            "function": {
-                "name": "web_search",
-                "description": (
-                    "搜索互联网获取当前任务所需信息。仅当任务缺少必要的外部"
-                    "知识时调用：特定技术/框架的 API 用法与版本兼容性、行业"
-                    "最佳实践、明确的客观事实查证。任务材料（上下文/契约/"
-                    "方法指导）已自足时不要调用。每次调用消耗搜索配额，能从"
-                    "已有材料推断的优先推断。"
-                ),
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "query": {
-                            "type": "string",
-                            "description": "搜索查询（自然语言，中文或英文）",
-                        },
-                        "num_results": {
-                            "type": "integer",
-                            "description": "结果数（默认 6，最大 10）",
-                        },
-                    },
-                    "required": ["query"],
-                },
-            },
-        }]
-        return web_search_def + tool_defs
+        self._tool_surface_snapshot = built.get("snapshot")
+        self._tool_manual = built.get("manual") or ""
+        return built.get("tools")
 
     async def _run_tool_plugin(
         self, name: str, args: dict,
@@ -1658,36 +1749,56 @@ class LLMWorkerAdapter(WorkerAdapter):
         from project_runtime.extension.shared import shared_registry
         from project_runtime.plugin.capability import CapabilityType
 
+        bare = name.split(":", 1)[-1]
         for info in shared_registry().list_providers(CapabilityType.TOOL):
-            if info.name == name and info.enabled:
-                try:
-                    payload = dict(args)
-                    # V1.6 序0: 文件工具写禁闭——注入任务工作区根
-                    # （__ 前缀=内部参数, schema 不暴露, Provider 侧剥离）
-                    if name in (
-                        "tool:read_file", "tool:list_dir",
-                        "tool:write_file", "tool:append_file",
-                        "tool:office_pptx", "tool:office_docx",
-                        "tool:office_xlsx", "tool:office_pdf",
-                        "tool:image_raster", "tool:office_inspect",
-                        "tool:arch_diagram",
-                    ) and self._workspace_root:
-                        payload["__ws_root"] = self._workspace_root
-                    # 义务驱动：拒写回执需可见工具列表
-                    if name in ("tool:write_file", "tool:append_file"):
-                        wl = getattr(self, "_tool_whitelist", None)
-                        if wl is None:
-                            payload["__visible_tools"] = None
-                        else:
-                            from project_runtime.worker.tools import (
-                                expand_tool_whitelist,
+            if not info.enabled or info.provider is None:
+                continue
+            prov = info.provider
+            llm_n = getattr(prov, "llm_name", None)
+            if not (
+                info.name == name
+                or info.name.split(":", 1)[-1] == bare
+                or (llm_n and llm_n == name)
+            ):
+                continue
+            try:
+                payload = dict(args)
+                # 声明式工作区注入（方案 O1 / needs_workspace_root）
+                needs_ws = bool(
+                    getattr(prov, "needs_workspace_root", False)
+                )
+                if not needs_ws:
+                    card_fn = getattr(prov, "tool_card", None)
+                    if callable(card_fn):
+                        try:
+                            needs_ws = bool(
+                                (card_fn() or {}).get(
+                                    "needs_workspace_root"
+                                )
                             )
-                            payload["__visible_tools"] = list(
-                                expand_tool_whitelist(wl) or []
-                            )
-                    return await info.provider.invoke(payload)
-                except Exception as e:  # noqa: BLE001 — 降级不炸循环
-                    return {"ok": False, "error": str(e)[:300]}
+                        except Exception:  # noqa: BLE001
+                            needs_ws = False
+                if needs_ws and self._workspace_root:
+                    payload["__ws_root"] = self._workspace_root
+                if needs_ws and self._project_workspace_root:
+                    payload["__project_ws_root"] = self._project_workspace_root
+                # 义务驱动：拒写回执需可见工具列表
+                if info.name in (
+                    "tool:write_file", "tool:append_file",
+                ) or bare in ("write_file", "append_file"):
+                    wl = getattr(self, "_tool_whitelist", None)
+                    if wl is None:
+                        payload["__visible_tools"] = None
+                    else:
+                        from project_runtime.worker.tools import (
+                            expand_tool_whitelist,
+                        )
+                        payload["__visible_tools"] = list(
+                            expand_tool_whitelist(wl) or []
+                        )
+                return await prov.invoke(payload)
+            except Exception as e:  # noqa: BLE001 — 降级不炸循环
+                return {"ok": False, "error": str(e)[:300]}
         return None
 
     async def _emit_tool_result(
@@ -1856,12 +1967,22 @@ class LLMWorkerAdapter(WorkerAdapter):
 
         results: list[dict] = []
         err = ""
-        if name == "web_search" and query:
+        if (name == "web_search" or name == "tool:web_search") and query:
             try:
-                results = await self._search_via_registry(query, args)
+                # 优先走 TOOL 门面；失败则回落旧 RESEARCH 直调
+                facade = await self._run_tool_plugin(
+                    "tool:web_search", args, whitelist=whitelist,
+                )
+                if isinstance(facade, dict) and facade.get("ok"):
+                    results = list(facade.get("results") or [])
+                elif isinstance(facade, dict) and facade.get("error"):
+                    err = str(facade.get("error") or "")[:200]
+                else:
+                    results = await self._search_via_registry(query, args)
             except Exception as e:  # noqa: BLE001
                 err = str(e)[:200]
-        elif not name.startswith("web_search"):
+        elif not (name == "web_search" or name.startswith("web_search")
+                  or name == "tool:web_search"):
             # TOOL 插件分发（§4.3 三能力①——注册进循环的插件在此执行）
             missing = self._missing_required(name, args)
             if missing:

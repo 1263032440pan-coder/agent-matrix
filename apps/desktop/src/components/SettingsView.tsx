@@ -1,10 +1,11 @@
 import { useState } from 'react';
 import { LLMSettingsCard } from './LLMSettingsCard';
+import { OfficeBackendsPanel } from './OfficeBackendsPanel';
 import { SkillPanel } from './SkillPanel';
 import { useThemePreference } from '../theme/ThemeProvider';
 import type { ThemePreference } from '../theme/preference';
 
-type Tab = 'appearance' | 'llm' | 'skills';
+type Tab = 'appearance' | 'llm' | 'skills' | 'office';
 
 const THEME_OPTS: Array<{ id: ThemePreference; label: string }> = [
   { id: 'system', label: '跟随系统' },
@@ -43,6 +44,14 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
         >
           Skills
         </button>
+        <button
+          type="button"
+          data-active={tab === 'office'}
+          data-testid="settings-tab-office"
+          onClick={() => setTab('office')}
+        >
+          办公后端
+        </button>
         <div style={{ flex: 1 }} />
         <button type="button" onClick={onClose} data-testid="settings-close">
           ← 返回
@@ -77,6 +86,7 @@ export function SettingsView({ onClose }: { onClose: () => void }) {
         )}
         {tab === 'llm' && <LLMSettingsCard />}
         {tab === 'skills' && <SkillPanel />}
+        {tab === 'office' && <OfficeBackendsPanel />}
       </div>
     </div>
   );

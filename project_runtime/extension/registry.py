@@ -120,6 +120,25 @@ class ExtensionRegistry:
         if info is None:
             raise ExtensionError(f"Provider not registered: {name}")
         info.enabled = enabled
+        if info.provider is not None:
+            try:
+                info.provider.enabled = enabled
+            except Exception:  # noqa: BLE001
+                pass
+
+    def set_priority(self, name: str, priority: int) -> None:
+        info = self._providers.get(name)
+        if info is None:
+            raise ExtensionError(f"Provider not registered: {name}")
+        info.priority = int(priority)
+        if info.provider is not None:
+            try:
+                info.provider.priority = int(priority)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def get(self, name: str) -> ProviderInfo | None:
+        return self._providers.get(name)
 
     async def invoke(self, capability: CapabilityType, payload: dict[str, Any]) -> Any:
         """Invoke the highest-priority enabled provider for a capability."""

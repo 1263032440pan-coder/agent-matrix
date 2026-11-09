@@ -43,6 +43,26 @@ def _patch_litellm(monkeypatch, fn):
     monkeypatch.setitem(sys.modules, "litellm", _FakeLitellmMod(fn))
 
 
+def _fake_llm_settings(*, tools_supported: bool = True):
+    """带有效 compat 的设置替身（工具循环入口 require_tools_compat）。"""
+    from project_runtime.llm.compat import GatewayCompat, settings_fingerprint
+
+    base_url, api_key, model = "http://x", "k", "m"
+    return type("C", (), {
+        "base_url": base_url,
+        "api_key": api_key,
+        "model": model,
+        "compat": GatewayCompat(
+            probed_at="2026-01-01T00:00:00Z",
+            fingerprint=settings_fingerprint(base_url, model, api_key),
+            ok=True,
+            chat_ok=True,
+            tools_supported=tools_supported,
+            tool_name_style="colon" if tools_supported else "none",
+        ),
+    })()
+
+
 @pytest.fixture
 async def dbengine(tmp_path):
     eng = create_async_engine(f"sqlite+aiosqlite:///{tmp_path}/p19.db")
@@ -329,8 +349,7 @@ class TestWorkerToolLoop:
         # settings stub
         monkeypatch.setattr(
             "project_runtime.llm.load_llm_settings",
-            lambda: type("C", (), {
-                "base_url": "http://x", "api_key": "k", "model": "m"})(),
+            _fake_llm_settings,
         )
         from project_runtime.extension.shared import shared_registry
         from project_runtime.research.providers import (
@@ -369,8 +388,7 @@ class TestWorkerToolLoop:
         _patch_litellm(monkeypatch, fake_acompletion)
         monkeypatch.setattr(
             "project_runtime.llm.load_llm_settings",
-            lambda: type("C", (), {
-                "base_url": "http://x", "api_key": "k", "model": "m"})(),
+            _fake_llm_settings,
         )
         from project_runtime.extension.shared import shared_registry
         from project_runtime.research.providers import (
@@ -418,8 +436,7 @@ class TestWorkerToolLoop:
         _patch_litellm(monkeypatch, fake_acompletion)
         monkeypatch.setattr(
             "project_runtime.llm.load_llm_settings",
-            lambda: type("C", (), {
-                "base_url": "http://x", "api_key": "k", "model": "m"})(),
+            _fake_llm_settings,
         )
 
         async def fake_search(q, args):
@@ -448,27 +465,18 @@ class TestWorkerToolLoop:
         assert "轮" in out or "Grace" in out or "上限" in out or out
 
     @pytest.mark.asyncio
-    async def test_gateway_tools_unsupported_fallback(self, monkeypatch):
-        """降级: 网关不支持 tools（报错）→ 剔 tools 单轮重发。"""
+    async def test_gateway_tools_unsupported_no_silent_strip(self, monkeypatch):
+        """已拍板：网关拒 tools 时禁止静默剔 tools 假跑，应显式失败。"""
 
         w = _make_worker()
-        state = {"n": 0, "saw_tools": []}
 
         async def fake_acompletion(**kw):
-            state["n"] += 1
-            state["saw_tools"].append("tools" in kw and kw.get("tools"))
-            if state["n"] == 1:
-                raise TypeError("tools not supported by gateway")
-
-            async def gen():
-                yield _FakeChunk(_FakeDelta(content="降级后产出"))
-            return gen()
+            raise TypeError("tools not supported by gateway")
 
         _patch_litellm(monkeypatch, fake_acompletion)
         monkeypatch.setattr(
             "project_runtime.llm.load_llm_settings",
-            lambda: type("C", (), {
-                "base_url": "http://x", "api_key": "k", "model": "m"})(),
+            _fake_llm_settings,
         )
         from project_runtime.extension.shared import shared_registry
         from project_runtime.research.providers import (
@@ -483,7 +491,5 @@ class TestWorkerToolLoop:
             contract = None
             skill_context = None
 
-        out = await w._execute_llm(_WP())
-        assert out == "降级后产出"
-        assert state["saw_tools"][0], "首轮应带 tools"
-        assert not state["saw_tools"][1], "降级后不带 tools"
+        with pytest.raises(RuntimeError, match="禁止静默去工具降级"):
+            await w._execute_llm(_WP())

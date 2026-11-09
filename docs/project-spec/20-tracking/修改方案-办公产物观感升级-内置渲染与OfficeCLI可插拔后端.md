@@ -1,7 +1,7 @@
 # 修改方案：办公产物观感升级 —— 内置渲染加厚 × OfficeCLI 可插拔后端（含工具面统一与描述分层）
 
 > 版本：2026-11-03（v2：追加 §十三 工具面统一与描述分层、§十四 RTM）  
-> 状态：**草案，待拍板**（拍板后按 §八 分阶段实施；O4 前须补 ADR-044）  
+> 状态：**主线完成**（2026-11-04：O0–O5 + T1–T3 + OFF-13；T4 仅预留接口不上线；O6 评估后 DEFERRED）  
 > 范围：①办公产物观感与 PDF 链路（§一–§十二）；②模型工具面的发现、描述与详细说明注入（§十三）。两者共用「稳定门面 × 可插拔后端 × 工具独立注册」这一设计，合并实施  
 > 前置：[修改方案-Hermes式办公与图片产物生成](修改方案-Hermes式办公与图片产物生成.md)（已实施，本方案修订其 §九「不接入 OfficeCLI」与 §4.3 PDF 轨）；[修改方案-办公多媒体产物良品率提升](修改方案-办公多媒体产物良品率提升.md) §298「外挂 Office CLI 必须 ADR」；[修改方案-义务驱动工具绑定与规划期矛盾消解](修改方案-义务驱动工具绑定与规划期矛盾消解.md)  
 > 外部参照：[iOfficeAI/OfficeCLI](https://github.com/iOfficeAI/OfficeCLI)（Apache-2.0，单二进制内嵌 .NET，含 Windows x64/ARM64）
@@ -262,18 +262,27 @@ O2  PDF 铁律：office_pdf 改 docx→pdf；soffice 转换后端；.pdf 隐含�
 O3  OfficeSpec v1 + 内置后端加厚（主题/背景/页型/标题层级/列表/分页/图片/页眉页脚）
 O4  office-cli 插件：plugin.yaml + shim + spec→batch 翻译 + 加固（需 ADR-044 通过）
 O5  质量闭环：validate/issues 回模型；可选预览
-O6  （可选）模板：OfficeCLI merge / dump 接入「模板填槽」路线，另行评估
+O6  （可选）模板：OfficeCLI merge / dump 接入「模板填槽」路线 → **DEFERRED**（见 §八.1）
 
 工具面（§十三）：
 T1  工具卡合同 + 兼容默认实现；web_search 门面化；工具面构建器替换 _search_tools（含 health 过滤）
 T2  按块拼描述替换 [:600]；文件 / 办公工具描述迁入工具卡（与 O1 同批）
 T3  义务驱动排序 + 工具手册注入；出错补充说明；工具面快照审计；绑定期改用同一可见性判断
-T4  （预留，不排期）tool_help 带防护上线；tool_search 另行 ADR
+T4  （预留）detail.sections 读取接口已落地；tool_help TOOL **不上线**；tool_search 另行 ADR
 ```
 
 O1、O2 互不依赖可并行；O3 是观感改善的主体，不等 O4；O4 只增不改，可随时注销回退到 O3 的效果。
 
 **合并批次建议：** 批次 1 = O1 + T1 + T2（都是「门面 / 后端分层、工具独立注册」，改同一批文件）；批次 2 = O2 + T3；批次 3 = O3；批次 4 = O4 + O5。
+
+### 八.1 O6 评估结论（2026-11-04）— DEFERRED
+
+| 项 | 结论 |
+|--|--|
+| 目标 | 用户提供 `.pptx/.docx` 模板 → OfficeCLI `dump`/`merge` 填槽，减少从零拼版 |
+| 为何不做进本轮 | ①依赖真 OfficeCLI 模板命令面与版本钉扎，当前仅假二进制覆盖 create/batch；②OfficeSpec v1 尚无稳定 `template_path` / slots 合同；③与 Stable Kernel 无关的产品增强，不阻塞主线观感与可插拔后端 |
+| 前置条件（再开） | 真二进制集成测试绿；OfficeSpec 增 `template` 字段 ADR；明确槽位命名与失败回落（merge 失败 → 内置从零渲染） |
+| 本期替代 | 继续用 OfficeSpec v1 + 内置加厚 / office-cli render；模板文件可先当 assets 图片/附表引用 |
 
 ---
 
@@ -481,31 +490,32 @@ Dashboard 执行详情页展示该快照，用于排查「这个节点为什么�
 
 | ID | 需求 / 能力 | 来源 | 架构模块 | 阶段 | API / 协议 | 代码（计划） | 测试（计划） | 验收 | 状态 |
 |---|---|---|---|---|---|---|---|---|---|
-| OFF-01 | 办公工具模块独立注册 / 注销 | 用户 2026-11-03「tool 永远是独立模块」；§2.1 | Worker 工具面 / ExtensionRegistry | O1 | `register_office_tools` / `unregister_office_tools` | `office/providers.py`、`worker/tools.py`、组合根 | `tests/test_office_module_registration.py` | V5、V6 | TODO |
-| OFF-02 | 门面 / 后端分层；按 priority ∩ enabled ∩ health 选后端；`auto` / `strict` 回落 | §2.2、§2.3 | 办公门面 | O1 | `ARTIFACT_PROCESSOR` op `office.render.*`；后端调用合同 | `office/facade.py`（新）、`office/backends/builtin.py`（新） | `tests/test_office_backend_selection.py` | V1、V3、V4、V12 | TODO |
-| OFF-03 | `__ws_root` 注入改为 Provider 声明 | §1.3、§六 | Worker 分发 | O1 | Provider 属性 `needs_workspace_root` | `worker/llm_worker.py::_run_tool_plugin` | `tests/test_whitelist_enforcement.py`（扩） | V15 | TODO |
-| OFF-04 | 能力缺口判断感知工具实际可用性 | §六 | 义务绑定 | O1 / T3 | `plugin_gap` 增可用工具入参 | `worker/obligation_plugins.py`、`worker/lifecycle.py::ensure_capability_binding` | `tests/test_obligation_plugins.py`（扩） | V5、V21 | TODO |
-| OFF-05 | PDF 只由 docx 转换；拒绝 spec 直出；无转换器不写占位 | 用户拍板「PDF 须由 Word 转化」；§四 | `office_pdf` 门面 / 转换后端 | O2 | `office_pdf{source, path}`；`PDF_REQUIRES_DOCX`；`RENDERER_UNAVAILABLE` | `office/providers.py`、`office/backends/soffice.py`（新）、`office/pdf_render.py`（弃用 spec 渲染） | `tests/test_office_pdf_convert.py` | V7、V8 | TODO |
-| OFF-06 | `.pdf` 义务隐含 `office_docx` | §四 | 义务映射 | O2 | `.pdf → {office_docx, office_pdf}` | `worker/obligation_plugins.py` | `tests/test_obligation_plugins.py`（扩） | V7（前置） | TODO |
-| OFF-07 | OfficeSpec v1 合同（含 V0 兼容） | §三 | 办公规格 | O3 | `spec_version`；PPT / Word / Excel 字段 | `office/spec.py`（新） | `tests/test_office_spec.py` | V1、V9 | TODO |
-| OFF-08 | 内置后端版式加厚（主题 / 背景 / 页型 / 标题层级 / 列表 / 分页 / 图片 / 页眉页脚） | §1.1、§三 | 内置渲染器 | O3 | OfficeSpec v1 | `office/pptx_render.py`、`office/docx_render.py`、`office/xlsx_render.py` | `tests/test_office_render_v1.py`、`tests/test_office_hermes.py`（回归） | V1、V9 | TODO |
-| OFF-09 | 后端能力声明与降级（`supports` / `degraded_features`） | §3.5 | 办公门面 | O3 | 返回字段 `degraded_features` | `office/facade.py` | `tests/test_office_backend_selection.py` | V9 | TODO |
-| OFF-10 | office-cli 外挂插件（独立进程，spec → batch 翻译） | 用户 2026-11-03「A 与 OfficeCLI 结合」；§五 | Plugin（WP-032 / WP-033） | O4 | `plugin.yaml`；stdio JSON-RPC；`artifact.processors` | `plugins/office-cli/`（新：manifest + shim + 翻译层） | `tests/test_office_cli_plugin.py`（假二进制）；真二进制集成测试单独标记 | V2、V3、V10 | TODO（依赖 OFF-14） |
-| OFF-11 | OfficeCLI 运行加固（禁自动更新 / install / mcp / watch；超时；路径禁闭） | §5.3 | Plugin shim | O4 | 环境 `OFFICECLI_SKIP_UPDATE=1` | `plugins/office-cli/shim/` | `tests/test_office_cli_plugin.py` | V10、V11 | TODO |
-| OFF-12 | 质量闭环：validate / issues 回模型；预览不计交付物 | §七 | 办公门面 / `office_inspect` / harvest | O5 | `office.validate`、`office.preview`；`.matrix/preview/` 排除登记 | `office/facade.py`、`office/inspect.py`、harvest 排除规则 | `tests/test_office_quality_loop.py` | V2 | TODO |
-| OFF-13 | Dashboard 后端管理（列表 / 启停 / 优先级 / `auto`·`strict`） | §六 | Desktop UI / Runtime API | O4 / O5 | 后端配置查询与修改接口 | `apps/desktop` 插件页、`apps/runtime/api` | 前端组件测试 + API 测试 | V3、V4（配置面） | TODO |
-| OFF-14 | ADR-044：OfficeCLI 外挂依赖决策 | 良品率方案 §298；§〇 | 架构决策 | O0 | — | `docs/project-spec/30-decisions/ADR-044-*.md` | 评审 | — | TODO |
-| OFF-15 | 修订 Hermes 方案 §4.3（PDF 轨）与 §九（OfficeCLI 非目标） | §〇 | 文档 | O0 | — | `修改方案-Hermes式办公与图片产物生成.md` | 评审 | — | TODO |
-| TS-01 | 工具卡合同；`tool_schema()` 由工具卡派生；旧表兼容默认实现 | §13.2 | Worker 工具面 | T1 | `tool_card()` | `worker/tool_card.py`（新）、`worker/tool_schemas.py` | `tests/test_tool_card.py` | V15 | TODO |
-| TS-02 | 工具面构建器单一路径（白名单 ∩ enabled ∩ health ∩ 有工具卡） | §13.3 | Worker 工具面 | T1 | 构建器输出 tools + 工具手册 + 快照 | `worker/tool_surface.py`（新）、`worker/llm_worker.py::_search_tools` | `tests/test_tool_surface.py` | V13、V14 | TODO |
-| TS-03 | `web_search` 门面化，后端仍为 RESEARCH | §13.3 | Research / Worker 工具面 | T1 | `tool:web_search` → `registry.invoke(RESEARCH)` | `research/providers/` 或 `worker/tools.py` | `tests/test_search_rag.py`（扩） | V13 | TODO |
-| TS-04 | 描述按块拼装与预算，替换 `[:600]` | §13.4、Q6 | Worker 工具面 | T2 | 单工具 ≤ 400 字；整体预算降级 | `worker/tool_surface.py` | `tests/test_tool_surface.py` | V16 | TODO |
-| TS-05 | 文件 / 办公 / 编码 / MCP 工具描述迁入工具卡 | §13.2 | 各 TOOL Provider | T2 | — | `office/providers.py`、`worker/tools.py`、`worker/coding_tools.py`、`worker/mcp_bridge.py` | `tests/test_tool_card.py` | V15 | TODO |
-| TS-06 | 义务驱动工具排序 + 工具手册注入；并入 `contract_hint_for_plugins` | §13.5 | 工具面 / 义务绑定 | T3 | 义务所需工具 → 排序与 `detail` 概要 | `worker/tool_surface.py`、`worker/obligation_plugins.py`、`worker/llm_worker.py` | `tests/test_tool_surface.py` | V17、V18 | TODO |
-| TS-07 | 出错补充说明（按 `error_sections` 取小节；二次升级；三次不再附带） | §13.5 | 工具错误回执 | T3 | `tool_error` 的 `hint` 由工具卡供内容 | `worker/tools.py::tool_error`、任务级去重表 | `tests/test_tool_error_detail.py` | V19 | TODO |
-| TS-08 | 工具面快照审计 + Dashboard 展示 | §13.7、Q7 | Event / Desktop UI | T3 | 审计事件 `TOOL_SURFACE_BUILT` | `worker/llm_worker.py`、事件类型登记、Dashboard 执行详情 | `tests/test_tool_surface.py` | V20 | TODO |
-| TS-09 | 工具手册段落压缩保护 | §13.5 | 会话压缩 | T3 | Prune 保护带 | `worker/context.py` | `tests/test_context_builder.py`（扩）或压缩专项测试 | V22 | TODO |
-| TS-10 | `tool_help` 预留（不上线） | §13.6、Q5 | Worker 工具面 | T4 | 预留 `detail.sections` 读取接口 | — | — | — | TODO（预留，不排期） |
+| OFF-01 | 办公工具模块独立注册 / 注销 | 用户 2026-11-03「tool 永远是独立模块」；§2.1 | Worker 工具面 / ExtensionRegistry | O1 | `register_office_tools` / `unregister_office_tools` | `office/providers.py`、`worker/tools.py`、组合根 | `tests/test_office_module_registration.py` | V5、V6 | DONE |
+| OFF-02 | 门面 / 后端分层；按 priority ∩ enabled ∩ health 选后端；`auto` / `strict` 回落 | §2.2、§2.3 | 办公门面 | O1 | `ARTIFACT_PROCESSOR` op `office.render.*`；后端调用合同 | `office/facade.py`、`office/backends.py` | `tests/test_office_backend_selection.py` | V1、V3、V4、V12 | DONE |
+| OFF-03 | `__ws_root` 注入改为 Provider 声明 | §1.3、§六 | Worker 分发 | O1 | Provider 属性 `needs_workspace_root` | `worker/llm_worker.py::_run_tool_plugin` | `tests/test_whitelist_enforcement.py`（扩） | V15 | DONE |
+| OFF-04 | 能力缺口判断感知工具实际可用性 | §六 | 义务绑定 | O1 / T3 | `plugin_gap` 增可用工具入参 | `worker/obligation_plugins.py`、`worker/lifecycle.py::ensure_capability_binding` | `tests/test_obligation_plugins.py`（扩） | V5、V21 | DONE |
+| OFF-05 | PDF 只由 docx 转换；拒绝 spec 直出；无转换器不写占位 | 用户拍板「PDF 须由 Word 转化」；§四 | `office_pdf` 门面 / 转换后端 | O2 | `office_pdf{source, path}`；`PDF_REQUIRES_DOCX`；`RENDERER_UNAVAILABLE` | `office/providers.py`、`office/backends.py`、`office/pdf_render.py` | `tests/test_office_pdf_convert.py` | V7、V8 | DONE |
+| OFF-06 | `.pdf` 义务隐含 `office_docx` | §四 | 义务映射 | O2 | `.pdf → {office_docx, office_pdf}` | `worker/obligation_plugins.py` | `tests/test_obligation_plugins.py`（扩） | V7（前置） | DONE |
+| OFF-07 | OfficeSpec v1 合同（含 V0 兼容） | §三 | 办公规格 | O3 | `spec_version`；PPT / Word / Excel 字段 | `office/spec.py` | `tests/test_office_spec.py` | V1、V9 | DONE |
+| OFF-08 | 内置后端版式加厚（主题 / 背景 / 页型 / 标题层级 / 列表 / 分页 / 图片 / 页眉页脚） | §1.1、§三 | 内置渲染器 | O3 | OfficeSpec v1 | `office/pptx_render.py`、`office/docx_render.py`、`office/xlsx_render.py` | `tests/test_office_render_v1.py`、`tests/test_office_hermes.py`（回归） | V1、V9 | DONE |
+| OFF-09 | 后端能力声明与降级（`supports` / `degraded_features`） | §3.5 | 办公门面 | O3 | 返回字段 `degraded_features` | 渲染器 `degraded_features` | `tests/test_office_render_v1.py` | V9 | DONE |
+| OFF-10 | office-cli 外挂插件（独立进程，spec → batch 翻译） | 用户 2026-11-03「A 与 OfficeCLI 结合」；§五 | Plugin（WP-032 / WP-033） | O4 | `plugin.yaml`；stdio JSON-RPC；`artifact.processors` | `plugins/office-cli/` + `office/officecli/` | `tests/test_office_cli_plugin.py`（假二进制）；真二进制集成测试单独标记 | V2、V3、V10 | DONE |
+| OFF-11 | OfficeCLI 运行加固（禁自动更新 / install / mcp / watch；超时；路径禁闭） | §5.3 | Plugin shim | O4 | 环境 `OFFICECLI_SKIP_UPDATE=1` | `plugins/office-cli/shim/`、`office/officecli/runner.py` | `tests/test_office_cli_plugin.py` | V10、V11 | DONE |
+| OFF-12 | 质量闭环：validate / issues 回模型；预览不计交付物 | §七 | 办公门面 / `office_inspect` / harvest | O5 | `office.validate`、`office.preview`；`.matrix/preview/` 排除登记 | `office/facade.py`、`llm_worker._workspace_diff` | `tests/test_office_quality_loop.py` | V2 | DONE |
+| OFF-13 | Dashboard 后端管理（列表 / 启停 / 优先级 / `auto`·`strict`） | §六 | Desktop UI / Runtime API | O4 / O5 | 后端配置查询与修改接口 | `apps/runtime/api/office_backends.py`、`OfficeBackendsPanel`、设置「办公后端」页 | `tests/test_office_backends_api.py`、`OfficeBackendsPanel.test.tsx` | V3、V4（配置面） | DONE |
+| OFF-14 | ADR-044：OfficeCLI 外挂依赖决策 | 良品率方案 §298；§〇 | 架构决策 | O0 | — | `docs/project-spec/30-decisions/ADR-044-*.md` | 评审 | — | DONE |
+| OFF-15 | 修订 Hermes 方案 §4.3（PDF 轨）与 §九（OfficeCLI 非目标） | §〇 | 文档 | O0 | — | `修改方案-Hermes式办公与图片产物生成.md` | 评审 | — | DONE |
+| TS-01 | 工具卡合同；`tool_schema()` 由工具卡派生；旧表兼容默认实现 | §13.2 | Worker 工具面 | T1 | `tool_card()` | `worker/tool_card.py`、`worker/tool_schemas.py` | `tests/test_tool_card.py` | V15 | DONE |
+| TS-02 | 工具面构建器单一路径（白名单 ∩ enabled ∩ health ∩ 有工具卡） | §13.3 | Worker 工具面 | T1 | 构建器输出 tools + 工具手册 + 快照 | `worker/tool_surface.py`、`worker/llm_worker.py::_search_tools` | `tests/test_tool_surface.py` | V13、V14 | DONE |
+| TS-03 | `web_search` 门面化，后端仍为 RESEARCH | §13.3 | Research / Worker 工具面 | T1 | `tool:web_search` → `registry.invoke(RESEARCH)` | `worker/web_search_tool.py` | `tests/test_search_rag.py`（扩） | V13 | DONE |
+| TS-04 | 描述按块拼装与预算，替换 `[:600]` | §13.4、Q6 | Worker 工具面 | T2 | 单工具 ≤ 400 字；整体预算降级 | `worker/tool_surface.py` | `tests/test_tool_surface.py` | V16 | DONE |
+| TS-05 | 文件 / 办公 / 编码 / MCP 工具描述迁入工具卡 | §13.2 | 各 TOOL Provider | T2 | — | `office/providers.py`、`worker/tools.py`、`worker/coding_tools.py`、`worker/mcp_bridge.py` | `tests/test_tool_card.py` | V15 | DONE |
+| TS-06 | 义务驱动工具排序 + 工具手册注入；并入 `contract_hint_for_plugins` | §13.5 | 工具面 / 义务绑定 | T3 | 义务所需工具 → 排序与 `detail` 概要 | `worker/tool_surface.py`、`worker/obligation_plugins.py`、`worker/llm_worker.py` | `tests/test_tool_surface.py` | V17、V18 | DONE |
+| TS-07 | 出错补充说明（按 `error_sections` 取小节；二次升级；三次不再附带） | §13.5 | 工具错误回执 | T3 | `tool_error` 的 `hint` 由工具卡供内容 | `worker/tools.py::tool_error`、任务级去重表 | `tests/test_tool_error_detail.py` | V19 | DONE |
+| TS-08 | 工具面快照审计 + Dashboard 展示 | §13.7、Q7 | Event / Desktop UI | T3 | 审计事件 `TOOL_SURFACE_BUILT` | `worker/llm_worker.py`、`Dashboard` 任务详情「工具面快照」 | `tests/test_tool_surface.py`、`Dashboard.test.tsx` | V20 | DONE |
+| TS-09 | 工具手册段落压缩保护 | §13.5 | 会话压缩 | T3 | Prune 保护带 | `worker/context.py` | `tests/test_context_builder.py`（扩）或压缩专项测试 | V22 | DONE |
+| TS-10 | `tool_help` 预留（不上线） | §13.6、Q5 | Worker 工具面 | T4 | `list_detail_sections` / `read_detail_section`；不注册 TOOL | `worker/tool_card.py` | `tests/test_tool_card.py` | — | DONE（预留接口；TOOL 不上线） |
+| OFF-16 | O6 模板填槽（OfficeCLI merge/dump） | §八 O6 | 办公规格 / office-cli | O6 | `template` 字段 + merge 后端 | — | 真二进制集成 | — | DEFERRED（§八.1） |
 
 ### 14.2 验收反向覆盖
 
@@ -534,7 +544,7 @@ Dashboard 执行详情页展示该快照，用于排查「这个节点为什么�
 | V21 | OFF-04 |
 | V22 | TS-09 |
 
-无验收用例的需求：OFF-14、OFF-15（文档评审）、TS-10（预留）。
+无开放验收用例的需求：OFF-14、OFF-15（文档评审已完成）；TS-10（预留接口已落地、TOOL 不上线）；O6（DEFERRED，见 §八.1）。
 
 ### 14.3 架构约束核对
 

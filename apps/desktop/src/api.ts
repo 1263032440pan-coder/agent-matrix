@@ -443,6 +443,67 @@ export async function testLLMConnection(cfg: {
   if (!resp.ok) throw new Error(`LLM test failed: ${resp.status}`);
   return resp.json();
 }
+
+// ── 办公后端配置面（OFF-13）───────────────────────────────────────────
+
+export interface OfficeBackendInfo {
+  name: string;
+  op: string;
+  source: 'builtin' | 'plugin' | 'other' | string;
+  priority: number;
+  enabled: boolean;
+  usable: boolean;
+  health: boolean;
+  version?: string;
+}
+
+export interface OfficeBackendSettings {
+  fallback: 'auto' | 'strict' | string;
+  officecli_path: string;
+  last_fallback: {
+    op?: string;
+    from?: string;
+    to?: string;
+    at?: string;
+  } | null;
+  backends: OfficeBackendInfo[];
+}
+
+export async function getOfficeBackends(): Promise<OfficeBackendSettings> {
+  const resp = await fetch(`${API_BASE}/api/settings/office-backends`);
+  if (!resp.ok) throw new Error(`office backends fetch failed: ${resp.status}`);
+  return resp.json();
+}
+
+export async function patchOfficeBackendGlobal(body: {
+  fallback?: 'auto' | 'strict';
+  officecli_path?: string;
+}): Promise<OfficeBackendSettings> {
+  const resp = await fetch(`${API_BASE}/api/settings/office-backends`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw new Error(`office backends patch failed: ${resp.status}`);
+  return resp.json();
+}
+
+export async function patchOfficeBackend(
+  name: string,
+  body: { enabled?: boolean; priority?: number },
+): Promise<OfficeBackendSettings> {
+  const resp = await fetch(
+    `${API_BASE}/api/settings/office-backends/${encodeURIComponent(name)}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    },
+  );
+  if (!resp.ok) throw new Error(`office backend ${name} patch failed: ${resp.status}`);
+  return resp.json();
+}
+
 // ── Skill 包管理（D17B/D17C 用户入口）─────────────────────────────────
 
 export interface SkillInfo {
@@ -458,6 +519,51 @@ export interface SkillInfo {
   content_hash: string;
   package_ref: string | null;
   created_at: string | null;
+  /** S12：DB 有记录但 installed/ 无 SKILL.md */
+  missing_file?: boolean;
+}
+
+export interface SkillRuntimeStatus {
+  runtime_root: string;
+  venv: string;
+  python: string | null;
+  uv: string | null;
+  ready: boolean;
+}
+
+export interface FsInstalledSkill {
+  name: string;
+  description: string;
+  path: string;
+  skill_dir: string;
+  source: string;
+}
+
+export async function getSkillRuntime(): Promise<SkillRuntimeStatus> {
+  const resp = await fetch(`${API_BASE}/api/skills/runtime`);
+  if (!resp.ok) throw new Error(`Skill runtime status failed: ${resp.status}`);
+  return resp.json();
+}
+
+export async function initSkillRuntime(
+  packages?: string[],
+): Promise<Record<string, unknown>> {
+  const resp = await fetch(`${API_BASE}/api/skills/runtime/init`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(packages ? { packages } : {}),
+  });
+  if (!resp.ok) {
+    const detail = await resp.json().catch(() => '');
+    throw new Error(`Skill runtime init failed: ${detail?.detail ?? resp.status}`);
+  }
+  return resp.json();
+}
+
+export async function listFsInstalledSkills(): Promise<FsInstalledSkill[]> {
+  const resp = await fetch(`${API_BASE}/api/skills/installed`);
+  if (!resp.ok) throw new Error(`FS skills fetch failed: ${resp.status}`);
+  return resp.json();
 }
 
 export interface SkillQuery {
@@ -466,13 +572,17 @@ export interface SkillQuery {
   status?: string;
 }
 
+export type SkillImportResult =
+  | SkillInfo
+  | { installed: SkillInfo[]; count: number };
+
 export async function importSkillPackage(
   file: File,
   opts?: { allow_executable?: boolean },
-): Promise<SkillInfo> {
+): Promise<SkillImportResult> {
   const form = new FormData();
   form.append('file', file);
-  // ADR-039: 默认 false——执行型包显式放行
+  // 含脚本时勾选：允许 .py/.sh 落盘到 data/skills/installed/
   form.append('allow_executable', opts?.allow_executable ? 'true' : 'false');
   const resp = await fetch(`${API_BASE}/api/skills/import`, {
     method: 'POST',

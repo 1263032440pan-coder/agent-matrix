@@ -45,6 +45,32 @@ def test_extract_json_dict_rejects_match_only():
     assert "deliverables" in ei.value.message
 
 
+def test_looks_like_meta_prose_english_self_check():
+    from project_runtime.procedure.delivery_manifest import looks_like_meta_prose
+
+    blob = (
+        "We need answer only JSON object. Need ensure valid. "
+        "Need continue from previous. Need produce deliverables list."
+    )
+    assert looks_like_meta_prose(blob) is True
+    assert looks_like_meta_prose(
+        '{"version":1,"deliverables":[{"id":"d1","name":"A",'
+        '"match":{"ext":[".md"]}}]}'
+    ) is False
+
+
+def test_software_dev_baseline_manifest_valid():
+    from project_runtime.procedure.delivery_manifest import (
+        software_dev_baseline_manifest,
+    )
+
+    m = software_dev_baseline_manifest()
+    assert m["source"] == "baseline_fallback"
+    assert len(m["deliverables"]) == 3
+    ids = {d["id"] for d in m["deliverables"]}
+    assert ids == {"d_ppt", "d_code", "d_test"}
+
+
 
 def test_validate_ok():
     m = validate_manifest({
@@ -248,6 +274,49 @@ async def test_extract_manifest_uses_reasoning_json(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_extract_manifest_meta_prose_falls_back_to_baseline(monkeypatch):
+    """英文自检反复失败 + SOFTWARE_DEV 基线提示 → baseline_fallback。"""
+    from types import SimpleNamespace
+
+    from project_runtime.procedure import delivery_manifest as dm
+
+    class _Cfg:
+        base_url = "http://x"
+        api_key = "k"
+        model = "m"
+
+    prose = (
+        "We need answer only JSON object. Need ensure valid. "
+        "Need continue from previous. Need produce deliverables list."
+    )
+
+    async def _fake_complete(**_kwargs):
+        msg = SimpleNamespace(content=prose, reasoning_content="")
+        return {
+            "ok": True,
+            "response": SimpleNamespace(
+                choices=[SimpleNamespace(message=msg)],
+            ),
+        }
+
+    import project_runtime.llm as llm_mod
+    import project_runtime.llm.provider as prov
+
+    monkeypatch.setattr(llm_mod, "load_llm_settings", lambda: _Cfg())
+    monkeypatch.setattr(llm_mod, "normalize_model_for_gateway", lambda m, b: m)
+    monkeypatch.setattr(prov, "llm_complete", _fake_complete)
+
+    out = await dm.extract_manifest_from_materials(
+        materials_text="做一个记账小工具",
+        skill_hint=dm.manifest_skill_hint_for_profile("SOFTWARE_DEV"),
+    )
+    assert out["source"] == "baseline_fallback"
+    assert {d["id"] for d in out["deliverables"]} == {
+        "d_ppt", "d_code", "d_test",
+    }
+
+
+@pytest.mark.asyncio
 async def test_stop_problems_uses_frozen_validator(tmp_path, monkeypatch):
     """V1.6d: deliverable_ids → 冻结脚本子进程硬闸。"""
     import json
@@ -296,6 +365,7 @@ async def test_stop_problems_uses_frozen_validator(tmp_path, monkeypatch):
     worker = LLMWorkerAdapter.__new__(LLMWorkerAdapter)
     worker._current_project_id = 1
     worker._session = _Sess()
+    worker._artifact_mgr = None
     worker._task_ws_root = lambda: task_ws
     problems = await worker._delivery_stop_problems(WP())
     assert problems and ("方案PPT" in problems[0] or "pptx" in problems[0].lower())

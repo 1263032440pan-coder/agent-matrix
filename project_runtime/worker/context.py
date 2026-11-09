@@ -224,7 +224,18 @@ class ContextCompressor:
         for tr in prunable:
             for m in reversed(tr.messages):
                 if m.get("role") == "tool":
-                    mt = estimate_tokens(str(m.get("content") or ""))
+                    # T3/V22：纠错说明与工具手册片段优先保留
+                    content = str(m.get("content") or "")
+                    if (
+                        m.get("_protect_detail")
+                        or m.get("_tool_manual")
+                        or "【纠错说明】" in content
+                        or "【工具手册】" in content
+                    ):
+                        mt = estimate_tokens(content)
+                        kept += mt
+                        continue
+                    mt = estimate_tokens(content)
                     if kept + mt <= band:
                         kept += mt
                     else:

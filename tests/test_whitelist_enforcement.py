@@ -60,6 +60,7 @@ def _worker():
 _FILE_TOOLS = (
     "tool:read_file", "tool:list_dir", "tool:write_file", "tool:append_file",
 )
+_SKILL_TOOLS = ("tool:skills_list", "tool:skill_view")
 
 
 def _names(tools) -> set[str]:
@@ -78,7 +79,7 @@ class TestToolLoopWhitelist:
             "web_search", "shell", "code_search", "git",
         ])
         assert _names(tools) == {
-            "web_search", *_FILE_TOOLS, "tool:shell",
+            "web_search", *_FILE_TOOLS, *_SKILL_TOOLS, "tool:shell",
             "tool:code_search", "tool:git",
         }
 
@@ -89,7 +90,7 @@ class TestToolLoopWhitelist:
             "web_search", "webfetch", "office_pptx",
         ])
         assert _names(tools) == {
-            "web_search", *_FILE_TOOLS,
+            "web_search", *_FILE_TOOLS, *_SKILL_TOOLS,
             "tool:webfetch", "tool:office_pptx",
         }
         # shell 对 analyst 不可见（环节边界——护栏生效）
@@ -113,13 +114,14 @@ class TestToolLoopWhitelist:
         w = _worker()
         tools = w._search_tools(whitelist=["write_file"])
         assert "web_search" not in _names(tools)
-        assert _names(tools) == {"tool:write_file"}
+        # Skill 目录工具对非空白名单恒放行（安装即可用）
+        assert _names(tools) == {"tool:write_file", *_SKILL_TOOLS}
 
     def test_legacy_file_rw_whitelist_expands(self, full_registry):
         """SYS-147: 存库旧白名单 file_rw → 三个新文件工具，旧名不暴露。"""
         w = _worker()
         names = _names(w._search_tools(whitelist=["file_rw"]))
-        assert names == set(_FILE_TOOLS)
+        assert names == set(_FILE_TOOLS) | set(_SKILL_TOOLS)
 
     @pytest.mark.asyncio
     async def test_legacy_file_rw_whitelist_dispatches(
@@ -236,13 +238,15 @@ class TestSkillWhitelist:
 
 class TestTemplateRevisionAndSeed:
     def test_five_templates_have_baseline(self):
-        """修订后五模板必含三能力基线（文件工具 + web_search）。"""
+        """修订后五模板必含三能力基线（文件工具 + web_search + Skill 目录）。"""
         for tpl in BUILT_IN_TEMPLATES:
             plugins = tpl["plugins"]
             assert "file_rw" not in plugins, tpl["agent_id"]
             for name in ("read_file", "list_dir", "write_file", "append_file"):
                 assert name in plugins, (tpl["agent_id"], name)
             assert "web_search" in plugins, tpl["agent_id"]
+            for name in ("skills_list", "skill_view"):
+                assert name in plugins, (tpl["agent_id"], name)
 
     def test_lsp_removed(self):
         for tpl in BUILT_IN_TEMPLATES:

@@ -1,4 +1,8 @@
-"""返修单 V3 批C: 四闸 / EXECUTION 导入 / 白名单 / PPT 兜底。"""
+"""返修单 V3 批C: 四闸 / EXECUTION 导入 / 白名单 / PPT 兜底。
+
+2026-11-05：安装主路径已改为 FS 落盘（ADR-039 修订），不再调用
+run_four_gates。本文件保留为 legacy 闸模块单测，不代表现行安装前置。
+"""
 
 from __future__ import annotations
 

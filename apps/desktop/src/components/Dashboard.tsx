@@ -762,6 +762,84 @@ export function Dashboard({
                   </div>
                 );
               })()}
+              {(() => {
+                const evs = data.runtime_events ?? [];
+                const surf = [...evs]
+                  .reverse()
+                  .find(
+                    (e) =>
+                      e.event_type === 'TOOL_SURFACE_BUILT' &&
+                      e.task_id === selected.id,
+                  );
+                if (!surf) return null;
+                const p = surf.payload ?? {};
+                const visible = (p.visible as string[] | undefined) ?? [];
+                const filtered = (p.filtered as
+                  | Array<{ name?: string; reason?: string } | string>
+                  | undefined) ?? [];
+                const ordering = (p.ordering_basis as string[] | undefined) ?? [];
+                const manual = (p.manual as
+                  | Array<{ tool?: string; source?: string }>
+                  | undefined) ?? [];
+                const degraded = (p.degraded as string[] | undefined) ?? [];
+                return (
+                  <div
+                    data-testid="task-tool-surface"
+                    style={{
+                      marginTop: 10,
+                      padding: 10,
+                      background: 'var(--ui-bg-elevated, #fafafa)',
+                      border: '1px solid var(--ui-stroke-muted, #eee)',
+                      borderRadius: 6,
+                      fontSize: 13,
+                    }}
+                  >
+                    <div style={{ fontWeight: 600, marginBottom: 6 }}>
+                      工具面快照
+                      {surf.message ? (
+                        <span style={{ fontWeight: 400, color: '#888' }}>
+                          {' '}
+                          — {surf.message}
+                        </span>
+                      ) : null}
+                    </div>
+                    <div data-testid="tool-surface-visible">
+                      可见（{visible.length}）：
+                      {visible.length ? visible.join(', ') : '—'}
+                    </div>
+                    {ordering.length > 0 && (
+                      <div data-testid="tool-surface-ordering" style={{ marginTop: 4 }}>
+                        义务排序依据：{ordering.join(', ')}
+                      </div>
+                    )}
+                    {filtered.length > 0 && (
+                      <div data-testid="tool-surface-filtered" style={{ marginTop: 4 }}>
+                        已过滤（{filtered.length}）：
+                        {filtered
+                          .map((f) =>
+                            typeof f === 'string'
+                              ? f
+                              : `${f.name ?? '?'}${f.reason ? `(${f.reason})` : ''}`,
+                          )
+                          .join(', ')}
+                      </div>
+                    )}
+                    {manual.length > 0 && (
+                      <div data-testid="tool-surface-manual" style={{ marginTop: 4 }}>
+                        手册注入：
+                        {manual
+                          .map((m) => `${m.tool ?? '?'}:${m.source ?? '?'}`)
+                          .join(', ')}
+                      </div>
+                    )}
+                    {degraded.length > 0 && (
+                      <div data-testid="tool-surface-degraded" style={{ marginTop: 4 }}>
+                        描述降级：{degraded.join(', ')}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
               <div
                 data-testid="required-deliverables"
                 style={{ marginTop: 10 }}

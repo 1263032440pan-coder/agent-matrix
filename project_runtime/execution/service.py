@@ -332,10 +332,8 @@ class ExecutionRunner:
                 SkillResolver,
                 SkillType,
             )
-            from project_runtime.skills.selector import SkillSelector
 
             async with AsyncSession(engine) as s:
-                task_content = task_select_content
                 resolver = SkillResolver(s)
                 resolution = await resolver.resolve(
                     SkillRequirement(skill_type=SkillType.TASK_EXECUTION, required=False),
@@ -349,24 +347,10 @@ class ExecutionRunner:
                     resolution.status.value != "RESOLVED"
                     or resolved_def is None
                 ):
-                    # 无绑定命中 → LLM 按任务内容自动选（TASK_EXECUTION
-                    # 优先，无则不限类型——方法类 skill 的具体阶段指引
-                    # 同样能指导单个任务的执行）
-                    # V1.4: Agent skill 白名单过滤（None=全局候选池）
-                    selector = SkillSelector(s)
-                    if agent_binding is not None and (
-                        agent_binding.skill_whitelist is not None
-                    ):
-                        selector = selector.restrict_to(
-                            agent_binding.skill_whitelist
-                        )
-                    resolved_def = await selector.select(
-                        task_content=task_content,
-                        extra_context=(
-                            f"项目任务执行：{task_name}"
-                        ),
-                    )
-                    select_reason = "LLM_AUTO_SELECT"
+                    # F2 收尾：默认靠 <available_skills> 全员目录；
+                    # 不再强制 Selector 唯一命中。Binding 才是 preferred。
+                    resolved_def = None
+                    select_reason = "CATALOG_ONLY"
                 # 用户决策（2026-10-09）: 联网 RAG 只用于获取必要信息完成
                 # 当前任务（WebResearchExecutor 研究链），不生成 skill——
                 # skill 必须用户自己安装。无可用 skill → 裸跑（研究清扫
@@ -485,6 +469,8 @@ class ExecutionRunner:
                     code_stage=_code_stage_of(task_playbook_ref_snapshot),
                     # V1.6 序0: 任务工作区根（文件工具写禁闭）
                     workspace_root=str(task_ws),
+                    # 读禁闭：项目工作区根（自定义目录 ≠ data/tasks）
+                    project_workspace_root=str(project_ws),
                     # V1.6 序3: delivery_tags 透传（收工自查钩子消费）
                     delivery_tags=_delivery_tags_of(
                         task_playbook_ref_snapshot),

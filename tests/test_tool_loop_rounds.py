@@ -1,4 +1,4 @@
-"""工具循环: 32 轮预算 + 删软闸 + 预算用尽 Continue nudge / Grace / Stop。"""
+"""工具循环: 64 轮预算 + 删软闸 + 预算用尽 Continue nudge / Grace / Stop。"""
 
 import json
 
@@ -134,7 +134,7 @@ class TestNoSoftGate:
 class TestBudgetGrace:
     @pytest.mark.asyncio
     async def test_budget_exhaust_grace_then_stop_ok(self, monkeypatch):
-        """32 轮全 tool → Continue nudge + Grace（无 tools）→ Stop 通过 → 归档。"""
+        """64 轮全 tool → Continue nudge + Grace（无 tools）→ Stop 通过 → 归档。"""
         from project_runtime.worker.llm_worker import _TOOL_ROUNDS
 
         w = _make_worker()
@@ -182,10 +182,10 @@ class TestBudgetGrace:
             skill_whitelist = None
 
         out = await w._execute_llm(_WP())
-        assert _TOOL_ROUNDS == 32
+        assert _TOOL_ROUNDS == 64
         assert grace_seen["v"], "预算用尽后应注入 Continue nudge 并跑 Grace"
         assert "Grace收尾说明" in out
-        assert n["i"] == _TOOL_ROUNDS + 1  # 32 tools + 1 grace
+        assert n["i"] == _TOOL_ROUNDS + 1  # 64 tools + 1 grace
 
     @pytest.mark.asyncio
     async def test_budget_exhaust_stop_fail_raises(self, monkeypatch):
