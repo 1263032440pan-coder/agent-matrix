@@ -1,0 +1,2 @@
+GitHub connector write-permission verification.
+Temporary file; safe to delete.
